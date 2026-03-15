@@ -17,18 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout core SDK
-        uses: actions/checkout@v4
-        with:
-          repository: unicity-astrid/astrid
-          path: _core
-          token: ${{ secrets.CORE_READ_TOKEN }}
-
-      - name: Symlink core for path deps
-        run: |
-          mkdir -p ../../core
-          ln -s "$GITHUB_WORKSPACE/_core/crates" ../../core/crates
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
