@@ -20,12 +20,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use astrid_events::kernel_api::{
-    CapsuleMetadataEntry, KernelRequest, KernelResponse, SYSTEM_SESSION_UUID,
-};
+use astrid_sdk::prelude::*;
+use astrid_sdk::types::{CapsuleMetadataEntry, KernelRequest, KernelResponse, SYSTEM_SESSION_UUID};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-use astrid_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// A resolved LLM provider with its IPC routing topics.
