@@ -336,13 +336,21 @@ fn extract_action(command: &str) -> String {
     parts.join(" ")
 }
 
+/// Sandboxed shell execution tools for running commands and managing processes.
+///
+/// All commands run through the host's sandbox escape hatch (Seatbelt on macOS,
+/// bubblewrap on Linux). Catastrophic commands (rm -rf /, mkfs, fork bombs) are
+/// hard-blocked before reaching the approval prompt. All other commands require
+/// human approval.
 #[capsule]
 impl ShellTools {
-    /// Executes a given shell command via the host sandbox escape hatch.
+    /// Execute a shell command and return its output. The command runs in bash
+    /// via the host sandbox. Requires human approval — the approval prompt
+    /// shows the command and its risk level. Use this for running tests,
+    /// builds, git operations, or any CLI tool.
     ///
-    /// Before execution, extracts the approval action (consecutive non-flag
-    /// tokens, up to 3 deep), then requests human approval. If denied,
-    /// returns an error without executing.
+    /// Returns stdout on success. Returns an error with stderr on non-zero
+    /// exit code so you can see what went wrong.
     #[astrid::tool("run_shell_command")]
     pub fn run_shell_command(&self, args: RunShellArgs) -> Result<String, SysError> {
         let trimmed = args.command.trim();
@@ -381,12 +389,10 @@ impl ShellTools {
         Ok(result.stdout)
     }
 
-    /// Spawns a background process via the host sandbox escape hatch.
-    ///
-    /// Applies the same safety checks as `run_shell_command`: catastrophic
-    /// command blocking, action extraction, and human approval. Returns a
-    /// process handle ID that can be used with `read_process_logs` and
-    /// `kill_process`.
+    /// Start a long-running process in the background. Returns a message
+    /// containing the process handle ID. Use this for dev servers, watch processes, or anything that shouldn't
+    /// block the conversation. Requires human approval. Use `read_process_logs`
+    /// to check output and `kill_process` to stop it.
     #[astrid::tool("spawn_background_process")]
     pub fn spawn_background_process(&self, args: SpawnBackgroundArgs) -> Result<String, SysError> {
         let trimmed = args.command.trim();
@@ -414,11 +420,10 @@ impl ShellTools {
         ))
     }
 
-    /// Reads buffered stdout/stderr from a background process.
-    ///
-    /// Each call returns only the new output since the last read. Also
-    /// reports whether the process is still running and its exit code
-    /// if it has terminated.
+    /// Read buffered stdout/stderr from a background process. Each call
+    /// returns only the new output since the last read. Also reports whether
+    /// the process is still running and its exit code if terminated. No
+    /// approval required — the process was already approved at spawn time.
     #[astrid::tool("read_process_logs")]
     pub fn read_process_logs(&self, args: ReadProcessLogsArgs) -> Result<String, SysError> {
         let logs = process::read_logs(args.id)?;
@@ -451,10 +456,8 @@ impl ShellTools {
         Ok(output)
     }
 
-    /// Terminates a background process and returns any remaining output.
-    ///
-    /// No additional approval is required since the process was already
-    /// approved at spawn time.
+    /// Terminate a background process and return any remaining output.
+    /// Releases the process handle slot. No additional approval required.
     #[astrid::tool("kill_process")]
     pub fn kill_process(&self, args: KillProcessArgs) -> Result<String, SysError> {
         let result = process::kill(args.id)?;
