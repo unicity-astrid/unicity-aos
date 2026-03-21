@@ -9,6 +9,9 @@ astrid-version = ">=0.1.0"
 id = "registry"
 file = "astrid_capsule_registry.wasm"
 
+[exports.astrid]
+registry = "1.0.0"
+
 [capabilities]
 uplink = true
 ipc_publish = [
