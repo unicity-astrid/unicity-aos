@@ -10,8 +10,8 @@ id = "skills-loader"
 file = "astrid_capsule_skills.wasm"
 type = "executable"
 # Broad home:// read needed — callers pass arbitrary dir_path (e.g. ".gemini/skills")
-# and the capsule scans both workspace and home trees under that path.
-capabilities = { fs_read = ["workspace://", "home://"] }
+# and the capsule scans both CWD and home trees under that path.
+capabilities = { fs_read = ["cwd://", "home://"] }
 
 [capabilities]
 ipc_publish = ["tool.v1.execute.*.result", "tool.v1.response.describe.*"]

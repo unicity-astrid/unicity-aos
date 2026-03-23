@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_validate_dir_path_rejects_unknown_scheme() {
-        assert!(validate_dir_path("workspace://skills").is_err());
+        assert!(validate_dir_path("cwd://skills").is_err());
         assert!(validate_dir_path("http://evil.com").is_err());
         assert!(validate_dir_path("file:///etc/passwd").is_err());
     }
