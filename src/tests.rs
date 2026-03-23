@@ -433,11 +433,60 @@ fn assemble_response_serializes_correctly() {
         user_context_prefix: "User ctx".to_string(),
         request_id: "req-1".to_string(),
         session_id: None,
+        tools: Vec::new(),
+        messages: Vec::new(),
     };
     let json = serde_json::to_value(&resp).expect("should serialize");
     assert_eq!(json["system_prompt"], "Final prompt.");
     assert_eq!(json["user_context_prefix"], "User ctx");
     assert_eq!(json["request_id"], "req-1");
+    // Empty tools and messages should be skipped in serialization.
+    assert!(json.get("tools").is_none());
+    assert!(json.get("messages").is_none());
+}
+
+#[test]
+fn assemble_response_serializes_with_tools_and_messages() {
+    let resp = AssembleResponse {
+        system_prompt: "System.".to_string(),
+        user_context_prefix: String::new(),
+        request_id: "req-2".to_string(),
+        session_id: Some("sess-1".to_string()),
+        tools: vec![serde_json::json!({
+            "name": "read_file",
+            "description": "Read a file",
+            "input_schema": {"type": "object"}
+        })],
+        messages: vec![serde_json::json!({
+            "role": "user",
+            "content": "Hello"
+        })],
+    };
+    let json = serde_json::to_value(&resp).expect("should serialize");
+    assert_eq!(json["session_id"], "sess-1");
+    let tools = json["tools"].as_array().expect("tools should be array");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "read_file");
+    let messages = json["messages"]
+        .as_array()
+        .expect("messages should be array");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+}
+
+#[test]
+fn assemble_response_deserializes_without_optional_fields() {
+    // Responses from older versions may not include tools/messages.
+    let json = r#"{
+        "system_prompt": "Test.",
+        "user_context_prefix": "",
+        "request_id": "req-3"
+    }"#;
+    let resp: AssembleResponse = serde_json::from_str(json).expect("should deserialize");
+    assert_eq!(resp.request_id, "req-3");
+    assert!(resp.tools.is_empty());
+    assert!(resp.messages.is_empty());
+    assert!(resp.session_id.is_none());
 }
 
 // ── Topic filtering tests ─────────────────────────────────────

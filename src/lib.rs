@@ -24,6 +24,7 @@
 
 use astrid_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Runtime configuration loaded from capsule config at startup.
 struct Config {
@@ -79,6 +80,12 @@ struct AssembleResponse {
     /// Session ID echoed from the request for react loop correlation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    /// Collected tool schemas from all tool-providing capsules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<serde_json::Value>,
+    /// Session conversation history messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    messages: Vec<serde_json::Value>,
 }
 
 /// Payload sent to plugin capsules via the `prompt_builder.v1.hook.before_build` interceptor.
@@ -423,6 +430,223 @@ fn fire_after_prompt_build(system_prompt: &str, user_context_prefix: &str, reque
     let _ = ipc::publish_json("prompt_builder.v1.hook.after_build", &payload);
 }
 
+/// KV key for cached tool schemas. First call populates it via IPC broadcast;
+/// subsequent calls read directly from KV until invalidated.
+const TOOL_SCHEMA_CACHE_KEY: &str = "__tool_schema_cache";
+
+/// Timeout (ms) for fetching session messages from the session capsule.
+const SESSION_FETCH_TIMEOUT_MS: u64 = 5000;
+
+/// Collect tool schemas from all capsules via `trigger_hook`.
+///
+/// Checks `__tool_schema_cache` in KV first. On cache miss, it uses the
+/// kernel's `trigger_hook` host function to fan out a `tool.v1.request.describe`
+/// request to all capsules with matching interceptors. This works for both WASM
+/// and MCP capsules.
+///
+/// The collected tool schemas are deduplicated by name and cached in KV for
+/// subsequent calls.
+fn collect_tool_schemas() -> Vec<serde_json::Value> {
+    // Check KV cache first.
+    if let Ok(cached) = kv::get_json::<Vec<serde_json::Value>>(TOOL_SCHEMA_CACHE_KEY)
+        && !cached.is_empty()
+    {
+        let _ = log::log(
+            "debug",
+            format!("Returning {} cached tool schemas", cached.len()),
+        );
+        return cached;
+    }
+
+    // Use trigger_hook to fan out to all capsules with matching interceptors.
+    // trigger_hook calls invoke_interceptor on each capsule and collects
+    // the JSON responses into an array.
+    let request = serde_json::json!({
+        "hook": "tool.v1.request.describe",
+        "payload": {},
+    });
+
+    let request_bytes = match serde_json::to_vec(&request) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = log::log(
+                "error",
+                format!("Failed to serialize trigger_hook request: {e}"),
+            );
+            return Vec::new();
+        }
+    };
+
+    let response_bytes = match hooks::trigger(&request_bytes) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = log::log("error", format!("trigger_hook failed: {e}"));
+            return Vec::new();
+        }
+    };
+
+    // trigger_hook returns a JSON array of responses from each capsule.
+    // Each response is the JSON value returned by that capsule's interceptor.
+    // For WASM tool capsules: { "tools": [...] } (from SDK macro tool_describe)
+    // For MCP capsules: { "tools": [...] } (from astrid_bridge.mjs tool_describe)
+    let responses: Vec<serde_json::Value> = match serde_json::from_slice(&response_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = log::log(
+                "warn",
+                format!("Failed to parse trigger_hook response: {e}"),
+            );
+            Vec::new()
+        }
+    };
+
+    let mut all_tools: Vec<serde_json::Value> = Vec::new();
+    for response in &responses {
+        if let Some(tools) = response.get("tools").and_then(|t| t.as_array()) {
+            all_tools.extend(tools.iter().cloned());
+        }
+    }
+
+    // Deduplicate by tool name (first occurrence wins).
+    let mut seen = std::collections::HashSet::new();
+    all_tools.retain(|tool| {
+        if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
+            seen.insert(name.to_string())
+        } else {
+            true
+        }
+    });
+
+    let _ = log::log(
+        "info",
+        format!(
+            "Collected {} tool schemas via trigger_hook",
+            all_tools.len()
+        ),
+    );
+
+    // Cache the result for subsequent calls.
+    if let Err(e) = kv::set_json(TOOL_SCHEMA_CACHE_KEY, &all_tools) {
+        let _ = log::log("warn", format!("Failed to cache tool schemas in KV: {e}"));
+    }
+
+    all_tools
+}
+
+/// Fetch session conversation history from the session capsule via IPC.
+///
+/// Uses a per-request scoped reply topic to prevent cross-instance response
+/// contamination under concurrent load. Returns an empty vec on timeout or error.
+fn fetch_session_messages(session_id: &str) -> Vec<serde_json::Value> {
+    let correlation_id = Uuid::new_v4().to_string();
+    let reply_topic = format!("session.v1.response.get_messages.{correlation_id}");
+
+    // Subscribe BEFORE publishing to avoid delivery race.
+    let handle = match ipc::subscribe(&reply_topic) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = log::log(
+                "error",
+                format!("Failed to subscribe to session response topic: {e}"),
+            );
+            return Vec::new();
+        }
+    };
+
+    let request = serde_json::json!({
+        "correlation_id": correlation_id,
+        "session_id": session_id,
+    });
+
+    if let Err(e) = ipc::publish_json("session.v1.request.get_messages", &request) {
+        let _ = log::log(
+            "error",
+            format!("Failed to publish session.v1.request.get_messages: {e}"),
+        );
+        let _ = ipc::unsubscribe(&handle);
+        return Vec::new();
+    }
+
+    let result = (|| -> Vec<serde_json::Value> {
+        let response_bytes = match ipc::recv_bytes(&handle, SESSION_FETCH_TIMEOUT_MS) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let _ = log::log(
+                    "warn",
+                    format!("Session response timed out after {SESSION_FETCH_TIMEOUT_MS}ms: {e}"),
+                );
+                return Vec::new();
+            }
+        };
+
+        let envelope: serde_json::Value = match serde_json::from_slice(&response_bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = log::log("warn", format!("Failed to parse session response: {e}"));
+                return Vec::new();
+            }
+        };
+
+        // Navigate the IPC drain envelope: envelope.messages[*].payload.data.messages
+        let ipc_messages = match envelope.get("messages").and_then(|m| m.as_array()) {
+            Some(arr) => arr,
+            None => return Vec::new(),
+        };
+
+        if ipc_messages.is_empty() {
+            let _ = log::log(
+                "warn",
+                "Session capsule responded but the message list was empty.",
+            );
+            return Vec::new();
+        }
+
+        // The topic is scoped to this request, so iterate to find the first
+        // message with a Custom payload (payload.data).
+        for msg in ipc_messages {
+            let data = match msg.get("payload").and_then(|p| p.get("data")) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            if let Some(messages) = data.get("messages") {
+                match serde_json::from_value::<Vec<serde_json::Value>>(messages.clone()) {
+                    Ok(msgs) => return msgs,
+                    Err(e) => {
+                        let _ = log::log(
+                            "warn",
+                            format!("Failed to parse session messages array: {e}"),
+                        );
+                    }
+                }
+            }
+        }
+
+        Vec::new()
+    })();
+
+    let _ = ipc::unsubscribe(&handle);
+
+    let _ = log::log(
+        "debug",
+        format!(
+            "Fetched {} session messages for session {session_id}",
+            result.len()
+        ),
+    );
+
+    result
+}
+
+/// Invalidate the cached tool schemas in KV.
+///
+/// Called when capsules are loaded or unloaded to ensure the next
+/// `collect_tool_schemas()` call fetches fresh data from all capsules.
+fn invalidate_tool_cache() {
+    let _ = kv::delete(TOOL_SCHEMA_CACHE_KEY);
+    let _ = log::log("info", "Tool schema cache invalidated");
+}
+
 /// Handle a single `prompt_builder.v1.assemble` request.
 fn handle_assemble(payload: &serde_json::Value, config: &Config) {
     // Extract from Custom payload envelope or direct.
@@ -454,12 +678,24 @@ fn handle_assemble(payload: &serde_json::Value, config: &Config) {
     // Merge all responses into the final prompt.
     let merged = merge_hook_responses(&request.system_prompt, &hook_responses);
 
+    // Collect tool schemas (cached after first call).
+    let tools = collect_tool_schemas();
+
+    // Fetch session messages if a session_id was provided.
+    let messages = request
+        .session_id
+        .as_deref()
+        .map(fetch_session_messages)
+        .unwrap_or_default();
+
     // Publish the assembled result.
     let response = AssembleResponse {
         system_prompt: merged.system_prompt.clone(),
         user_context_prefix: merged.user_context_prefix.clone(),
         request_id: request.request_id.clone(),
         session_id: request.session_id.clone(),
+        tools,
+        messages,
     };
 
     let _ = ipc::publish_json("prompt_builder.v1.response.assemble", &response);
@@ -518,6 +754,8 @@ fn handle_poll_envelope(poll_bytes: &[u8], config: &Config) {
             && let Some(payload) = msg.get("payload")
         {
             handle_assemble(payload, config);
+        } else if topic == "prompt_builder.v1.invalidate_tool_cache" {
+            invalidate_tool_cache();
         }
     }
 }

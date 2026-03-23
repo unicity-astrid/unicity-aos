@@ -17,6 +17,7 @@ ipc_publish = [
     "prompt_builder.v1.response.*",
     "prompt_builder.v1.hook.before_build",
     "prompt_builder.v1.hook.after_build",
+    "session.v1.request.get_messages",
 ]
 ipc_subscribe = [
     # 3-segment wildcard (covers prompt_builder.v1.{any_single_segment})
@@ -25,4 +26,5 @@ ipc_subscribe = [
     "prompt_builder.v1.hook.before_build",
     "prompt_builder.v1.hook.after_build",
     "prompt_builder.v1.hook_response.*",
+    "session.v1.response.get_messages.*",
 ]
