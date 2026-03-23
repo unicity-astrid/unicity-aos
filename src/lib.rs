@@ -416,7 +416,7 @@ impl ShellTools {
         let handle = process::spawn_background("bash", &["-c", trimmed])?;
         Ok(format!(
             "Background process started with id: {}. Use read_process_logs to check output and kill_process to stop it.",
-            handle.id
+            handle.id()
         ))
     }
 
