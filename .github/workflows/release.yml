@@ -21,7 +21,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94"
           targets: wasm32-wasip1
 
       - uses: Swatinem/rust-cache@v2
@@ -40,8 +39,17 @@ jobs:
           cp "$WASM_FILE" "$BASENAME"
           echo "WASM_ASSET=$BASENAME" >> "$GITHUB_ENV"
 
+          # Generate BLAKE3 hash for integrity verification
+          cargo install b3sum --quiet 2>/dev/null || true
+          if command -v b3sum &>/dev/null; then
+            b3sum "$BASENAME" > "${BASENAME}.blake3"
+            echo "HASH_ASSET=${BASENAME}.blake3" >> "$GITHUB_ENV"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.WASM_ASSET }}
+          files: |
+            ${{ env.WASM_ASSET }}
+            ${{ env.HASH_ASSET }}
           generate_release_notes: true
