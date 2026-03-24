@@ -2,7 +2,7 @@
 name = "astrid-capsule-shell"
 version = "0.1.0"
 description = "Core shell execution tools for the Astrid OS"
-authors = ["Astrid Core Team"]
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.1.0"
 
 [[component]]
