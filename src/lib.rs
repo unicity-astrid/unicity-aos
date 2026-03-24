@@ -61,6 +61,28 @@ impl OpenAICompatProvider {
         }
         Ok(())
     }
+
+    /// Returns provider metadata for IPC-based provider discovery.
+    ///
+    /// Called by the registry capsule via `hooks::trigger("llm.v1.request.describe")`.
+    /// Returns the provider's model ID, capabilities, and IPC routing topics.
+    #[astrid::interceptor("llm_describe")]
+    pub fn llm_describe(&self, _payload: serde_json::Value) -> Result<serde_json::Value, SysError> {
+        let model = env::var("model").unwrap_or_else(|_| "unknown".into());
+        let max_output = env::var("max_output_tokens")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+        Ok(serde_json::json!({
+            "providers": [{
+                "id": "openai-compat",
+                "description": format!("OpenAI-compatible provider (default model: {model})"),
+                "capabilities": ["text", "vision", "tools"],
+                "request_topic": "llm.v1.request.generate.openai-compat",
+                "stream_topic": "llm.v1.stream.openai-compat",
+                "max_output_tokens": max_output,
+            }]
+        }))
+    }
 }
 
 impl OpenAICompatProvider {
@@ -103,6 +125,26 @@ impl OpenAICompatProvider {
             "stream": true,
             "stream_options": { "include_usage": true },
         });
+
+        // Apply default generation parameters from env (only if not already
+        // specified in the request — env vars are defaults, not overrides).
+        let has_max_tokens = request_body.get("max_tokens").is_some_and(|v| !v.is_null());
+        if !has_max_tokens
+            && let Ok(max_tokens) = env::var("max_output_tokens")
+            && let Ok(n) = max_tokens.parse::<u64>()
+            && n > 0
+        {
+            request_body["max_tokens"] = serde_json::json!(n);
+        }
+        let has_temp = request_body
+            .get("temperature")
+            .is_some_and(|v| !v.is_null());
+        if !has_temp
+            && let Ok(temp) = env::var("temperature")
+            && let Ok(t) = temp.parse::<f64>()
+        {
+            request_body["temperature"] = serde_json::json!(t);
+        }
 
         if !tools.is_empty() {
             let api_tools: Vec<Value> = tools
