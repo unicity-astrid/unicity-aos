@@ -69,9 +69,14 @@ impl OpenAICompatProvider {
     #[astrid::interceptor("llm_describe")]
     pub fn llm_describe(&self, _payload: serde_json::Value) -> Result<serde_json::Value, SysError> {
         let model = env::var("model").unwrap_or_else(|_| "unknown".into());
+        let context_window = env::var("context_window")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(128_000);
         let max_output = env::var("max_output_tokens")
             .ok()
-            .and_then(|v| v.parse::<u64>().ok());
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(8_192);
         Ok(serde_json::json!({
             "providers": [{
                 "id": "openai-compat",
@@ -79,6 +84,7 @@ impl OpenAICompatProvider {
                 "capabilities": ["text", "vision", "tools"],
                 "request_topic": "llm.v1.request.generate.openai-compat",
                 "stream_topic": "llm.v1.stream.openai-compat",
+                "context_window": context_window,
                 "max_output_tokens": max_output,
             }]
         }))

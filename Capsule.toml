@@ -22,8 +22,9 @@ ipc_publish = ["llm.v1.stream.openai-compat", "llm.v1.response.describe.*"]
 api_key = { type = "secret", request = "Enter your API key for the OpenAI-compatible provider", placeholder = "sk-..." }
 base_url = { type = "string", request = "Enter the API base URL", default = "https://api.openai.com", placeholder = "https://api.openai.com" }
 model = { type = "string", request = "Enter the default model ID", default = "gpt-5.4", placeholder = "gpt-5.4" }
+context_window = { type = "integer", request = "Enter the model's context window size (tokens)", default = "128000", placeholder = "128000" }
+max_output_tokens = { type = "integer", request = "Enter the max output tokens (applied to HTTP request)", default = "8192", placeholder = "8192" }
 temperature = { type = "string", request = "Enter the default temperature (0.0-2.0, blank = provider default)", placeholder = "0.7" }
-max_output_tokens = { type = "integer", request = "Enter the default max output tokens (applied to HTTP request)", default = "128000", placeholder = "128000" }
 
 [[interceptor]]
 event = "llm.v1.request.describe"
