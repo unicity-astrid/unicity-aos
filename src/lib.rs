@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 
 /// Default agent name when no spark config exists.
 const DEFAULT_CALLSIGN: &str = "Astrid";
+
+/// VFS path to the spark identity configuration file.
+const SPARK_CONFIG_PATH: &str = "home://.config/spark.toml";
 /// Default agent class/role.
 const DEFAULT_CLASS: &str = "a secure coding assistant";
 
@@ -143,6 +146,30 @@ impl IdentityBuilder {
              - Platform: astrid-os"
         );
 
+        // Auto-detect an existing spark.toml when KV state says not yet onboarded.
+        // This makes the capsule resilient to KV resets: if the file exists and
+        // parses successfully we treat the user as onboarded without requiring
+        // an explicit `identity-import`.
+        if !self.onboarded
+            && let Ok(content) = fs::read_to_string(SPARK_CONFIG_PATH)
+        {
+            // Parse directly instead of going through parse_spark_toml (which
+            // falls back to a default with a non-empty callsign on error).
+            match toml::from_str::<SparkConfig>(&content) {
+                Ok(config) if !config.callsign.is_empty() => {
+                    self.spark = config;
+                    self.onboarded = true;
+                }
+                Ok(_) => {} // Empty callsign — treat as stub, don't onboard.
+                Err(e) => {
+                    let _ = log::log(
+                        "warn",
+                        format!("Failed to parse {SPARK_CONFIG_PATH} during auto-detect: {e}"),
+                    );
+                }
+            }
+        }
+
         if self.onboarded {
             // Prepend the established identity preamble.
             let opening = self.spark.build_preamble();
@@ -171,7 +198,7 @@ impl IdentityBuilder {
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
-        let spark_path = "home://.config/spark.toml";
+        let spark_path = SPARK_CONFIG_PATH;
 
         match text.trim() {
             "identity-export" => {
