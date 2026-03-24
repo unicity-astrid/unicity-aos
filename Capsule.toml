@@ -2,7 +2,7 @@
 name = "astrid-capsule-openai-compat"
 version = "0.1.0"
 description = "OpenAI-compatible LLM Provider"
-authors = ["Astrid Core Team"]
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.1.0"
 
 [[component]]
