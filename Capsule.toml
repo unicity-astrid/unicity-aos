@@ -11,12 +11,19 @@ file = "astrid_capsule_openai_compat.wasm"
 type = "executable"
 capabilities = { net = ["*"] }
 
-[exports.astrid]
-llm = "1.0.0"
+[exports]
+"astrid:llm" = "1.0.0"
+
+[publish]
+"llm.v1.stream.openai-compat" = { wit = "@unicity-astrid/wit/llm/stream-event" }
+"llm.v1.response.describe.*" = { wit = "@unicity-astrid/wit/llm/describe-response" }
+
+[subscribe]
+"llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request", handler = "llm_describe" }
+"llm.v1.request.generate.openai-compat" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
 
 [capabilities]
 net = ["*"]
-ipc_publish = ["llm.v1.stream.openai-compat", "llm.v1.response.describe.*"]
 
 [env]
 api_key = { type = "secret", request = "Enter your API key for the OpenAI-compatible provider", placeholder = "sk-..." }
@@ -25,11 +32,3 @@ model = { type = "string", request = "Enter the default model ID", default = "gp
 context_window = { type = "integer", request = "Enter the model's context window size (tokens)", default = "128000", placeholder = "128000" }
 max_output_tokens = { type = "integer", request = "Enter the max output tokens (applied to HTTP request)", default = "8192", placeholder = "8192" }
 temperature = { type = "string", request = "Enter the default temperature (0.0-2.0, blank = provider default)", placeholder = "0.7" }
-
-[[interceptor]]
-event = "llm.v1.request.describe"
-action = "llm_describe"
-
-[[interceptor]]
-event = "llm.v1.request.generate.openai-compat"
-action = "handle_llm_request"
