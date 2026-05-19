@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use astrid_sdk::prelude::*;
 
 // Use the shared contract type — generated from WIT, serde-enabled.
-use astrid_sdk::contracts::ProviderEntry;
+use astrid_sdk::contracts::registry::ProviderEntry;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
