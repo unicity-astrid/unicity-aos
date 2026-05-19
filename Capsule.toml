@@ -12,25 +12,14 @@ type = "executable"
 
 [capabilities]
 host_process = ["bash", "sh", "zsh"]
-ipc_publish = ["tool.v1.execute.*.result", "tool.v1.response.describe.*"]
-ipc_subscribe = ["tool.v1.execute.run_shell_command", "tool.v1.execute.spawn_background_process", "tool.v1.execute.read_process_logs", "tool.v1.execute.kill_process", "tool.v1.request.describe"]
 
-[[interceptor]]
-event = "tool.v1.execute.run_shell_command"
-action = "tool_execute_run_shell_command"
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
 
-[[interceptor]]
-event = "tool.v1.execute.spawn_background_process"
-action = "tool_execute_spawn_background_process"
-
-[[interceptor]]
-event = "tool.v1.execute.read_process_logs"
-action = "tool_execute_read_process_logs"
-
-[[interceptor]]
-event = "tool.v1.execute.kill_process"
-action = "tool_execute_kill_process"
-
-[[interceptor]]
-event = "tool.v1.request.describe"
-action = "tool_describe"
+[subscribe]
+"tool.v1.execute.run_shell_command" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_run_shell_command" }
+"tool.v1.execute.spawn_background_process" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_spawn_background_process" }
+"tool.v1.execute.read_process_logs" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_read_process_logs" }
+"tool.v1.execute.kill_process" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_kill_process" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
