@@ -10,18 +10,13 @@ id = "router"
 file = "astrid_capsule_router.wasm"
 type = "executable"
 
-[exports.astrid]
-tool = "1.0.0"
+[exports]
+"astrid:tool" = "1.0.0"
 
-[capabilities]
-ipc_publish = ["tool.v1.execute.*", "tool.v1.execute.result"]
+[publish]
+"tool.v1.execute.*" = { wit = "@unicity-astrid/wit/types/tool-call" }
+"tool.v1.execute.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
 
-# Tool execution requests from the react loop
-[[interceptor]]
-event = "tool.v1.request.execute"
-action = "handle_execute_request"
-
-# Tool results from tool capsules (wildcard match on tool.v1.execute.*.result)
-[[interceptor]]
-event = "tool.v1.execute.*.result"
-action = "handle_execute_result"
+[subscribe]
+"tool.v1.request.execute" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "handle_execute_request" }
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result", handler = "handle_execute_result" }
