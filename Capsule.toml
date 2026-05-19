@@ -11,39 +11,20 @@ file = "astrid_capsule_identity.wasm"
 type = "executable"
 capabilities = { fs_read = ["home://"], fs_write = ["home://"] }
 
-[exports.astrid]
-spark = "1.0.0"
+[exports]
+"astrid:spark" = "1.0.0"
 
-[capabilities]
-ipc_publish = ["spark.v1.response.ready", "agent.v1.response", "tool.v1.execute.*.result", "tool.v1.response.describe.*"]
-ipc_subscribe = ["tool.v1.execute.save_identity", "tool.v1.request.describe"]
+[publish]
+"spark.v1.response.ready" = { wit = "@unicity-astrid/wit/spark/build-response" }
+"agent.v1.response" = { wit = "@unicity-astrid/wit/agent/response" }
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
 
-[[interceptor]]
-event = "spark.v1.request.build"
-action = "handle_build_request"
-
-[[interceptor]]
-event = "cli.v1.command.execute"
-action = "handle_command"
-
-[[interceptor]]
-event = "tool.v1.execute.save_identity"
-action = "tool_execute_save_identity"
-
-[[interceptor]]
-event = "tool.v1.request.describe"
-action = "tool_describe"
-
-[[topic]]
-name = "spark.v1.response.ready"
-direction = "publish"
-description = "Published when the system prompt has been built"
-wit_type = "build-response"
-
-[[topic]]
-name = "agent.v1.response"
-direction = "publish"
-description = "Published to send command results back to the user"
+[subscribe]
+"tool.v1.execute.save_identity" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_save_identity" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
+"spark.v1.request.build" = { wit = "@unicity-astrid/wit/spark/build-request", handler = "handle_build_request" }
+"cli.v1.command.execute" = { wit = "@unicity-astrid/wit/system/command-execute", handler = "handle_command" }
 
 [[command]]
 name = "identity-export"
