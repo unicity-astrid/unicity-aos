@@ -13,18 +13,11 @@ type = "executable"
 # and the capsule scans both CWD and home trees under that path.
 capabilities = { fs_read = ["cwd://", "home://"] }
 
-[capabilities]
-ipc_publish = ["tool.v1.execute.*.result", "tool.v1.response.describe.*"]
-ipc_subscribe = ["tool.v1.execute.list_skills", "tool.v1.execute.read_skill", "tool.v1.request.describe"]
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
 
-[[interceptor]]
-event = "tool.v1.execute.list_skills"
-action = "tool_execute_list_skills"
-
-[[interceptor]]
-event = "tool.v1.execute.read_skill"
-action = "tool_execute_read_skill"
-
-[[interceptor]]
-event = "tool.v1.request.describe"
-action = "tool_describe"
+[subscribe]
+"tool.v1.execute.list_skills" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_list_skills" }
+"tool.v1.execute.read_skill" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_read_skill" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
