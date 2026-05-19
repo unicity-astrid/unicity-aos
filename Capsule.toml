@@ -10,36 +10,28 @@ id = "context-engine"
 file = "astrid_capsule_context_engine.wasm"
 type = "executable"
 
-[exports.astrid]
-context = "1.0.0"
+[exports]
+"astrid:context" = "1.0.0"
 
-[[topic]]
-name = "context_engine.v1.response.compact"
-description = "Compacted messages and stats"
+[publish]
+# Compacted messages and stats.
+"context_engine.v1.response.compact" = { wit = "@unicity-astrid/wit/context/compact-response" }
+# Estimated token count.
+"context_engine.v1.response.estimate_tokens" = { wit = "@unicity-astrid/wit/context/estimate-response" }
+# Interceptor hook: plugins can mark messages as protected or skip compaction.
+"context_engine.v1.hook.before_compaction" = { wit = "@unicity-astrid/wit/context/before-compaction-hook" }
+# Fire-and-forget notification with compaction stats.
+"context_engine.v1.hook.after_compaction" = { wit = "@unicity-astrid/wit/context/after-compaction-event" }
 
-[[topic]]
-name = "context_engine.v1.response.estimate_tokens"
-description = "Estimated token count"
-
-[[topic]]
-name = "context_engine.v1.hook.before_compaction"
-description = "Interceptor hook: plugins can mark messages as protected or skip compaction"
-
-[[topic]]
-name = "context_engine.v1.hook.after_compaction"
-description = "Fire-and-forget notification with compaction stats"
-
-[capabilities]
-ipc_publish = [
-    "context_engine.v1.response.*",
-    "context_engine.v1.hook.before_compaction",
-    "context_engine.v1.hook.after_compaction",
-]
-ipc_subscribe = [
-    # 3-segment wildcard (covers context_engine.v1.{any_single_segment})
-    "context_engine.v1.*",
-    # 4-segment exact (topic_matches requires equal segment count)
-    "context_engine.v1.hook.before_compaction",
-    "context_engine.v1.hook.after_compaction",
-    "context_engine.v1.hook_response.*",
-]
+[subscribe]
+# Compact a session's messages within a token budget.
+"context_engine.v1.compact" = { wit = "@unicity-astrid/wit/context/compact-request" }
+# Estimate token count for a list of messages.
+"context_engine.v1.estimate_tokens" = { wit = "@unicity-astrid/wit/context/estimate-request" }
+# Self-subscription so plugin capsules exporting an interceptor on this
+# topic can be invoked.
+"context_engine.v1.hook.before_compaction" = { wit = "@unicity-astrid/wit/context/before-compaction-hook" }
+# Self-subscription for the after-compaction event.
+"context_engine.v1.hook.after_compaction" = { wit = "@unicity-astrid/wit/context/after-compaction-event" }
+# Per-plugin response topics (genuine fan-out: same schema, many publishers).
+"context_engine.v1.hook_response.*" = { wit = "@unicity-astrid/wit/context/before-compaction-hook-response" }
