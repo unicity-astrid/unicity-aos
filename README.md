@@ -23,8 +23,7 @@ Headers are passed unfiltered to the host. The host's SSRF layer blocks private/
 ## Development
 
 ```bash
-rustup target add wasm32-wasip2
-cargo build --target wasm32-wasip2 --release
+cargo build --target wasm32-unknown-unknown --release
 cargo test
 ```
 
