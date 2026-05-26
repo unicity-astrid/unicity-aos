@@ -30,12 +30,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94"
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        run: cargo check --target wasm32-wasip1
+        run: cargo check --target wasm32-unknown-unknown
 
   fmt:
     name: Format
@@ -63,12 +63,12 @@ jobs:
         with:
           toolchain: "1.94"
           components: clippy
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --target wasm32-wasip1 -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
 
   build:
     name: Build WASM
@@ -80,16 +80,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.94"
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release WASM
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo build --release --target wasm32-unknown-unknown
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: capsule-wasm
-          path: target/wasm32-wasip1/release/*.wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
           if-no-files-found: error
