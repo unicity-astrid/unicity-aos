@@ -2,6 +2,7 @@
 #![deny(clippy::all)]
 #![deny(unreachable_pub)]
 
+use astrid_sdk::astrid_sys::astrid::fs::host as wit_fs;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
 use serde::{Deserialize, Serialize};
@@ -12,10 +13,9 @@ const HOME_SCHEME: &str = "home://";
 #[derive(Default)]
 pub struct SkillsLoader;
 
-// Note: the host readdir returns a JSON array of entry name strings.
-// We parse them directly rather than using a struct with `is_dir`,
-// and attempt to read SKILL.md from each entry — non-directories
-// simply fail the read and are skipped.
+// Note: the host readdir returns a list of entry name strings (no per-
+// entry metadata). We attempt to read SKILL.md from each entry —
+// non-directories simply fail the read and are skipped.
 
 #[derive(Debug, PartialEq)]
 struct SkillFrontmatter {
@@ -88,12 +88,12 @@ impl SkillsLoader {
 
         // Try workspace first — only fall back to home if the file is absent.
         // Permission errors or other I/O failures are surfaced immediately.
-        match fs::read_to_string(&skill_path) {
+        match read_file_string(&skill_path) {
             Ok(content) => return Ok(content),
             Err(e) => {
-                if !is_not_found_error(&e) {
+                if !matches!(e, wit_fs::ErrorCode::NotFound) {
                     return Err(SysError::ApiError(format!(
-                        "Failed to read skill '{}' from workspace: {}",
+                        "Failed to read skill '{}' from workspace: {:?}",
                         args.skill_id, e
                     )));
                 }
@@ -103,10 +103,10 @@ impl SkillsLoader {
         // Workspace file absent — fall back to home
         let home_skill_path =
             resolve_skill_path(&format!("{HOME_SCHEME}{bare_dir}"), &args.skill_id)?;
-        match fs::read_to_string(&home_skill_path) {
+        match read_file_string(&home_skill_path) {
             Ok(content) => Ok(content),
             Err(e) => {
-                log::warn(format!("failed to read skill '{}': {}", args.skill_id, e));
+                log::warn(format!("failed to read skill '{}': {:?}", args.skill_id, e));
                 Err(SysError::ApiError(format!(
                     "Skill '{}' could not be read",
                     args.skill_id
@@ -116,14 +116,16 @@ impl SkillsLoader {
     }
 }
 
-/// Returns true if the error string looks like a "file not found" error.
+/// Read a file as UTF-8 via the typed WIT fs host fn.
 ///
-/// Checks for `VfsError::NotFound` ("not found"), `std::io::ErrorKind::NotFound`
-/// ("no such file"), and the IO error wrapper ("io error") to handle locale
-/// variants where the OS error string may not be in English.
-fn is_not_found_error(err: &SysError) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("not found") || msg.contains("no such file") || msg.contains("io error")
+/// Returns `wit_fs::ErrorCode` directly so callers can pattern-match on
+/// `NotFound` for control flow. UTF-8 decode failures are normalised to
+/// `ErrorCode::Unknown(...)`. Bypassing `astrid_sdk::fs::read_to_string`
+/// preserves the typed error variant the SDK collapses into a `Debug`-
+/// formatted string at the wrapper boundary.
+fn read_file_string(path: &str) -> Result<String, wit_fs::ErrorCode> {
+    let bytes = wit_fs::read_file(path)?;
+    String::from_utf8(bytes).map_err(|e| wit_fs::ErrorCode::Unknown(e.to_string()))
 }
 
 /// Returns true if `name` is a safe single path component (no traversal).
@@ -188,23 +190,21 @@ fn collect_skills_from(
     skills: &mut Vec<SkillInfo>,
     seen_ids: &mut std::collections::HashSet<String>,
 ) {
-    let entries = match fs::read_dir(dir) {
-        Ok(rd) => rd,
+    let names = match wit_fs::fs_readdir(dir) {
+        Ok(names) => names,
+        Err(wit_fs::ErrorCode::NotFound) => return,
         Err(e) => {
-            if !is_not_found_error(&e) {
-                log::warn(format!("readdir failed for {dir}: {e}"));
-            }
+            log::warn(format!("readdir failed for {dir}: {e:?}"));
             return;
         }
     };
 
-    for entry in entries {
-        let name = entry.file_name().to_string();
+    for name in names {
         if !is_safe_name(&name) || seen_ids.contains(&name) {
             continue;
         }
         let skill_path = format!("{}/{}/SKILL.md", dir, name);
-        if let Ok(content) = fs::read_to_string(&skill_path) {
+        if let Ok(content) = read_file_string(&skill_path) {
             // Reserve the ID when SKILL.md exists — even if frontmatter is
             // invalid — so a broken workspace skill blocks the home version
             // (workspace wins). Directories without SKILL.md are not skills.

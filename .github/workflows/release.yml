@@ -21,16 +21,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release WASM
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo build --release --target wasm32-unknown-unknown
 
       - name: Prepare release asset
         run: |
-          WASM_FILE=$(find target/wasm32-wasip1/release -maxdepth 1 -name '*.wasm' -not -name '*.d' | head -1)
+          WASM_FILE=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' -not -name '*.d' | head -1)
           if [ -z "$WASM_FILE" ]; then
             echo "Error: No .wasm file found"
             exit 1
