@@ -1,2 +1,8 @@
 [build]
 target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+# Activates astrid-sys's custom getrandom backend that routes to
+# `astrid:sys.random-bytes`. Without this, uuid v4 / HashMap RNG seed
+# init fail to link on `wasm32-unknown-unknown`.
+rustflags = ["--cfg=getrandom_backend=\"custom\""]

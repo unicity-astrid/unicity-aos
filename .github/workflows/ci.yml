@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   check:
@@ -19,7 +18,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -28,14 +27,14 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --target wasm32-wasip1 -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
 
       - name: Build WASM
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo build --release --target wasm32-unknown-unknown
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: capsule-wasm
-          path: target/wasm32-wasip1/release/*.wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
           if-no-files-found: error

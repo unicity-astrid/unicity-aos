@@ -196,8 +196,18 @@ impl ContextEngine {
             config.hook_timeout_ms, config.keep_recent
         ));
 
-        let sub =
-            ipc::subscribe("context_engine.v1.*").map_err(|e| SysError::ApiError(e.to_string()))?;
+        // Subscribe to the two request topics this capsule serves. The
+        // pre-refactor wildcard (`context_engine.v1.*`) is not legal
+        // under the kernel ACL — the manifest's [subscribe] declares
+        // specific exact-topic permissions, and a wildcard request
+        // exceeds them. The dispatcher reads `result.messages[].topic`
+        // and routes on it; receiving both topics on one Subscription
+        // (which the wildcard enabled) was a convenience, not a
+        // requirement.
+        let compact_sub = ipc::subscribe("context_engine.v1.compact")
+            .map_err(|e| SysError::ApiError(e.to_string()))?;
+        let estimate_sub = ipc::subscribe("context_engine.v1.estimate_tokens")
+            .map_err(|e| SysError::ApiError(e.to_string()))?;
 
         // Subscribe to our own hook topics so we can drain them.
         let hook_sub = ipc::subscribe("context_engine.v1.hook.before_compaction")
@@ -212,24 +222,26 @@ impl ContextEngine {
         log::info("Context Engine capsule ready");
 
         loop {
-            // Block until a message arrives (up to 60s), eliminating busy-spin polling.
-            match ipc::recv(&sub, 60_000) {
-                Ok(result) => {
-                    dispatch_poll_result(&result, &config);
-                }
-                Err(_) => break,
+            // Block briefly on each request channel, then drain the
+            // hook fan-out channels to prevent backpressure. The
+            // pre-refactor single-wildcard subscription is fanned out
+            // here into two short polls so cancellation latency stays
+            // bounded by `HOOK_POLL_INTERVAL_MS * 2`.
+            const HOOK_POLL_INTERVAL_MS: u64 = 1_000;
+            // Timeout is normal — fall through. Real errors surface
+            // when recv returns on a closed subscription, in which
+            // case the loop exits when the host stops invoking run.
+            if let Ok(result) = compact_sub.recv(HOOK_POLL_INTERVAL_MS) {
+                dispatch_poll_result(&result, &config);
+            }
+            if let Ok(result) = estimate_sub.recv(HOOK_POLL_INTERVAL_MS) {
+                dispatch_poll_result(&result, &config);
             }
 
             // Drain hook topics to prevent backpressure.
-            let _ = ipc::poll(&hook_sub);
-            let _ = ipc::poll(&after_sub);
+            let _ = hook_sub.poll();
+            let _ = after_sub.poll();
         }
-
-        let _ = ipc::unsubscribe(&sub);
-        let _ = ipc::unsubscribe(&hook_sub);
-        let _ = ipc::unsubscribe(&after_sub);
-
-        Ok(())
     }
 }
 
@@ -407,12 +419,13 @@ fn fire_before_compaction(
     message_count: u32,
     config: &Config,
 ) -> MergedBeforeCompaction {
+    // `SystemTime::now()` panics on `wasm32-unknown-unknown`. Use the
+    // monotonic host clock (which works) plus a per-capsule atomic
+    // counter to produce a unique-enough request_id for the hook
+    // fan-out reply-topic suffix.
     let request_id = format!(
         "compact-{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
+        astrid_sdk::time::monotonic().as_nanos(),
         REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
 
@@ -443,7 +456,7 @@ fn fire_before_compaction(
         log::error(format!(
             "Failed to publish context_engine.v1.hook.before_compaction event: {e}"
         ));
-        let _ = ipc::unsubscribe(&sub);
+        // `sub` drops here, releasing the subscription.
         return MergedBeforeCompaction {
             skip: false,
             protected_ids: HashSet::new(),
@@ -451,20 +464,23 @@ fn fire_before_compaction(
     }
 
     // Block-wait for hook responses within the configured timeout.
+    // `std::time::Instant::now()` panics on `wasm32-unknown-unknown`;
+    // use the monotonic host clock via `astrid_sdk::time` instead.
     let mut responses: Vec<BeforeCompactionHookResponse> = Vec::new();
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(config.hook_timeout_ms);
+    let start = astrid_sdk::time::monotonic();
+    let timeout_dur = std::time::Duration::from_millis(config.hook_timeout_ms);
 
-    while std::time::Instant::now() < deadline && responses.len() < MAX_HOOK_RESPONSES {
-        let remaining_ms = deadline
-            .saturating_duration_since(std::time::Instant::now())
-            .as_millis();
+    while astrid_sdk::time::monotonic().saturating_sub(start) < timeout_dur
+        && responses.len() < MAX_HOOK_RESPONSES
+    {
+        let elapsed = astrid_sdk::time::monotonic().saturating_sub(start);
+        let remaining_ms = timeout_dur.saturating_sub(elapsed).as_millis();
         if remaining_ms == 0 {
             break;
         }
         let timeout = u64::try_from(remaining_ms).unwrap_or(u64::MAX);
 
-        match ipc::recv(&sub, timeout) {
+        match sub.recv(timeout) {
             Ok(result) => {
                 responses.extend(parse_hook_responses(&result));
             }
@@ -472,7 +488,7 @@ fn fire_before_compaction(
         }
     }
 
-    let _ = ipc::unsubscribe(&sub);
+    // Subscription drops at scope exit; no manual unsubscribe needed.
 
     if !responses.is_empty() {
         log::info(format!(

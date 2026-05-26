@@ -19,6 +19,7 @@ fn make_poll_result(messages: Vec<(&str, serde_json::Value)>) -> ipc::PollResult
                 topic: topic.to_string(),
                 payload: serde_json::to_string(&payload).unwrap(),
                 source_id: "test".to_string(),
+                principal: ipc::PrincipalAttribution::System,
             })
             .collect(),
         dropped: 0,
