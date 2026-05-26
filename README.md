@@ -54,8 +54,8 @@ The capsule reads these environment variables during `astrid init`:
 ## Development
 
 ```bash
-rustup target add wasm32-wasip1
-cargo build --target wasm32-wasip1 --release
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
 ```
 
 ## License

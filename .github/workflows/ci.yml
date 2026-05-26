@@ -8,7 +8,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # The `.cargo/config.toml` rustflag for getrandom's custom backend is
+  # inconsistently picked up in CI (other shape-B capsules happen to
+  # work, this one doesn't — likely a cargo-config-vs-cache interaction).
+  # Setting RUSTFLAGS at workflow-env level is highest-priority and
+  # bypasses the issue. Mirror the config.toml content so the workspace
+  # build sees the same flags either way.
+  RUSTFLAGS: --cfg=getrandom_backend="custom"
 
 jobs:
   check:
@@ -19,8 +25,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-unknown-unknown
           components: clippy, rustfmt
+
+      # Bisect-confirmed (commit 0b9e800): without this, `cargo clippy`
+      # fails with `can't find crate for 'std'` for wasm32-unknown-unknown.
+      # dtolnay's `targets:` input installs the target for its `toolchain:`
+      # channel (stable, currently 1.95.0); rust-toolchain.toml then pins
+      # cargo to exact 1.94.0, and the auto-install of `targets` from
+      # rust-toolchain.toml doesn't reliably fire before the first cargo
+      # invocation. Other capsules in this org pass without this step
+      # (likely cache-warmed), but openai consistently doesn't.
+      - name: Install wasm32 target for pinned toolchain
+        run: rustup target add wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
@@ -28,14 +45,14 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --target wasm32-wasip1 -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
 
       - name: Build WASM
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo build --release --target wasm32-unknown-unknown
 
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: capsule-wasm
-          path: target/wasm32-wasip1/release/*.wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
           if-no-files-found: error

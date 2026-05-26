@@ -16,7 +16,10 @@ llm = "1.0.0"
 
 [capabilities]
 net = ["api.openai.com"]
-ipc_publish = ["llm.v1.stream.openai", "llm.v1.response.describe.*"]
+# Exact `llm.v1.response.describe` is what registry's post-#752 fan-out
+# subscribes to (unsuffixed). The `.*` wildcard stays for any future
+# call-site that wants per-provider response correlation routing.
+ipc_publish = ["llm.v1.stream.openai", "llm.v1.response.describe", "llm.v1.response.describe.*"]
 
 [env]
 api_key = { type = "secret", request = "Enter your OpenAI API key", placeholder = "sk-..." }
