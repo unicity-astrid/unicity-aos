@@ -483,65 +483,30 @@ impl ReactLoop {
             .and_then(|v| v.as_str())
             .unwrap_or(DEFAULT_SESSION_ID);
 
-        let correlation_id = Uuid::new_v4().to_string();
         let timeout = session_timeout_ms();
 
-        // Subscribe to a per-request scoped topic before publishing to
-        // avoid delivery race. Only this instance receives the response.
-        let reply_topic = format!("session.v1.response.clear.{correlation_id}");
-        let handle = ipc::subscribe(&reply_topic)?;
+        // Use the SDK's request_response helper: it injects a correlation
+        // id, subscribes to the scoped reply topic before publishing, and
+        // drops the subscription on every return path (Drop on
+        // `Subscription`). Session publishes `{correlation_id, new_session_id,
+        // old_session_id}` at the root of the reply payload (see
+        // `astrid-capsule-session::handle_clear`) — no envelope wrapper.
+        let response: serde_json::Value = ipc::request_response(
+            "session.v1.request.clear",
+            "session.v1.response.clear",
+            &serde_json::json!({
+                "session_id": old_session_id,
+            }),
+            timeout,
+        )?;
 
-        let result = (|| -> Result<String, SysError> {
-            ipc::publish_json(
-                "session.v1.request.clear",
-                &serde_json::json!({
-                    "session_id": old_session_id,
-                    "correlation_id": correlation_id,
-                }),
-            )?;
-
-            let poll_result = ipc::recv(&handle, timeout).map_err(|e| {
-                SysError::ApiError(format!("Session clear timed out after {timeout}ms: {e}"))
-            })?;
-
-            if poll_result.messages.is_empty() {
-                return Err(SysError::ApiError(format!(
-                    "Session clear timed out after {timeout}ms: no messages in response"
-                )));
-            }
-
-            // The topic is scoped to this request, so no correlation_id check
-            // is needed. Iterate to skip messages with unparseable payloads.
-            for msg in &poll_result.messages {
-                let payload: serde_json::Value = match serde_json::from_str(&msg.payload) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                let data = match payload.get("data") {
-                    Some(d) => d,
-                    None => continue,
-                };
-
-                let new_session_id = data
-                    .get("new_session_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        SysError::ApiError("Session clear response missing new_session_id".into())
-                    })?;
-
-                return Ok(new_session_id.to_string());
-            }
-
-            Err(SysError::ApiError(format!(
-                "Session clear response contained no usable messages \
-                 (session_id={old_session_id}, correlation_id={correlation_id})"
-            )))
-        })();
-
-        let _ = ipc::unsubscribe(&handle);
-
-        let new_session_id = result?;
+        let new_session_id = response
+            .get("new_session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                SysError::ApiError("Session clear response missing new_session_id".into())
+            })?
+            .to_string();
 
         // Delete the old session's turn state - the session is done.
         let old_key = turn_key(old_session_id);
@@ -1297,104 +1262,54 @@ impl ReactLoop {
 
     /// Core implementation for session message fetching.
     ///
-    /// Uses a per-request scoped reply topic
-    /// (`session.v1.response.get_messages.<correlation_id>`) to prevent
-    /// cross-instance response theft under concurrent load.
+    /// Uses the SDK's `ipc::request_response` helper, which generates a
+    /// correlation id, subscribes to
+    /// `session.v1.response.get_messages.<correlation_id>` BEFORE
+    /// publishing (preventing delivery race), and drops the
+    /// subscription on every return path.
     ///
     /// # IPC envelope format
     ///
-    /// The host delivers drain results as:
-    /// ```json
-    /// { "messages": [IpcMessage, ...], "dropped": N, "lagged": N }
-    /// ```
-    /// Each `IpcMessage` has `{ topic, payload, source_id, timestamp }`.
-    /// The session capsule publishes raw JSON via `publish_json`, which
-    /// the host wraps as `IpcPayload::Custom { data }`. So the actual
-    /// response data lives at `envelope.messages[0].payload.data`.
+    /// Session publishes `{correlation_id, messages}` at the root of the
+    /// reply payload (see `astrid-capsule-session::handle_get_messages`).
+    /// `ipc::request_response` deserialises the raw JSON without an envelope
+    /// wrapper, so `messages` lives at the root of `response`.
     fn fetch_messages_inner(
         session_id: &str,
         append_before_read: Option<&[Message]>,
     ) -> Result<Vec<Message>, SysError> {
-        let correlation_id = Uuid::new_v4().to_string();
-
-        // Resolve timeout once (host call) rather than inside the closure.
         let timeout = session_timeout_ms();
 
-        // Subscribe to a per-request scoped topic BEFORE publishing to avoid
-        // delivery race. Only this instance receives the response.
-        let reply_topic = format!("session.v1.response.get_messages.{correlation_id}");
-        let handle = ipc::subscribe(&reply_topic)?;
-
-        // Guard: ensure unsubscribe runs even on early return
-        let result = (|| -> Result<Vec<Message>, SysError> {
-            let mut request = serde_json::json!({
-                "correlation_id": correlation_id,
-                "session_id": session_id,
-            });
-
-            if let Some(msgs) = append_before_read
-                && !msgs.is_empty()
-            {
-                request["append_before_read"] = serde_json::to_value(msgs).map_err(|e| {
-                    SysError::ApiError(format!("Failed to serialize append messages: {e}"))
-                })?;
-            }
-
-            ipc::publish_json("session.v1.request.get_messages", &request)?;
-
-            let poll_result = ipc::recv(&handle, timeout).map_err(|e| {
-                SysError::ApiError(format!("Session response timed out after {timeout}ms: {e}"))
+        let mut request = serde_json::json!({ "session_id": session_id });
+        if let Some(msgs) = append_before_read
+            && !msgs.is_empty()
+        {
+            request["append_before_read"] = serde_json::to_value(msgs).map_err(|e| {
+                SysError::ApiError(format!("Failed to serialize append messages: {e}"))
             })?;
+        }
 
-            // Empty result means the subscription timed out with no response.
-            if poll_result.messages.is_empty() {
-                return Err(SysError::ApiError(format!(
-                    "Session capsule timed out - no response within {timeout}ms"
-                )));
-            }
+        let response: serde_json::Value = ipc::request_response(
+            "session.v1.request.get_messages",
+            "session.v1.response.get_messages",
+            &request,
+            timeout,
+        )?;
 
-            // The topic is scoped to this request, so no correlation_id check
-            // is needed. Iterate to skip messages with unparseable payloads.
-            for msg in &poll_result.messages {
-                let payload: serde_json::Value = match serde_json::from_str(&msg.payload) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        log::debug("Skipping IPC message with unparseable payload");
-                        continue;
-                    }
-                };
+        // Session publishes `{correlation_id, messages}` at the top
+        // level of the response payload (see
+        // `astrid-capsule-session::handle_get_messages`). No envelope
+        // wrapper — the SDK's `request_response` already deserialised
+        // the raw JSON payload; `messages` lives at the root.
+        let messages: Vec<Message> = response
+            .get("messages")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| SysError::ApiError(format!("Failed to parse session messages: {e}")))?
+            .unwrap_or_default();
 
-                let data = match payload.get("data") {
-                    Some(d) => d,
-                    None => {
-                        log::debug("Skipping IPC message with no data field");
-                        continue;
-                    }
-                };
-
-                let messages: Vec<Message> = data
-                    .get("messages")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|e| {
-                        SysError::ApiError(format!("Failed to parse session messages: {e}"))
-                    })?
-                    .unwrap_or_default();
-
-                return Ok(messages);
-            }
-
-            Err(SysError::ApiError(format!(
-                "Session response envelope contained no usable messages \
-                 (session_id={session_id}, correlation_id={correlation_id})"
-            )))
-        })();
-
-        // Always unsubscribe, regardless of success/failure
-        let _ = ipc::unsubscribe(&handle);
-
-        result
+        Ok(messages)
     }
 
     /// Resolve the active LLM provider topic from the registry.
@@ -1450,8 +1365,11 @@ impl ReactLoop {
             return messages;
         }
 
-        let response_topic = COMPACT_RESPONSE_TOPIC;
-        let handle = match ipc::subscribe(response_topic) {
+        // The context engine publishes to a static response topic (no
+        // correlation id), so we can't use `ipc::request_response` here.
+        // Hold the `Subscription` in scope so Drop tears it down on
+        // every return path; no manual `unsubscribe` needed.
+        let sub = match ipc::subscribe(COMPACT_RESPONSE_TOPIC) {
             Ok(h) => h,
             Err(_) => return messages,
         };
@@ -1473,7 +1391,7 @@ impl ReactLoop {
                 return None;
             }
 
-            let poll_result = ipc::recv(&handle, DEFAULT_COMPACT_TIMEOUT_MS).ok()?;
+            let poll_result = sub.recv(DEFAULT_COMPACT_TIMEOUT_MS).ok()?;
 
             // Navigate PollResult: first message's payload -> data
             let first_msg = poll_result.messages.first()?;
@@ -1501,8 +1419,6 @@ impl ReactLoop {
 
             Some(result)
         })();
-
-        let _ = ipc::unsubscribe(&handle);
 
         result.unwrap_or(messages)
     }
