@@ -64,8 +64,18 @@ impl OpenAICompatProvider {
 
     /// Returns provider metadata for IPC-based provider discovery.
     ///
-    /// Called by the registry capsule via `hooks::trigger("llm.v1.request.describe")`.
-    /// Returns the provider's model ID, capabilities, and IPC routing topics.
+    /// The registry capsule publishes a `llm.v1.request.describe` envelope
+    /// and drains responses on `llm.v1.response.describe` for a bounded
+    /// window. Each provider capsule subscribes to the request topic and
+    /// publishes its capability descriptor on the response topic. This
+    /// replaces the pre-#752 `hooks::trigger` fan-out path that returned
+    /// interceptor results through kernel-mediated dispatch — under the
+    /// new ABI the interceptor return value is no longer fanned out, so
+    /// the provider must publish explicitly.
+    ///
+    /// The return value is kept (same shape) so other interceptor callers
+    /// continue to see the descriptor; the explicit `ipc::publish_json`
+    /// is what registry's new fan-out actually consumes.
     #[astrid::interceptor("llm_describe")]
     pub fn llm_describe(&self, _payload: serde_json::Value) -> Result<serde_json::Value, SysError> {
         let model = env::var("model").unwrap_or_else(|_| "unknown".into());
@@ -77,7 +87,7 @@ impl OpenAICompatProvider {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(8_192);
-        Ok(serde_json::json!({
+        let response = serde_json::json!({
             "providers": [{
                 "id": "openai-compat",
                 "description": format!("OpenAI-compatible provider (default model: {model})"),
@@ -87,7 +97,9 @@ impl OpenAICompatProvider {
                 "context_window": context_window,
                 "max_output_tokens": max_output,
             }]
-        }))
+        });
+        ipc::publish_json("llm.v1.response.describe", &response)?;
+        Ok(response)
     }
 }
 
@@ -178,39 +190,35 @@ impl OpenAICompatProvider {
             .header("authorization", format!("Bearer {api_key}"))
             .json(&request_body)?;
 
-        let resp = http::stream_start(&req)?;
+        let stream = http::stream_start(&req)?;
 
-        if resp.status != 200 {
-            // Drain the error body for the error message.
+        if stream.status() != 200 {
+            // Drain the error body for the error message. Stream drops at
+            // scope exit; no manual close required.
             let mut error_body = String::new();
-            while let Some(chunk) = http::stream_read(&resp.handle)? {
+            while let Some(chunk) = stream.read_chunk()? {
                 error_body.push_str(&String::from_utf8_lossy(&chunk));
                 if error_body.len() > 4096 {
                     error_body.truncate(4096);
                     break;
                 }
             }
-            let _ = http::stream_close(&resp.handle);
             return Err(SysError::ApiError(format!(
                 "API error ({}): {error_body}",
-                resp.status
+                stream.status()
             )));
         }
 
-        let result = Self::parse_sse_stream_live(request_id, &resp.handle);
-        let _ = http::stream_close(&resp.handle);
-        result
+        Self::parse_sse_stream_live(request_id, &stream)
+        // `stream` drops here, releasing the kernel-side HTTP stream.
     }
 
     /// Stream SSE chunks in real-time, publishing IPC events as they arrive.
-    fn parse_sse_stream_live(
-        request_id: Uuid,
-        stream: &http::HttpStreamHandle,
-    ) -> Result<(), SysError> {
+    fn parse_sse_stream_live(request_id: Uuid, stream: &http::HttpStream) -> Result<(), SysError> {
         let mut active_tools: Vec<(String, String)> = Vec::new();
         let mut line_buffer = String::new();
 
-        while let Some(chunk) = http::stream_read(stream)? {
+        while let Some(chunk) = stream.read_chunk()? {
             let chunk_str = String::from_utf8_lossy(&chunk);
             line_buffer.push_str(&chunk_str);
 

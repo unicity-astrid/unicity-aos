@@ -16,6 +16,10 @@ capabilities = { net = ["*"] }
 
 [publish]
 "llm.v1.stream.openai-compat" = { wit = "@unicity-astrid/wit/llm/stream-event" }
+# Exact topic for the post-#752 registry fan-out (registry subscribes to
+# the unsuffixed name). The `.*` wildcard below stays for any future
+# call-site that wants per-provider response correlation routing.
+"llm.v1.response.describe" = { wit = "@unicity-astrid/wit/llm/describe-response" }
 "llm.v1.response.describe.*" = { wit = "@unicity-astrid/wit/llm/describe-response" }
 
 [subscribe]
