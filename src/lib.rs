@@ -4,6 +4,27 @@ use astrid_sdk::prelude::*;
 #[derive(Default)]
 struct CliProxy;
 
+/// A connected CLI client and the authenticated principal it presented.
+///
+/// `principal` is learned from the first principal-stamped ingress message
+/// (the socket client stamps `IpcMessage.principal`), and stays `None` for a
+/// pre-handshake / anonymous socket — those are not counted as connections.
+/// It is the key the proxy uses to emit `client.v1.connected` once and the
+/// matching `client.v1.disconnect` when the socket closes.
+struct ProxyClient {
+    stream: TcpStream,
+    principal: Option<String>,
+}
+
+impl ProxyClient {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            principal: None,
+        }
+    }
+}
+
 #[capsule]
 impl CliProxy {
     #[astrid::run]
@@ -52,11 +73,18 @@ impl CliProxy {
         // TcpStream is the post-#752 unified handle (Unix-domain accepts and
         // outbound TCP share the same resource type). Drop releases the
         // kernel-side stream entry, so we no longer need a manual close.
-        let mut streams: Vec<TcpStream> = Vec::new();
+        //
+        // The proxy is the authority on socket lifecycle: it emits
+        // `client.v1.connected` once a client authenticates and the matching
+        // `client.v1.disconnect` when the socket closes, both stamped with the
+        // client's principal. The kernel connection tracker turns those into
+        // the per-principal active-connection count that drives ephemeral
+        // idle-shutdown and `astrid who`.
+        let mut clients: Vec<ProxyClient> = Vec::new();
 
         'proxy: loop {
             // Phase A: block until at least one client is connected.
-            if streams.is_empty() {
+            if clients.is_empty() {
                 let stream = match listener.accept() {
                     Ok(s) => s,
                     Err(e) => {
@@ -66,7 +94,7 @@ impl CliProxy {
                     }
                 };
                 log::info("CLI client connected to proxy");
-                streams.push(stream);
+                clients.push(ProxyClient::new(stream));
             }
 
             // Phase B: poll for one additional connection (non-blocking).
@@ -75,16 +103,27 @@ impl CliProxy {
             // the pre-#752 semantics.
             if let Ok(Some(new_stream)) = listener.try_accept(0) {
                 log::info("Additional CLI client connected to proxy");
-                streams.push(new_stream);
+                clients.push(ProxyClient::new(new_stream));
             }
 
             // Phase C: read from all streams.
             // NOTE: 50ms timeout per stream = linear scaling (N*50ms per iteration).
             // Acceptable for CLI use (2-3 typical, 8 max = 400ms worst case).
             let mut dead_indices: Vec<usize> = Vec::new();
-            for (i, stream) in streams.iter().enumerate() {
-                match stream.try_recv() {
-                    Ok(bytes) => handle_ingress(&bytes),
+            for (i, client) in clients.iter_mut().enumerate() {
+                match client.stream.try_recv() {
+                    Ok(bytes) => {
+                        // Forward the message (if allowed) and learn the sender's
+                        // principal. The first principal-stamped message marks the
+                        // connection as established for that principal.
+                        if let Some(principal) = handle_ingress(&bytes)
+                            && client.principal.is_none()
+                        {
+                            log::info(format!("CLI client authenticated as principal {principal}"));
+                            publish_client_connected(&principal);
+                            client.principal = Some(principal);
+                        }
+                    }
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Closed) => {
                         log::info("CLI client disconnected from proxy");
@@ -98,17 +137,18 @@ impl CliProxy {
             // no explicit close() needed (the pre-#752 manual close was a
             // workaround for the lack of resource Drop in the old ABI).
             for &i in dead_indices.iter().rev() {
-                streams.remove(i);
+                let client = clients.remove(i);
+                announce_disconnect(&client, "socket closed");
             }
 
             // Phase D: poll IPC subscriptions and broadcast to all live streams.
-            // NOTE: broadcast_dead indices are into streams AFTER Phase C removals.
+            // NOTE: broadcast_dead indices are into clients AFTER Phase C removals.
             let mut broadcast_dead: Vec<usize> = Vec::new();
             for sub in &subs {
                 match sub.poll() {
                     Ok(result) => {
                         if !result.messages.is_empty() {
-                            broadcast_poll_messages(&streams, &result, &mut broadcast_dead);
+                            broadcast_poll_messages(&clients, &result, &mut broadcast_dead);
                         }
                     }
                     Err(_) => {
@@ -124,8 +164,9 @@ impl CliProxy {
             broadcast_dead.sort_unstable();
             broadcast_dead.dedup();
             for &i in broadcast_dead.iter().rev() {
-                streams.remove(i);
+                let client = clients.remove(i);
                 log::info("CLI client disconnected during broadcast");
+                announce_disconnect(&client, "broadcast send failed");
             }
         }
 
@@ -136,23 +177,31 @@ impl CliProxy {
     }
 }
 
-/// Parse an incoming client message and publish it to the IPC bus if the
-/// topic passes the ingress allowlist.
-fn handle_ingress(bytes: &[u8]) {
+/// Parse an incoming client message, forward it to the IPC bus if the topic
+/// passes the ingress allowlist, and return the sender's principal (if the
+/// envelope carried one) so the caller can track the connection.
+fn handle_ingress(bytes: &[u8]) -> Option<String> {
     let msg = match serde_json::from_slice::<serde_json::Value>(bytes) {
         Ok(v) => v,
         Err(_) => {
             log::warn("Received malformed IPC payload from socket");
-            return;
+            return None;
         }
     };
+
+    // Surface the principal even when the message has no forwardable
+    // topic/payload (e.g. a bare handshake) — it still establishes identity.
+    let principal = msg
+        .get("principal")
+        .and_then(|p| p.as_str())
+        .map(str::to_string);
 
     let (Some(topic), Some(payload)) = (
         msg.get("topic").and_then(|t| t.as_str()),
         msg.get("payload"),
     ) else {
         log::warn("Dropped ingress message: missing topic or payload");
-        return;
+        return principal;
     };
 
     if is_allowed_ingress_topic(topic) {
@@ -162,12 +211,38 @@ fn handle_ingress(bytes: &[u8]) {
     } else {
         log::warn(format!("Dropped ingress message to blocked topic: {topic}"));
     }
+
+    principal
+}
+
+/// Publish `client.v1.connected` stamped with the authenticated principal so
+/// the kernel connection tracker increments that principal's active count.
+fn publish_client_connected(principal: &str) {
+    if let Err(e) = ipc::publish_json_as("client.v1.connected", &serde_json::json!({}), principal) {
+        log::error(format!("Failed to publish client.v1.connected: {e:?}"));
+    }
+}
+
+/// Publish `client.v1.disconnect` (with a reason) for a client that has
+/// authenticated. No-op for a socket that never presented a principal — it was
+/// never counted, so there is nothing to decrement.
+fn announce_disconnect(client: &ProxyClient, reason: &str) {
+    let Some(principal) = client.principal.as_deref() else {
+        return;
+    };
+    if let Err(e) = ipc::publish_json_as(
+        "client.v1.disconnect",
+        &serde_json::json!({ "reason": reason }),
+        principal,
+    ) {
+        log::error(format!("Failed to publish client.v1.disconnect: {e:?}"));
+    }
 }
 
 /// Broadcast each IPC message from a `PollResult` to every connected stream.
-/// Tracks failed stream indices in `dead`.
+/// Tracks failed stream indices (into `clients`) in `dead`.
 fn broadcast_poll_messages(
-    streams: &[TcpStream],
+    clients: &[ProxyClient],
     poll_result: &ipc::PollResult,
     dead: &mut Vec<usize>,
 ) {
@@ -197,13 +272,13 @@ fn broadcast_poll_messages(
         })
         .collect();
 
-    for (i, stream) in streams.iter().enumerate() {
+    for (i, client) in clients.iter().enumerate() {
         // Skip streams already marked dead by a previous subscription's broadcast.
         if dead.contains(&i) {
             continue;
         }
         for msg_bytes in &serialized {
-            if let Err(e) = stream.send(msg_bytes) {
+            if let Err(e) = client.stream.send(msg_bytes) {
                 log::warn(format!(
                     "Socket send error, client likely disconnected: {e:?}"
                 ));
@@ -214,10 +289,14 @@ fn broadcast_poll_messages(
     }
 }
 
-/// Exact topics the CLI is allowed to publish to the internal IPC bus.
-/// Note: `client.v1.disconnect` is NOT here - the authoritative disconnect
-/// event is published by the kernel-side stream-close path (TcpStream Drop)
-/// to avoid double-counting in the idle monitor.
+/// Exact topics a client may publish *through* the proxy to the internal bus.
+///
+/// `client.v1.connected` / `client.v1.disconnect` are deliberately absent: the
+/// proxy is the authority on socket lifecycle and emits them itself (see
+/// [`publish_client_connected`] / [`announce_disconnect`]) keyed to the
+/// stream's authenticated principal. Forwarding a client-sent copy would
+/// double-count and would miss ungraceful disconnects (the socket dies without
+/// the client getting a chance to send anything).
 const ALLOWED_INGRESS_EXACT: &[&str] = &["user.v1.prompt", "cli.v1.command.execute"];
 
 /// Topic prefixes the CLI is allowed to publish (suffix-routed topics).
