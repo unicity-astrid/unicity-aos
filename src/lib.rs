@@ -9,7 +9,7 @@ struct CliProxy;
 /// `principal` is learned from the first principal-stamped ingress message
 /// (the socket client stamps `IpcMessage.principal`), and stays `None` for a
 /// pre-handshake / anonymous socket — those are not counted as connections.
-/// It is the key the proxy uses to emit `client.v1.connected` once and the
+/// It is the key the proxy uses to emit `client.v1.connect` once and the
 /// matching `client.v1.disconnect` when the socket closes.
 struct ProxyClient {
     stream: TcpStream,
@@ -75,7 +75,7 @@ impl CliProxy {
         // kernel-side stream entry, so we no longer need a manual close.
         //
         // The proxy is the authority on socket lifecycle: it emits
-        // `client.v1.connected` once a client authenticates and the matching
+        // `client.v1.connect` once a client authenticates and the matching
         // `client.v1.disconnect` when the socket closes, both stamped with the
         // client's principal. The kernel connection tracker turns those into
         // the per-principal active-connection count that drives ephemeral
@@ -120,7 +120,7 @@ impl CliProxy {
                             && client.principal.is_none()
                         {
                             log::info(format!("CLI client authenticated as principal {principal}"));
-                            publish_client_connected(&principal);
+                            publish_client_connect(&principal);
                             client.principal = Some(principal);
                         }
                     }
@@ -215,11 +215,11 @@ fn handle_ingress(bytes: &[u8]) -> Option<String> {
     principal
 }
 
-/// Publish `client.v1.connected` stamped with the authenticated principal so
+/// Publish `client.v1.connect` stamped with the authenticated principal so
 /// the kernel connection tracker increments that principal's active count.
-fn publish_client_connected(principal: &str) {
-    if let Err(e) = ipc::publish_json_as("client.v1.connected", &serde_json::json!({}), principal) {
-        log::error(format!("Failed to publish client.v1.connected: {e:?}"));
+fn publish_client_connect(principal: &str) {
+    if let Err(e) = ipc::publish_json_as("client.v1.connect", &serde_json::json!({}), principal) {
+        log::error(format!("Failed to publish client.v1.connect: {e:?}"));
     }
 }
 
@@ -291,9 +291,9 @@ fn broadcast_poll_messages(
 
 /// Exact topics a client may publish *through* the proxy to the internal bus.
 ///
-/// `client.v1.connected` / `client.v1.disconnect` are deliberately absent: the
+/// `client.v1.connect` / `client.v1.disconnect` are deliberately absent: the
 /// proxy is the authority on socket lifecycle and emits them itself (see
-/// [`publish_client_connected`] / [`announce_disconnect`]) keyed to the
+/// [`publish_client_connect`] / [`announce_disconnect`]) keyed to the
 /// stream's authenticated principal. Forwarding a client-sent copy would
 /// double-count and would miss ungraceful disconnects (the socket dies without
 /// the client getting a chance to send anything).

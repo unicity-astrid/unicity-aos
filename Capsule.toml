@@ -12,7 +12,7 @@ uplink = true
 net_bind = ["unix:*"]
 ipc_publish = [
     "user.v1.prompt",
-    "client.v1.connected",
+    "client.v1.connect",
     "client.v1.disconnect",
     "cli.v1.command.execute",
     "astrid.v1.request.*",
