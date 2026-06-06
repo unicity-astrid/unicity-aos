@@ -16,6 +16,13 @@ file = "astrid_capsule_registry.wasm"
 "registry.v1.response.*" = { wit = "@unicity-astrid/wit/registry/provider-entry" }
 "registry.v1.active_model_changed" = { wit = "@unicity-astrid/wit/registry/provider-entry" }
 "registry.v1.selection.*" = { wit = "@unicity-astrid/wit/registry/selection-required" }
+# Provider discovery broadcast — provider capsules (openai-compat etc.)
+# subscribe to this and respond on llm.v1.response.describe. Without
+# the declaration the publish was capability-denied and
+# discover_providers silently returned empty, leaving the registry
+# with no providers and no active model — react.handle_prompt_response
+# then published to an empty topic and the prompt pipeline halted.
+"llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request" }
 
 [subscribe]
 # 3-segment wildcard (covers registry.v1.{any_single_segment})
@@ -24,6 +31,8 @@ file = "astrid_capsule_registry.wasm"
 # 4-segment exact (topic_matches requires equal segment count, so registry.v1.* does NOT cover this)
 "registry.v1.selection.callback" = { wit = "@unicity-astrid/wit/registry/selection-callback" }
 "astrid.v1.capsules_loaded" = { wit = "@unicity-astrid/wit/system/capsules-loaded" }
+# Drain provider responses to the describe broadcast above.
+"llm.v1.response.describe" = { wit = "@unicity-astrid/wit/llm/describe-response" }
 
 [capabilities]
 uplink = true

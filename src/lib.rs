@@ -190,8 +190,45 @@ fn handle_get_providers() {
 }
 
 /// Handle a `registry.v1.get_active_model` request.
+///
+/// Registry state (provider list + active model id) is stored in
+/// the capsule's KV, which the kernel scopes by invocation principal.
+/// The `active_model_changed` broadcast at boot only primes the
+/// load-time principal's KV — every other principal arrives with an
+/// empty store and would otherwise see `None` here on first ask,
+/// then the gateway-side caller (react.active_llm_topic) would fall
+/// back to its hardcoded `llm.v1.request.generate.anthropic` topic,
+/// which has no subscriber on a typical LM Studio install.
+///
+/// Detect that case (empty providers OR missing active id) and
+/// re-run the discover + auto-select dance under the invoking
+/// principal. The persisted state ends up keyed to that principal,
+/// so subsequent calls skip the round-trip. Discovery only adds one
+/// 500ms describe-fanout window on first ask per principal.
 fn handle_get_active_model() {
-    let state = load_state();
+    let mut state = load_state();
+
+    // Discover providers only when we have NONE cached. A populated provider
+    // set with no active model selected (multiple providers, none chosen) is a
+    // valid steady state — re-running the ~500ms describe fan-out on every call
+    // just because `active_model_id` is `None` would stall the loop under load
+    // and contradicts the "discover once per principal" contract above.
+    if state.providers.is_empty() {
+        let providers = discover_providers();
+        if !providers.is_empty() {
+            state.providers = providers;
+            save_state(&state);
+        }
+    }
+
+    // Prune a stale active id and auto-select when exactly one provider exists.
+    // Both take `&mut state` and mutate it in place (persisting only when they
+    // actually change something — `auto_select_if_single` is a no-op when a
+    // model is already selected or multiple providers exist), so the local copy
+    // is already current and no reload is needed.
+    clear_stale_active_model(&mut state);
+    auto_select_if_single(&mut state);
+
     let active = state
         .active_model_id
         .as_ref()
