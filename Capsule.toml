@@ -27,6 +27,22 @@ type = "executable"
 "context_engine.v1.compact" = { wit = "@unicity-astrid/wit/context/compact-request" }
 "session.v1.request.get_messages" = { wit = "@unicity-astrid/wit/session/get-messages-request" }
 "session.v1.request.clear" = { wit = "@unicity-astrid/wit/session/clear-request" }
+# Lazy lookup of the active LLM provider topic. `active_model_changed`
+# is a one-shot broadcast at registry startup that lands in the
+# load-time principal's KV; a gateway-minted bearer (every non-default
+# principal) sees its own empty per-invocation KV and has to ask the
+# registry directly. Without this declaration the publish would fail
+# with `CapabilityDenied` and the prompt pipeline halts at react's
+# `handle_prompt_response`.
+"registry.v1.get_active_model" = { wit = "@unicity-astrid/wit/registry/provider-entry" }
+
+# `redrive_if_unready` bounces these response topics back onto the bus as a
+# bounded retry when the turn state isn't visible yet (the round-trip is the
+# backoff). Publish is gated separately from subscribe, so without these
+# declarations the re-drive fails `CapabilityDenied` and the visibility-race
+# workaround silently no-ops. Same WIT shapes as the matching [subscribe] rows.
+"spark.v1.response.ready" = { wit = "@unicity-astrid/wit/spark/build-response" }
+"prompt_builder.v1.response.assemble" = { wit = "@unicity-astrid/wit/prompt/assemble-response" }
 
 [subscribe]
 "session.v1.response.get_messages.*" = { wit = "@unicity-astrid/wit/session/get-messages-response" }
@@ -38,6 +54,11 @@ type = "executable"
 "llm.v1.stream.*" = { wit = "@unicity-astrid/wit/llm/stream-event", handler = "handle_llm_stream" }
 "tool.v1.execute.result" = { wit = "@unicity-astrid/wit/types/tool-call-result", handler = "handle_tool_result" }
 "registry.v1.active_model_changed" = { wit = "@unicity-astrid/wit/registry/provider-entry", handler = "handle_model_changed" }
+# On-demand response channel for the lazy `get_active_model` lookup
+# declared above. No handler attribute — `active_llm_topic` drains
+# this synchronously via subscribe-before-publish; routing through
+# the dispatcher would lose the request/response correlation.
+"registry.v1.response.get_active_model" = { wit = "@unicity-astrid/wit/registry/provider-entry" }
 "astrid.v1.watchdog.tick" = { wit = "@unicity-astrid/wit/system/watchdog-tick", handler = "handle_watchdog_tick" }
 "astrid.v1.event_bus.lagged" = { wit = "@unicity-astrid/wit/system/event-bus-lagged", handler = "handle_bus_lag" }
 "system.v1.lifecycle.restart" = { wit = "@unicity-astrid/wit/system/lifecycle-restart", handler = "handle_lifecycle_restart" }

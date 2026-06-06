@@ -61,6 +61,14 @@ const DEFAULT_SESSION_TIMEOUT_MS: u64 = 2_000;
 /// Default timeout in milliseconds for context engine compact requests.
 const DEFAULT_COMPACT_TIMEOUT_MS: u64 = 5_000;
 
+/// Max times an orchestration response is bounced back through the bus to wait
+/// out a `TurnState` read-after-write visibility race (astrid#816): a previous
+/// handler's `state.save()` may not yet be visible to this handler's
+/// `TurnState::load()` when they run on different pooled Store instances close
+/// together. Each re-drive is one bus round-trip, so this spans roughly that
+/// many round-trips before giving up.
+const MAX_REDRIVE_RETRIES: u64 = 20;
+
 /// KV key for cached provider context window size (tokens).
 const KV_CONTEXT_WINDOW: &str = "react.context_window";
 
@@ -144,12 +152,20 @@ fn delete_call_sessions(call_ids: &[String]) {
 
 /// Load the set of active session IDs from KV.
 fn load_active_sessions() -> Vec<String> {
-    kv::get_json::<Vec<String>>(ACTIVE_SESSIONS_KEY).unwrap_or_else(|e| {
-        log::warn(format!(
-            "Failed to load active sessions from KV, defaulting to empty: {e}"
-        ));
-        Vec::new()
-    })
+    // Missing key = no sessions registered yet (the cold-start norm), not an
+    // error — `get_json_opt` returns `None` rather than the old `get_json`'s
+    // spurious "EOF while parsing" on an absent key. Only a genuine parse
+    // failure warrants a warning.
+    match kv::get_json_opt::<Vec<String>>(ACTIVE_SESSIONS_KEY) {
+        Ok(Some(v)) => v,
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            log::warn(format!(
+                "Corrupt active-sessions list in KV, defaulting to empty: {e}"
+            ));
+            Vec::new()
+        }
+    }
 }
 
 /// Add a session ID to the active sessions set.
@@ -221,7 +237,7 @@ fn session_timeout_ms() -> u64 {
 }
 
 /// State machine phase for the react loop.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum Phase {
     /// No active turn. Waiting for user input.
     Idle,
@@ -341,10 +357,23 @@ impl TurnState {
     /// rather than risking misinterpreted fields.
     fn load(session_id: &str) -> Self {
         let key = turn_key(session_id);
-        let mut state = kv::get_json::<Self>(&key).unwrap_or_else(|e| {
-            log::error(format!("Failed to load turn state, resetting: {e}"));
-            Self::default()
-        });
+        // Distinguish a *missing* key (a brand-new session — the normal cold
+        // path, not an error) from *corrupt* stored bytes. The old
+        // `get_json` collapsed both into "EOF while parsing" via
+        // `get_bytes`'s `unwrap_or_default()`, so every cold load logged a
+        // spurious ERROR and reset to default. With genuine concurrency
+        // (the Store pool, #816) those cold loads are frequent, so the
+        // distinction matters: only a real parse failure is worth a warning.
+        let mut state = match kv::get_json_opt::<Self>(&key) {
+            Ok(Some(s)) => s,
+            Ok(None) => Self::default(),
+            Err(e) => {
+                log::warn(format!(
+                    "Corrupt turn state for session '{session_id}', resetting: {e}"
+                ));
+                Self::default()
+            }
+        };
 
         if !matches!(state.schema_version, 0 | 1) {
             log::warn(format!(
@@ -650,6 +679,64 @@ impl ReactLoop {
         Ok(())
     }
 
+    /// Guard an orchestration-response handler against the `TurnState`
+    /// read-after-write visibility race (astrid#816).
+    ///
+    /// A response event (`spark.v1.response.ready`,
+    /// `prompt_builder.v1.response.assemble`, …) only fires *mid-turn* — react
+    /// sent the matching request while the turn was in `expected`. So if the
+    /// `TurnState` load comes back `Idle` (the missing/default state), that is
+    /// the race — the previous handler's `save()` on another pooled Store
+    /// isn't visible yet — not a finished turn. Bounce the response back
+    /// through the bus (the round-trip is the backoff) so it retries once the
+    /// write lands; bounded by `MAX_REDRIVE_RETRIES` so a genuinely orphaned
+    /// event can't loop forever.
+    ///
+    /// Returns `true` if the caller should return early — either a re-drive
+    /// was issued, the retry budget is spent, or the turn is in some *other*
+    /// (already-advanced / cancelled) phase that must not be retried. Returns
+    /// `false` only when the turn is in `expected` and the caller may proceed.
+    fn redrive_if_unready(
+        expected: Phase,
+        actual: Phase,
+        topic: &str,
+        payload: &serde_json::Value,
+    ) -> bool {
+        if actual == expected {
+            return false;
+        }
+        // Only `Idle` is the visibility-race signature (a fresh
+        // `TurnState::default()`). Any other phase is a genuine
+        // already-advanced or cancelled turn — return without retrying.
+        if actual == Phase::Idle {
+            let retry = payload.get("_retry").and_then(|v| v.as_u64()).unwrap_or(0);
+            if retry < MAX_REDRIVE_RETRIES {
+                let mut p = payload.clone();
+                // Guard the mutation: `p["_retry"] = …` panics if the payload
+                // isn't a JSON object. Re-publish under this invocation's
+                // (preserved) principal so the retry lands in the same KV
+                // scope, and surface a failed re-drive (e.g. `CapabilityDenied`)
+                // rather than silently dropping the event.
+                if let Some(obj) = p.as_object_mut() {
+                    obj.insert("_retry".to_string(), serde_json::json!(retry + 1));
+                    if let Err(e) = ipc::publish_json(topic, &p) {
+                        log::warn(format!("react: failed to re-drive '{topic}': {e:?}"));
+                    }
+                } else {
+                    log::warn(format!(
+                        "react: cannot re-drive '{topic}' — payload is not a JSON object"
+                    ));
+                }
+            } else {
+                log::warn(format!(
+                    "react: gave up re-driving '{topic}' after {retry} retries \
+                     (turn state never became visible)"
+                ));
+            }
+        }
+        true
+    }
+
     /// Handles `spark.v1.response.ready` events from the identity capsule.
     ///
     /// Receives the assembled system prompt and sends it to the prompt
@@ -669,7 +756,12 @@ impl ReactLoop {
             return Ok(());
         }
 
-        if state.phase != Phase::AwaitingIdentity {
+        if Self::redrive_if_unready(
+            Phase::AwaitingIdentity,
+            state.phase,
+            "spark.v1.response.ready",
+            &payload,
+        ) {
             return Ok(());
         }
 
@@ -734,7 +826,12 @@ impl ReactLoop {
             return Ok(());
         }
 
-        if state.phase != Phase::AwaitingPromptBuild {
+        if Self::redrive_if_unready(
+            Phase::AwaitingPromptBuild,
+            state.phase,
+            "prompt_builder.v1.response.assemble",
+            &payload,
+        ) {
             return Ok(());
         }
 
@@ -1314,14 +1411,110 @@ impl ReactLoop {
 
     /// Resolve the active LLM provider topic from the registry.
     fn active_llm_topic() -> String {
-        kv::get_bytes("llm_provider_topic")
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                env::var("llm_provider_topic")
-                    .unwrap_or_else(|_| "llm.v1.request.generate.anthropic".into())
-            })
+        // 1. Per-principal cache (populated by handle_model_changed for
+        //    the load-time principal, and by the fetch-on-miss path
+        //    below for every other principal).
+        //
+        //    `get_bytes_opt` distinguishes "key absent" from "key with
+        //    empty value" — important because the kernel collapsed
+        //    the SDK 0.7 `get_bytes` return for missing keys to an
+        //    empty `Vec` (see SDK kv.rs doc), so a downstream
+        //    `filter(|s| !s.is_empty())` is the only honest way to
+        //    decide cache miss vs cache hit-with-empty-value.
+        if let Ok(Some(bytes)) = kv::get_bytes_opt("llm_provider_topic")
+            && let Ok(topic) = String::from_utf8(bytes)
+            && !topic.is_empty()
+        {
+            return topic;
+        }
+        // 2. Operator env override. `env::var` collapses missing keys
+        //    to `Ok("")` (SDK 0.7 documented behaviour) — relying on
+        //    `unwrap_or_else` here used to silently bypass the
+        //    fallback default and return the empty string, which the
+        //    host then rejected as `InvalidInput` on publish. Use
+        //    `var_opt` so the missing case actually falls through.
+        if let Ok(Some(topic)) = env::var_opt("llm_provider_topic")
+            && !topic.is_empty()
+        {
+            return topic;
+        }
+        // 3. Lazy fetch from the registry capsule. Registry broadcasts
+        //    `registry.v1.active_model_changed` once at startup; every
+        //    receiver caches the topic in its load-time principal's
+        //    KV. Per-principal invocations (any non-default principal —
+        //    every gateway-minted bearer) start with an empty cache
+        //    and have to ask the registry directly the first time they
+        //    publish. Subscribe before publish to avoid a delivery
+        //    race; the subscription is dropped at scope exit.
+        if let Some(topic) = Self::fetch_active_llm_topic_from_registry() {
+            return topic;
+        }
+        // 4. Sane default. Reachable when neither the cache, env
+        //    override, nor the registry has a usable provider —
+        //    surfaces upstream as a publish failure rather than a
+        //    silent stamp on the wrong topic.
+        "llm.v1.request.generate.anthropic".into()
+    }
+
+    /// Fetch the active LLM provider's `request_topic` from the
+    /// registry capsule via a synchronous request/response round-trip.
+    /// Caches the result (topic + context window + max output tokens)
+    /// into the current principal's KV so subsequent prompts skip the
+    /// IPC hop.
+    ///
+    /// Returns `None` if the registry doesn't reply within 5s, has no
+    /// active model, or returns a payload missing `request_topic`.
+    fn fetch_active_llm_topic_from_registry() -> Option<String> {
+        const RESPONSE_TOPIC: &str = "registry.v1.response.get_active_model";
+        const REQUEST_TOPIC: &str = "registry.v1.get_active_model";
+        const TIMEOUT_MS: u64 = 5_000;
+
+        // Subscribe BEFORE publishing so the registry's reply (which
+        // may be inline-synchronous on its dispatcher task) can't slip
+        // through before we're listening.
+        let sub = ipc::subscribe(RESPONSE_TOPIC).ok()?;
+        if ipc::publish_json(REQUEST_TOPIC, &serde_json::json!({})).is_err() {
+            return None;
+        }
+        let result = sub.recv(TIMEOUT_MS).ok()?;
+        let msg = result.messages.first()?;
+
+        // Registry replies with `Option<ProviderEntry>` — JSON `null`
+        // means "no active model"; anything else is the active entry
+        // shape with a `request_topic` field.
+        let payload: serde_json::Value = serde_json::from_str(&msg.payload).ok()?;
+        // `null` is the valid "no active model" reply; anything that isn't an
+        // object is a corrupt/unexpected response worth a warning rather than a
+        // silent `None` (which is indistinguishable from "no model").
+        if payload.is_null() {
+            return None;
+        }
+        let provider = payload.as_object().or_else(|| {
+            log::warn("react: registry active-model response is not a JSON object");
+            None
+        })?;
+        let topic = provider.get("request_topic")?.as_str()?.to_string();
+        if topic.is_empty() {
+            return None;
+        }
+
+        // Best-effort cache so subsequent prompts under this principal
+        // skip the round-trip. Errors are non-fatal — a transient KV
+        // failure just means we'll re-fetch next time.
+        let _ = kv::set_bytes("llm_provider_topic", topic.as_bytes());
+        for (kv_key, payload_key) in [
+            (KV_CONTEXT_WINDOW, "context_window"),
+            (KV_MAX_OUTPUT_TOKENS, "max_output_tokens"),
+        ] {
+            if let Some(v) = provider
+                .get(payload_key)
+                .and_then(serde_json::Value::as_u64)
+            {
+                let _ = kv::set_bytes(kv_key, &v.to_le_bytes());
+            }
+        }
+
+        Some(topic)
     }
 
     /// Read cached context window from KV. Returns `None` if not yet queried.
