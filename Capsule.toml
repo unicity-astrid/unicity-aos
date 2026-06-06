@@ -13,29 +13,18 @@ type = "executable"
 [capabilities]
 fs_read  = ["home://"]
 fs_write = ["home://skills/"]
-ipc_publish = ["tool.v1.execute.*.result", "tool.v1.response.describe.*"]
-ipc_subscribe = ["tool.v1.execute.list_capsules", "tool.v1.execute.inspect_capsule", "tool.v1.execute.list_interfaces", "tool.v1.execute.read_interface", "tool.v1.execute.system_status", "tool.v1.request.describe"]
 
-[[interceptor]]
-event = "tool.v1.execute.list_capsules"
-action = "tool_execute_list_capsules"
+# Publish ACL: the [publish] keys are the only IPC-publish declaration.
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
 
-[[interceptor]]
-event = "tool.v1.execute.inspect_capsule"
-action = "tool_execute_inspect_capsule"
-
-[[interceptor]]
-event = "tool.v1.execute.list_interfaces"
-action = "tool_execute_list_interfaces"
-
-[[interceptor]]
-event = "tool.v1.execute.read_interface"
-action = "tool_execute_read_interface"
-
-[[interceptor]]
-event = "tool.v1.execute.system_status"
-action = "tool_execute_system_status"
-
-[[interceptor]]
-event = "tool.v1.request.describe"
-action = "tool_describe"
+# Interceptor bindings: a [subscribe] entry's `handler` binds the topic to a
+# `#[astrid::interceptor]` export. The keys also serve as the subscribe ACL.
+[subscribe]
+"tool.v1.execute.list_capsules" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_list_capsules" }
+"tool.v1.execute.inspect_capsule" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_inspect_capsule" }
+"tool.v1.execute.list_interfaces" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_list_interfaces" }
+"tool.v1.execute.read_interface" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_read_interface" }
+"tool.v1.execute.system_status" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_system_status" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
