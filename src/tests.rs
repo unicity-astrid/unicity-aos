@@ -424,3 +424,34 @@ fn should_not_dispatch_interceptor_topics() {
         "context_engine.v1.hook.after_compaction"
     ));
 }
+
+// ── hook_recv_timeout (before-compaction fan-out window) ────────────────
+
+#[test]
+fn hook_timeout_zero_responders_uses_first_window_then_breaks() {
+    // No response yet, fresh loop: wait the first-response window (250).
+    assert_eq!(hook_recv_timeout(false, 0, 2000, 250, 100), Some(250));
+    // Partway through the window: only the remaining first-response budget,
+    // measured from the loop start (NOT reset to 250).
+    assert_eq!(hook_recv_timeout(false, 200, 1800, 250, 100), Some(50));
+    // Window spent with still no response → break (the no-responder backstop),
+    // even though the outer hook_timeout_ms budget remains.
+    assert_eq!(hook_recv_timeout(false, 250, 1750, 250, 100), None);
+    assert_eq!(hook_recv_timeout(false, 400, 1600, 250, 100), None);
+}
+
+#[test]
+fn hook_timeout_after_first_response_uses_idle_grace() {
+    // Once a response has arrived, switch to the short idle-grace window.
+    assert_eq!(hook_recv_timeout(true, 300, 1700, 250, 100), Some(100));
+    assert_eq!(hook_recv_timeout(true, 1950, 50, 250, 100), Some(50)); // clamped to remaining
+}
+
+#[test]
+fn hook_timeout_clamped_to_remaining_and_outer_cap() {
+    // First-response window clamps to the remaining outer budget.
+    assert_eq!(hook_recv_timeout(false, 0, 40, 250, 100), Some(40));
+    // Outer budget exhausted → break regardless of state.
+    assert_eq!(hook_recv_timeout(false, 0, 0, 250, 100), None);
+    assert_eq!(hook_recv_timeout(true, 0, 0, 250, 100), None);
+}
