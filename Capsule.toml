@@ -16,10 +16,15 @@ llm = "1.0.0"
 
 [capabilities]
 net = ["api.openai.com"]
+
+# Publish ACL: the [publish] keys are the only IPC-publish declaration.
 # Exact `llm.v1.response.describe` is what registry's post-#752 fan-out
 # subscribes to (unsuffixed). The `.*` wildcard stays for any future
 # call-site that wants per-provider response correlation routing.
-ipc_publish = ["llm.v1.stream.openai", "llm.v1.response.describe", "llm.v1.response.describe.*"]
+[publish]
+"llm.v1.stream.openai" = { wit = "@unicity-astrid/wit/llm/stream-event" }
+"llm.v1.response.describe" = { wit = "@unicity-astrid/wit/llm/describe-response" }
+"llm.v1.response.describe.*" = { wit = "@unicity-astrid/wit/llm/describe-response" }
 
 [env]
 api_key = { type = "secret", request = "Enter your OpenAI API key", placeholder = "sk-..." }
@@ -32,10 +37,8 @@ service_tier = { type = "string", request = "Service tier (auto/default/flex/pri
 # context_window = { type = "integer", request = "Override context window (tokens)", placeholder = "128000" }
 # max_output_tokens = { type = "integer", request = "Override max output tokens", placeholder = "8192" }
 
-[[interceptor]]
-event = "llm.v1.request.describe"
-action = "llm_describe"
-
-[[interceptor]]
-event = "llm.v1.request.generate.openai"
-action = "handle_llm_request"
+# Interceptor bindings: a [subscribe] entry's `handler` binds the topic to a
+# `#[astrid::interceptor]` export. The keys also serve as the subscribe ACL.
+[subscribe]
+"llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request", handler = "llm_describe" }
+"llm.v1.request.generate.openai" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
