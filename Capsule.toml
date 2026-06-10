@@ -11,26 +11,16 @@ file = "astrid_capsule_cli.wasm"
 uplink = true
 net_bind = ["unix:*"]
 
-# Opaque uplink proxy: the CLI bridges raw bytes between the socket client and
-# the bus without typing payloads, so every publish/subscribe entry is
-# `wit = "opaque"` and ACL-only (no handler). The keys are the IPC ACL — the
-# only way to declare what the proxy may publish/subscribe to.
 [publish]
 "user.v1.prompt" = { wit = "opaque" }
 "client.v1.connect" = { wit = "opaque" }
 "client.v1.disconnect" = { wit = "opaque" }
 "cli.v1.command.execute" = { wit = "opaque" }
 "astrid.v1.request.*" = { wit = "opaque" }
-# KernelClient adds a correlation UUID suffix to its request topics
-# (astrid.v1.request.<verb>.<uuid>) so concurrent in-flight calls each get a
-# private response channel. Without the 5-seg pattern below, every gateway-side
-# KernelRequest (e.g. /api/capsules) — and every CLI command going through
-# KernelClient (astrid who, astrid daemon status, astrid ps) — is denied at
-# publish time.
 "astrid.v1.request.*.*" = { wit = "opaque" }
-# Admin topics under astrid.v1.admin.<group>.<verb>[.<sub>] — host publish
-# cap-check uses strict segment-count matching, so list each depth (5-seg
-# covers invite/agent/group/quota/caps, 6-seg covers auth.pair.*).
+"astrid.v1.request.mcp.tools.list" = { wit = "opaque" }
+"astrid.v1.request.mcp.tool.call" = { wit = "opaque" }
+"astrid.v1.request.mcp.approval.respond" = { wit = "opaque" }
 "astrid.v1.admin.*.*" = { wit = "opaque" }
 "astrid.v1.admin.*.*.*" = { wit = "opaque" }
 "astrid.v1.elicit.response.*" = { wit = "opaque" }
@@ -48,14 +38,7 @@ net_bind = ["unix:*"]
 "astrid.v1.elicit.*" = { wit = "opaque" }
 "astrid.v1.onboarding.required" = { wit = "opaque" }
 "astrid.v1.response.*" = { wit = "opaque" }
-# Admin response topics are astrid.v1.admin.response.<group>.<verb>[.<sub>].
-# Strict segment-count matching means a single `*` matches one segment, so the
-# deeper patterns are needed or multi-segment admin responses never reach the
-# proxy and CLI admin calls time out. Mirrors the [publish] depth enumeration
-# (astrid.v1.admin.*.* / *.*.*).
 "astrid.v1.admin.response.*" = { wit = "opaque" }
-"astrid.v1.admin.response.*.*" = { wit = "opaque" }
-"astrid.v1.admin.response.*.*.*" = { wit = "opaque" }
 "registry.v1.response.*" = { wit = "opaque" }
 "registry.v1.active_model_changed" = { wit = "opaque" }
 "registry.v1.selection.*" = { wit = "opaque" }

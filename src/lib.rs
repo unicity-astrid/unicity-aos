@@ -39,15 +39,7 @@ impl CliProxy {
             "astrid.v1.elicit.*",
             "astrid.v1.approval",
             "astrid.v1.response.*",
-            // Admin response topics are astrid.v1.admin.response.<group>.<verb>
-            // (and .<sub> for the deeper variants). With strict segment-count
-            // matching a single `*` matches exactly one segment, so the deeper
-            // patterns are required or multi-segment admin responses are
-            // silently dropped and CLI admin calls time out. Mirrors the
-            // ipc_publish depth list (admin.*.* / admin.*.*.*).
             "astrid.v1.admin.response.*",
-            "astrid.v1.admin.response.*.*",
-            "astrid.v1.admin.response.*.*.*",
             "astrid.v1.capsules_loaded",
             "registry.v1.response.*",
             "registry.v1.active_model_changed",
