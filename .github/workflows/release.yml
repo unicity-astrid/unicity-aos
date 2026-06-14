@@ -25,31 +25,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release WASM
-        run: cargo build --locked --release --target wasm32-unknown-unknown
-
-      - name: Prepare release asset
+      # Componentize with astrid-build (from the astrid release) rather than
+      # publishing a raw `cargo build` wasm. A raw core module is NOT installable
+      # — `astrid capsule install` expects a `.capsule` archive (wasm component +
+      # manifest + bundled WIT). Publishing raw wasm forced install into a
+      # clone-and-build fallback that needs a Rust toolchain, so binary-only
+      # (Homebrew) installs failed. The astrid repo is public, so the capsule's
+      # GITHUB_TOKEN can read its release assets.
+      - name: Fetch astrid-build from the astrid release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          WASM_FILE=$(find target/wasm32-unknown-unknown/release -maxdepth 1 -name '*.wasm' -not -name '*.d' | head -1)
-          if [ -z "$WASM_FILE" ]; then
-            echo "Error: No .wasm file found"
-            exit 1
-          fi
-          BASENAME=$(basename "$WASM_FILE")
-          cp "$WASM_FILE" "$BASENAME"
-          echo "WASM_ASSET=$BASENAME" >> "$GITHUB_ENV"
+          gh release download --repo unicity-astrid/astrid \
+            --pattern 'astrid-*-x86_64-unknown-linux-gnu.tar.gz' --dir /tmp/astrid-cli
+          tar xzf /tmp/astrid-cli/*.tar.gz -C /tmp/astrid-cli
+          echo "$(dirname "$(find /tmp/astrid-cli -name astrid-build -type f | head -1)")" >> "$GITHUB_PATH"
 
-          # Generate BLAKE3 hash for integrity verification
-          cargo install b3sum --quiet 2>/dev/null || true
-          if command -v b3sum &>/dev/null; then
-            b3sum "$BASENAME" > "${BASENAME}.blake3"
-            echo "HASH_ASSET=${BASENAME}.blake3" >> "$GITHUB_ENV"
-          fi
+      - name: Build .capsule (componentized, install-ready)
+        run: astrid-build . --output dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ env.WASM_ASSET }}
-            ${{ env.HASH_ASSET }}
+          files: dist/*.capsule
           generate_release_notes: true
