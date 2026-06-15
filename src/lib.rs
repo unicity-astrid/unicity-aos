@@ -90,7 +90,16 @@ impl CliProxy {
                     Ok(s) => s,
                     Err(e) => {
                         log::warn(format!("Accept error: {e:?}, backing off"));
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        // `std::thread::sleep` panics on wasm32-unknown-unknown
+                        // ("can't sleep" — the unsupported thread shim), which
+                        // would kill the proxy run loop on the first accept
+                        // error. Use the host-backed sleep instead. Propagate a
+                        // sleep failure (`?`) rather than swallowing it: a failed
+                        // host sleep would otherwise let this arm `continue` with
+                        // no delay and busy-spin if `accept()` keeps erroring. The
+                        // host only errs here when tearing the capsule down, so
+                        // returning ends the loop cleanly.
+                        astrid_sdk::time::sleep(std::time::Duration::from_millis(100))?;
                         continue;
                     }
                 };
