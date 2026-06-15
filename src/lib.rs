@@ -281,16 +281,27 @@ fn summarize_wit(wit: &str) -> String {
     }
 
     let mut summary = String::new();
-    summary.push_str(&format!("package: {}\n", package.as_deref().unwrap_or("(none)")));
+    summary.push_str(&format!(
+        "package: {}\n",
+        package.as_deref().unwrap_or("(none)")
+    ));
     summary.push_str(&format!(
         "interfaces ({}): {}\n",
         interfaces.len(),
-        if interfaces.is_empty() { "(none)".into() } else { interfaces.join(", ") }
+        if interfaces.is_empty() {
+            "(none)".into()
+        } else {
+            interfaces.join(", ")
+        }
     ));
     summary.push_str(&format!(
         "records ({}): {}",
         records.len(),
-        if records.is_empty() { "(none)".into() } else { records.join(", ") }
+        if records.is_empty() {
+            "(none)".into()
+        } else {
+            records.join(", ")
+        }
     ));
     summary
 }
@@ -316,36 +327,66 @@ fn suggest_from_intent(intent: &str) -> Vec<Value> {
     let any = |needles: &[&str]| needles.iter().any(|n| intent.contains(n));
 
     if any(&["read file", "read files", "read a file", "load file"]) {
-        out.push(cap("read files", "[capabilities]\nfs_read = [\"home://\"]",
-            "Read under home://. Narrow the prefix to the smallest path you need."));
+        out.push(cap(
+            "read files",
+            "[capabilities]\nfs_read = [\"home://\"]",
+            "Read under home://. Narrow the prefix to the smallest path you need.",
+        ));
     }
     if any(&["write file", "write files", "save file", "write to disk"]) {
         out.push(cap("write files", "[capabilities]\nfs_write = [\"home://data/\"]",
             "Write under a narrow prefix. fs_write to home://skills/ is how a capsule ships a Skill."));
     }
-    if any(&["http", "rest api", "web request", "fetch url", "call an api"]) {
-        out.push(cap("outbound http", "[capabilities]\nnet = [\"host\"]",
-            "Outbound HTTP via astrid_sdk::http. Use [\"*\"] only if the host set is open."));
+    if any(&[
+        "http",
+        "rest api",
+        "web request",
+        "fetch url",
+        "call an api",
+    ]) {
+        out.push(cap(
+            "outbound http",
+            "[capabilities]\nnet = [\"host\"]",
+            "Outbound HTTP via astrid_sdk::http. Use [\"*\"] only if the host set is open.",
+        ));
     }
     if any(&["tcp", "socket connect", "outbound connection", "connect to"]) {
-        out.push(cap("outbound tcp", "[capabilities]\nnet_connect = [\"host:port\"]",
-            "Raw outbound TCP. List the concrete host:port targets."));
+        out.push(cap(
+            "outbound tcp",
+            "[capabilities]\nnet_connect = [\"host:port\"]",
+            "Raw outbound TCP. List the concrete host:port targets.",
+        ));
     }
-    if any(&["key-value", "key value", "kv store", "persist state", "store state"]) {
-        out.push(cap("kv store", "[capabilities]\nkv = true",
-            "Per-capsule, per-principal KV via astrid_sdk::kv. Stateful tools also auto-persist self."));
+    if any(&[
+        "key-value",
+        "key value",
+        "kv store",
+        "persist state",
+        "store state",
+    ]) {
+        out.push(cap("kv store", "[capabilities]\nkv = [\"mystore\"]",
+            "Reserved (not yet gate-enforced): per-capsule KV via astrid_sdk::kv already works without declaring it (auto-scoped per capsule + principal). Stateful tools also auto-persist self."));
     }
     if any(&["spawn", "run a process", "subprocess", "shell out", "exec"]) {
         out.push(cap("spawn a process", "[capabilities]\nhost_process = [\"git\", \"cargo\"]\n# add allow_persistent = true for reattachable persistent processes",
             "Name each allowed binary. allow_persistent adds host-owned reattachable processes."));
     }
-    if any(&["bind a socket", "listen", "unix socket", "server socket", "accept connections"]) {
+    if any(&[
+        "bind a socket",
+        "listen",
+        "unix socket",
+        "server socket",
+        "accept connections",
+    ]) {
         out.push(cap("bind a socket", "[capabilities]\nnet_bind = [\"...\"]",
             "Bind a listening socket (e.g. a Unix-socket uplink). Rare; most capsules are bus-only."));
     }
     if any(&["identity", "sign", "signature", "keypair", "ed25519"]) {
-        out.push(cap("identity ops", "[capabilities]\nidentity = true",
-            "Identity / signing operations via astrid_sdk::identity."));
+        out.push(cap(
+            "identity ops",
+            "[capabilities]\nidentity = [\"resolve\"]",
+            "Identity operations via astrid_sdk::identity. A list of resolve < link < admin (each implies the lesser).",
+        ));
     }
     suggest_llm(intent, &mut out);
     out
@@ -353,10 +394,24 @@ fn suggest_from_intent(intent: &str) -> Vec<Value> {
 
 /// LLM provider / consumer suggestion, grounded in the real openai-compat topics.
 fn suggest_llm(intent: &str, out: &mut Vec<Value>) {
-    let provider = ["be a provider", "llm provider", "serve an llm", "expose a model", "provide a model"]
-        .iter().any(|n| intent.contains(n));
-    let consumer = ["call an llm", "call the llm", "use an llm", "ask the model", "generate text"]
-        .iter().any(|n| intent.contains(n));
+    let provider = [
+        "be a provider",
+        "llm provider",
+        "serve an llm",
+        "expose a model",
+        "provide a model",
+    ]
+    .iter()
+    .any(|n| intent.contains(n));
+    let consumer = [
+        "call an llm",
+        "call the llm",
+        "use an llm",
+        "ask the model",
+        "generate text",
+    ]
+    .iter()
+    .any(|n| intent.contains(n));
 
     if provider {
         out.push(cap(
@@ -420,14 +475,20 @@ fn manifest_imports(manifest: &str) -> Vec<String> {
 /// the target itself, reading each `meta.json` `exports` map.
 fn all_installed_exports(target: &str) -> Vec<String> {
     let mut exports = Vec::new();
-    let Ok(names) = list_entries(CAPSULES_DIR) else { return exports };
+    let Ok(names) = list_entries(CAPSULES_DIR) else {
+        return exports;
+    };
     for name in names {
         if name == target {
             continue;
         }
         let meta_path = format!("{CAPSULES_DIR}/{name}/meta.json");
-        let Ok(content) = astrid_sdk::fs::read_to_string(&meta_path) else { continue };
-        let Ok(meta) = serde_json::from_str::<Value>(&content) else { continue };
+        let Ok(content) = astrid_sdk::fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
         if let Some(map) = meta.get("exports").and_then(Value::as_object) {
             collect_export_keys(map, &mut exports);
         }

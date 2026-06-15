@@ -260,12 +260,12 @@ Declare only what you use (least capability). Common keys in `[capabilities]`:
 | `net = ["host"]` or `["*"]` | Outbound HTTP via `astrid_sdk::http`. |
 | `net_connect = ["host:port"]` | Raw outbound TCP. |
 | `net_bind = ["..."]` | Bind a listening socket (e.g. a Unix socket uplink). |
-| `kv = true` | Per-capsule, per-principal key-value store (`astrid_sdk::kv`). |
+| `kv = ["scope"]` | Reserved (not yet gate-enforced). Per-capsule KV via `astrid_sdk::kv` already works without declaring it — keys are auto-scoped per capsule + principal. |
 | `fs_read = ["home://"]` | Read files under the given VFS scheme/prefix. |
 | `fs_write = ["home://skills/"]` | Write files under the given prefix. |
 | `host_process = ["git", "cargo"]` | Spawn the named host binaries (`astrid_sdk::process`). |
 | `allow_persistent = true` | Allow persistent, reattachable spawned processes. |
-| `identity = true` | Identity / signing operations (`astrid_sdk::identity`). |
+| `identity = ["resolve"]` | Identity operations (`astrid_sdk::identity`). A list of `resolve` < `link` < `admin`, each implying the lesser. |
 | `allow_prompt_injection = true` | Capsule output may be injected into the prompt. |
 
 **VFS schemes** for `fs_*` prefixes:
