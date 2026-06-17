@@ -17,7 +17,10 @@ pub(crate) fn tool_skeleton(name: &str) -> Value {
     files.insert(".cargo/config.toml".into(), Value::String(cargo_config()));
     files.insert("rust-toolchain.toml".into(), Value::String(toolchain()));
     files.insert("Cargo.toml".into(), Value::String(cargo_toml(name)));
-    files.insert("Capsule.toml".into(), Value::String(capsule_toml(name, &wasm)));
+    files.insert(
+        "Capsule.toml".into(),
+        Value::String(capsule_toml(name, &wasm)),
+    );
     files.insert("src/lib.rs".into(), Value::String(lib_rs()));
     Value::Object(files)
 }
@@ -121,5 +124,5 @@ impl Capsule {\n\
         Ok(format!(\"Hello, {}!\", args.name))\n\
     }\n\
 }\n"
-        .to_string()
+    .to_string()
 }

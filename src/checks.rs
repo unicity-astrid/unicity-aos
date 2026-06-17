@@ -18,29 +18,41 @@ pub(crate) struct Finding {
 
 impl Finding {
     fn err(message: impl Into<String>, fix: impl Into<String>) -> Self {
-        Self { level: "error", message: message.into(), fix: fix.into() }
+        Self {
+            level: "error",
+            message: message.into(),
+            fix: fix.into(),
+        }
     }
     fn warn(message: impl Into<String>, fix: impl Into<String>) -> Self {
-        Self { level: "warn", message: message.into(), fix: fix.into() }
+        Self {
+            level: "warn",
+            message: message.into(),
+            fix: fix.into(),
+        }
     }
     fn info(message: impl Into<String>, fix: impl Into<String>) -> Self {
-        Self { level: "info", message: message.into(), fix: fix.into() }
+        Self {
+            level: "info",
+            message: message.into(),
+            fix: fix.into(),
+        }
     }
 }
 
 /// Looks MAJOR.MINOR.PATCH-ish (all numeric, exactly three parts).
 fn is_semverish(v: &str) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
-    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// A topic segment is malformed if the key has empty segments
 /// (leading/trailing/consecutive dots).
 fn has_empty_segments(topic: &str) -> bool {
-    topic.is_empty()
-        || topic.starts_with('.')
-        || topic.ends_with('.')
-        || topic.contains("..")
+    topic.is_empty() || topic.starts_with('.') || topic.ends_with('.') || topic.contains("..")
 }
 
 /// Run all manifest lints. Returns the findings in roughly severity order.
@@ -90,8 +102,11 @@ fn check_package(root: &Toml, out: &mut Vec<Finding>) {
 fn check_component(root: &Toml, out: &mut Vec<Finding>) {
     let comps = root.get("component").and_then(Toml::as_array);
     let has_file = comps.is_some_and(|arr| {
-        arr.iter()
-            .any(|c| c.get("file").and_then(Toml::as_str).is_some_and(|f| !f.is_empty()))
+        arr.iter().any(|c| {
+            c.get("file")
+                .and_then(Toml::as_str)
+                .is_some_and(|f| !f.is_empty())
+        })
     });
     if !has_file {
         out.push(Finding::err(
@@ -102,7 +117,9 @@ fn check_component(root: &Toml, out: &mut Vec<Finding>) {
 }
 
 fn check_env(root: &Toml, out: &mut Vec<Finding>) {
-    let Some(env) = root.get("env").and_then(Toml::as_table) else { return };
+    let Some(env) = root.get("env").and_then(Toml::as_table) else {
+        return;
+    };
     for (key, val) in env {
         if val.get("scope").and_then(Toml::as_str) == Some("shared") {
             out.push(Finding::warn(
@@ -148,7 +165,9 @@ fn check_tool_bus(sub_keys: &[String], pub_keys: &[String], root: &Toml, out: &m
     let mut saw_execute_tool = false;
 
     for key in sub_keys {
-        let Some(tool) = key.strip_prefix("tool.v1.execute.") else { continue };
+        let Some(tool) = key.strip_prefix("tool.v1.execute.") else {
+            continue;
+        };
         // The `*.result` publish key would also strip; skip non-tool shapes.
         if tool.contains('*') || tool.contains('.') {
             continue;

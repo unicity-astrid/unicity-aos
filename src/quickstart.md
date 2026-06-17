@@ -122,8 +122,10 @@ astrid status                                   # confirm the daemon is healthy
 5. **A Skill needs an `#[astrid::install]` hook** (`include_str!` + `fs::write`) to land;
    the static engine is a no-op.
 6. **No hot-reload** — rebuild and reinstall to iterate.
-7. **Describe fan-out** can be incomplete on the first prompt after boot — if tools are in
-   the manifest but the model doesn't see them, re-prompt or restart the daemon. Known
-   kernel limitation, not your capsule.
+7. **`tool_describe` must publish, not return** — handled for you by depending on
+   `astrid-sdk = "0.7"` (0.7.1+). If a tool is in the manifest but the model can't see it,
+   it's almost always a manifest mistake (run `capsule_doctor`), not a kernel race — the old
+   describe fan-out race on first prompt is fixed in the current kernel.
 
-Use the `scaffold_capsule` tool to generate all five files at once, then write them out.
+Use `astrid capsule new <name>`, or the `scaffold_capsule` tool, to generate all five files
+at once, then write them out.

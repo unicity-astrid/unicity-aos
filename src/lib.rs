@@ -44,11 +44,16 @@ const CAPSULE_FORGE_SKILL: &str = include_str!("skills/capsule-forge/SKILL.md");
 /// Inline quickstart returned by `forge_quickstart` — the condensed front door.
 const QUICKSTART_MD: &str = include_str!("quickstart.md");
 
-/// The describe fan-out caveat, appended to every `capsule_doctor` result.
-const FANOUT_CAVEAT: &str = "If tools exist in the manifest but the model isn't \
-seeing them, the kernel's describe fan-out can be incomplete on the first prompt \
-after boot — re-prompt or restart the daemon. This is a known kernel limitation, \
-not your capsule.";
+/// Guidance appended to every `capsule_doctor` result. The describe fan-out
+/// race (incomplete on first prompt after boot) is fixed in the current kernel,
+/// so a tool that's in the manifest but invisible to the model points at a real
+/// manifest problem, not a kernel race.
+const DOCTOR_GUIDANCE: &str = "If a tool is declared in the manifest but the model \
+isn't seeing it, it is almost certainly a manifest problem — check that each tool \
+has its own `tool.v1.execute.<tool>` subscribe row with a `tool_execute_<tool>` \
+handler, and that `tool.v1.execute.*.result` + `tool.v1.response.describe.*` are \
+in [publish]. (The old describe fan-out race on first prompt after boot is fixed \
+in the current kernel.)";
 
 #[derive(Default)]
 pub struct ForgeTools;
@@ -197,7 +202,7 @@ impl ForgeTools {
                 Ok(format!(
                     "Interface '{filename}' not found.\nAvailable interfaces:\n{}",
                     if available.is_empty() {
-                        "(none — run `astrid init` to install the standard WIT)".to_string()
+                        "(none — the WIT store fills as capsules are installed; run `astrid init` to install the standard distro)".to_string()
                     } else {
                         available.join("\n")
                     }
@@ -234,7 +239,6 @@ impl ForgeTools {
 
     /// Diagnose an installed capsule: missing describe handler, missing result
     /// publish, tool subscribes with no handler, and unsatisfied imports.
-    /// Always includes the describe fan-out caveat.
     #[astrid::tool("capsule_doctor")]
     pub fn capsule_doctor(&self, args: DoctorArgs) -> Result<String, SysError> {
         let name = args.name.trim();
@@ -243,7 +247,7 @@ impl ForgeTools {
         let manifest_path = format!("{CAPSULES_DIR}/{name}/Capsule.toml");
         let manifest = astrid_sdk::fs::read_to_string(&manifest_path).map_err(|_| {
             SysError::ApiError(format!(
-                "Capsule '{name}' not found at {manifest_path}. Use list (system capsule) to see installed names."
+                "Capsule '{name}' not found at {manifest_path}. Run the `list_capsules` tool (system capsule) to see installed names."
             ))
         })?;
 
@@ -253,7 +257,7 @@ impl ForgeTools {
         to_json(&json!({
             "capsule": name,
             "findings": findings,
-            "caveat": FANOUT_CAVEAT,
+            "guidance": DOCTOR_GUIDANCE,
         }))
     }
 }
@@ -346,8 +350,8 @@ fn suggest_from_intent(intent: &str) -> Vec<Value> {
     ]) {
         out.push(cap(
             "outbound http",
-            "[capabilities]\nnet = [\"host\"]",
-            "Outbound HTTP via astrid_sdk::http. Use [\"*\"] only if the host set is open.",
+            "[capabilities]\nnet = [\"api.example.com\"]",
+            "Outbound HTTP via astrid_sdk::http. List each concrete hostname; use [\"*\"] only if the host set is open.",
         ));
     }
     if any(&["tcp", "socket connect", "outbound connection", "connect to"]) {
