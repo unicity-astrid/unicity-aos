@@ -65,6 +65,23 @@ pub(crate) struct OpenAIUsage {
     pub(crate) completion_tokens: usize,
 }
 
+/// Response shape of `GET {base_url}/v1/models` (OpenAI list-models format,
+/// implemented by OpenAI, Groq, Together, LM Studio, vLLM, llama.cpp, ...).
+#[derive(Deserialize, Debug)]
+pub(crate) struct ModelList {
+    /// The catalogue of servable models. Unknown extra fields are ignored.
+    #[serde(default)]
+    pub(crate) data: Vec<ModelEntry>,
+}
+
+/// A single entry in the `/v1/models` `data` array. Only `id` is consumed;
+/// every other field (`object`, `created`, `owned_by`, ...) is ignored.
+#[derive(Deserialize, Debug)]
+pub(crate) struct ModelEntry {
+    /// The model id to advertise as a provider-entry id.
+    pub(crate) id: String,
+}
+
 /// HTTP response payload from the SDK http airlock (buffered fallback).
 #[derive(Deserialize)]
 #[expect(dead_code)]
