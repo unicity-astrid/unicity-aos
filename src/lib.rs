@@ -26,13 +26,19 @@ use astrid_sdk::prelude::*;
 use astrid_sdk::types::{IpcPayload, Message, MessageContent, MessageRole, StreamEvent};
 use models::lookup;
 use schemas::{
-    FunctionCallArgsDelta, FunctionCallArgsDone, OutputItemAdded, ResponseCompleted, TextDelta,
+    FunctionCallArgsDelta, FunctionCallArgsDone, ModelList, OutputItemAdded, ResponseCompleted,
+    TextDelta,
 };
 use serde_json::Value;
 use uuid::Uuid;
 
 const STREAM_TOPIC: &str = "llm.v1.stream.openai";
+/// IPC topic the registry routes generate requests to for this capsule.
+/// Single source of truth, reused by `llm_describe` and the test suite.
+const REQUEST_TOPIC: &str = "llm.v1.request.generate.openai";
 const BASE_URL: &str = "https://api.openai.com";
+/// Default model hint when the env `model` is unset.
+const DEFAULT_MODEL: &str = "gpt-5.5";
 /// Maximum SSE line buffer size (1 MB).
 const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024;
 
@@ -76,47 +82,119 @@ impl OpenAIProvider {
     /// fanned out to the caller under the new ABI.
     #[astrid::interceptor("llm_describe")]
     pub fn llm_describe(&self, _payload: serde_json::Value) -> Result<serde_json::Value, SysError> {
-        let model_id = env::var("model").unwrap_or_else(|_| "gpt-5.4".into());
-        let info = lookup(&model_id);
+        // The env `model` is the *default selection* hint, not the only usable
+        // model. We advertise the LIVE `/v1/models` catalogue (enriched from the
+        // capability table) when reachable, and fall back to the full hardcoded
+        // catalog otherwise so an offline/keyless install never regresses.
+        let default_model = env::var("model").unwrap_or_else(|_| DEFAULT_MODEL.into());
 
-        let context_window = env::var("context_window")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(info.context_window);
-        let max_output = env::var("max_output_tokens")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(info.max_output_tokens);
+        let entries = match Self::discover_models() {
+            Ok(live_ids) => {
+                // Live list is authority; enrich each id from the catalog and
+                // hoist (or prepend) the configured default so it is first.
+                models::build_live_entries(&live_ids, &default_model, REQUEST_TOPIC, STREAM_TOPIC)
+            }
+            Err(e) => {
+                // Any discovery failure (missing/blank key, non-2xx, non-JSON,
+                // empty data, network error) falls back to the full catalog.
+                log::warn(format!(
+                    "/v1/models discovery failed, advertising hardcoded catalog: {e}"
+                ));
+                models::build_provider_entries(&default_model, REQUEST_TOPIC, STREAM_TOPIC)
+            }
+        };
 
-        let mut capabilities = vec!["text", "tools"];
-        if info.supports_vision {
-            capabilities.push("vision");
-        }
-        if info.supports_structured_output {
-            capabilities.push("structured_output");
-        }
-        if info.is_reasoning {
-            capabilities.push("reasoning");
-        }
-
-        let response = serde_json::json!({
-            "providers": [{
-                "id": "openai",
-                "description": format!("OpenAI {} ({})", info.name, model_id),
-                "capabilities": capabilities,
-                "request_topic": "llm.v1.request.generate.openai",
-                "stream_topic": STREAM_TOPIC,
-                "context_window": context_window,
-                "max_output_tokens": max_output,
-                "models": models::list_model_ids(),
-            }]
-        });
+        let response = serde_json::json!({ "providers": entries });
         ipc::publish_json("llm.v1.response.describe", &response)?;
         Ok(response)
     }
 }
 
 impl OpenAIProvider {
+    /// Build the `Authorization` header value from a raw configured key.
+    ///
+    /// Returns `Some("Bearer <trimmed>")` only when the key has non-whitespace
+    /// content; a missing, empty, or whitespace/newline-only key (common from a
+    /// copy-paste) is treated as **keyless** (`None`) so discovery never emits
+    /// `Authorization: Bearer <whitespace>`. The header carries the trimmed
+    /// value, stripping stray surrounding whitespace from the configured secret.
+    fn bearer_header(raw_key: &str) -> Option<String> {
+        let trimmed = raw_key.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(format!("Bearer {trimmed}"))
+        }
+    }
+
+    /// Resolve the request base URL from the `base_url` env (defaulting to the
+    /// [`BASE_URL`] const when unset), normalized via [`normalize_base_url`].
+    ///
+    /// Single source of truth for the endpoint so discovery (`/v1/models`) and
+    /// generation (`/v1/responses`) always hit the SAME host: a configured
+    /// proxy/Azure `base_url` must not split traffic between the two paths.
+    fn resolve_base_url() -> String {
+        Self::normalize_base_url(&env::var("base_url").unwrap_or_else(|_| BASE_URL.into()))
+    }
+
+    /// Pure normalization of a configured base URL: strip any trailing slash so
+    /// `{base}/v1/...` never doubles the separator. Split from [`resolve_base_url`]
+    /// so the endpoint-building invariant is unit-testable without a host env.
+    fn normalize_base_url(raw: &str) -> String {
+        raw.trim_end_matches('/').to_string()
+    }
+
+    /// Query `GET {base_url}/v1/models` and return the discovered model ids.
+    ///
+    /// Returns `Ok(Vec)` with **at least one** id on success. Any failure
+    /// (network error, non-2xx, unparseable body, empty `data`) returns `Err`
+    /// so the caller falls back to the hardcoded catalog. Never panics; never
+    /// blocks beyond the host HTTP timeout. A missing/blank api_key is NOT a
+    /// hard error here — OpenAI rejects keyless `/v1/models` with a non-2xx,
+    /// which funnels to the same fallback.
+    fn discover_models() -> Result<Vec<String>, SysError> {
+        let url = format!("{}/v1/models", Self::resolve_base_url());
+
+        let mut req = http::Request::get(&url);
+        // Only send `Authorization` when the key has non-whitespace content, and
+        // send the trimmed value: a whitespace/newline-only key (common from a
+        // copy-paste) is treated as keyless, not sent as `Bearer <ws>`.
+        if let Some(value) = Self::bearer_header(&env::var("api_key").unwrap_or_default()) {
+            req = req.header("authorization", value);
+        }
+
+        let resp = http::send(&req)?;
+        if !resp.is_success() {
+            return Err(SysError::ApiError(format!(
+                "/v1/models returned status {}",
+                resp.status()
+            )));
+        }
+
+        let list: ModelList = resp.json()?;
+        Self::extract_model_ids(list)
+    }
+
+    /// Pure extraction + emptiness gate, split out so it is unit-testable
+    /// without HTTP. Drops blank ids (empty or whitespace-only, which cannot be
+    /// selected) and deduplicates colliding ids stably (preserving server
+    /// order), guarding against hostile upstreams that repeat an id; errors if
+    /// nothing usable remains so the caller falls back to the catalog.
+    fn extract_model_ids(list: ModelList) -> Result<Vec<String>, SysError> {
+        let mut seen = std::collections::HashSet::new();
+        let ids: Vec<String> = list
+            .data
+            .into_iter()
+            .map(|m| m.id)
+            .filter(|id| !id.trim().is_empty())
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+        if ids.is_empty() {
+            return Err(SysError::ApiError("/v1/models returned no models".into()));
+        }
+        Ok(ids)
+    }
+
     /// Build and send the Responses API request, then parse the SSE stream.
     fn execute_request(
         request_id: Uuid,
@@ -125,10 +203,14 @@ impl OpenAIProvider {
         tools: &[astrid_sdk::types::LlmToolDefinition],
         system: &str,
     ) -> Result<(), SysError> {
-        let url = format!("{BASE_URL}/v1/responses");
+        // Resolve `base_url` from env (defaulting to BASE_URL) through the same
+        // helper `discover_models` uses, so discovery and generation hit the SAME
+        // endpoint. Without this a configured proxy/Azure `base_url` is used for
+        // /v1/models discovery while generation silently goes to api.openai.com.
+        let url = format!("{}/v1/responses", Self::resolve_base_url());
 
         let resolved_model = if model.is_empty() {
-            env::var("model").unwrap_or_else(|_| "gpt-5.4".into())
+            env::var("model").unwrap_or_else(|_| DEFAULT_MODEL.into())
         } else {
             model.to_string()
         };
@@ -199,13 +281,16 @@ impl OpenAIProvider {
             request_body["tools"] = Value::Array(api_tools);
         }
 
-        let api_key = env::var("api_key").unwrap_or_default();
-        if api_key.is_empty() {
+        // Use the shared `bearer_header` so the generation path trims the key
+        // identically to discovery (`discover_models`). Without this, a key with
+        // trailing whitespace lets discovery succeed (it trims) while generation
+        // sends `Bearer <key>\n` and fails. A blank/whitespace-only key is keyless.
+        let Some(auth_value) = Self::bearer_header(&env::var("api_key").unwrap_or_default()) else {
             return Err(SysError::ApiError("OpenAI api_key not configured".into()));
-        }
+        };
 
         let req = http::Request::post(&url)
-            .header("authorization", format!("Bearer {api_key}"))
+            .header("authorization", auth_value)
             .json(&request_body)?;
 
         let stream = http::stream_start(&req)?;
@@ -452,5 +537,126 @@ impl OpenAIProvider {
             MessageRole::Assistant => "assistant",
             MessageRole::Tool => "tool",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BASE_URL, DEFAULT_MODEL, ModelList, OpenAIProvider, REQUEST_TOPIC, STREAM_TOPIC, models,
+    };
+
+    #[test]
+    fn discovery_and_generation_share_one_base_url() {
+        // Regression: discovery read `base_url` from env but generation hardcoded
+        // the `BASE_URL` const, so a configured proxy/Azure endpoint split traffic
+        // (discovery hit the proxy, generation silently hit api.openai.com). Both
+        // paths must build their URL from the SAME normalized base.
+        let proxy = "https://proxy.example.com/";
+        let base = OpenAIProvider::normalize_base_url(proxy);
+        let models_url = format!("{base}/v1/models");
+        let responses_url = format!("{base}/v1/responses");
+        // Same host for both routes — no trailing-slash doubling, no api.openai.com.
+        assert_eq!(models_url, "https://proxy.example.com/v1/models");
+        assert_eq!(responses_url, "https://proxy.example.com/v1/responses");
+        assert!(!responses_url.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn normalize_base_url_defaults_and_strips_trailing_slash() {
+        // The const default is normalized identically to a configured value.
+        assert_eq!(OpenAIProvider::normalize_base_url(BASE_URL), BASE_URL);
+        assert_eq!(
+            OpenAIProvider::normalize_base_url("https://api.openai.com/"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            OpenAIProvider::normalize_base_url("https://api.openai.com"),
+            "https://api.openai.com"
+        );
+    }
+
+    #[test]
+    fn generation_auth_trims_key_like_discovery() {
+        // Regression: discovery built its header via `bearer_header` (which trims)
+        // while generation used the RAW `api_key` env, so a key with trailing
+        // whitespace let discovery succeed but generation send `Bearer <key>\n`
+        // and fail. Both paths now route through `bearer_header`, so a whitespace-
+        // padded key yields an identical trimmed header on the generation path.
+        assert_eq!(
+            OpenAIProvider::bearer_header("  sk-live-xyz \n"),
+            Some("Bearer sk-live-xyz".to_string())
+        );
+        // And a whitespace-only key is keyless on BOTH paths (generation returns
+        // the "not configured" error rather than sending `Bearer <ws>`).
+        assert_eq!(OpenAIProvider::bearer_header(" \t\n "), None);
+    }
+
+    #[test]
+    fn extract_model_ids_parses_dedups_and_drops_blanks() {
+        // A representative `/v1/models` body with vendor extras, a blank id, and
+        // a duplicate. Only non-blank ids survive, stably deduped on server order.
+        let body = r#"{
+            "object": "list",
+            "data": [
+                { "id": "gpt-5.5", "object": "model", "owned_by": "openai" },
+                { "id": "   ", "object": "model" },
+                { "id": "gpt-5.4", "object": "model" },
+                { "id": "gpt-5.5", "object": "model" }
+            ]
+        }"#;
+        let list: ModelList = serde_json::from_str(body).expect("parse model list");
+        let ids = OpenAIProvider::extract_model_ids(list).expect("non-empty");
+        assert_eq!(ids, vec!["gpt-5.5", "gpt-5.4"]);
+    }
+
+    #[test]
+    fn extract_model_ids_empty_data_is_error() {
+        // Empty `data`, all-blank ids, and a missing `data` key all funnel to the
+        // Err arm that triggers the catalog fallback in `discover_models`.
+        let empty: ModelList = serde_json::from_str(r#"{ "data": [] }"#).expect("parse");
+        assert!(OpenAIProvider::extract_model_ids(empty).is_err());
+
+        let blank: ModelList =
+            serde_json::from_str(r#"{ "data": [ { "id": "  " } ] }"#).expect("parse");
+        assert!(OpenAIProvider::extract_model_ids(blank).is_err());
+
+        let missing: ModelList = serde_json::from_str(r#"{ "object": "list" }"#).expect("parse");
+        assert!(OpenAIProvider::extract_model_ids(missing).is_err());
+    }
+
+    #[test]
+    fn bearer_header_treats_blank_key_as_keyless() {
+        // A copy-pasted empty/whitespace/newline key must NOT produce a header:
+        // sending `Bearer <whitespace>` breaks discovery against some servers.
+        assert_eq!(OpenAIProvider::bearer_header(""), None);
+        assert_eq!(OpenAIProvider::bearer_header("   "), None);
+        assert_eq!(OpenAIProvider::bearer_header(" \t\r\n "), None);
+        // A genuine key produces a header, trimmed of stray surrounding space.
+        assert_eq!(
+            OpenAIProvider::bearer_header("  sk-abc123\n"),
+            Some("Bearer sk-abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn discovery_failure_fallback_equals_full_hardcoded_catalog() {
+        // The `Err` arm of `llm_describe` builds exactly the full hardcoded
+        // catalog via `build_provider_entries` — an offline/keyless install must
+        // advertise the known catalog and never regress.
+        let fallback = models::build_provider_entries(DEFAULT_MODEL, REQUEST_TOPIC, STREAM_TOPIC);
+        // Sanity: the fallback is the whole catalog, frontier-default first.
+        assert_eq!(fallback[0].id, DEFAULT_MODEL);
+        assert!(fallback.len() > 1);
+        // Every entry carries the shared topics.
+        for e in &fallback {
+            assert_eq!(e.request_topic, REQUEST_TOPIC);
+            assert_eq!(e.stream_topic, STREAM_TOPIC);
+        }
+    }
+
+    #[test]
+    fn default_model_constant_is_gpt_5_5() {
+        assert_eq!(DEFAULT_MODEL, "gpt-5.5");
     }
 }

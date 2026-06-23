@@ -94,3 +94,20 @@ pub(crate) struct Usage {
     /// Output tokens generated.
     pub output_tokens: usize,
 }
+
+/// Response shape of `GET {base_url}/v1/models` (OpenAI list-models format).
+/// Unknown extra fields are ignored; only `data[].id` is consumed.
+#[derive(Deserialize)]
+pub(crate) struct ModelList {
+    /// The catalogue of servable models.
+    #[serde(default)]
+    pub data: Vec<ModelEntry>,
+}
+
+/// A single entry in the `/v1/models` `data` array. Only `id` is consumed;
+/// every other field (`object`, `created`, `owned_by`, ...) is ignored.
+#[derive(Deserialize)]
+pub(crate) struct ModelEntry {
+    /// The model id to advertise as a provider-entry id.
+    pub id: String,
+}
