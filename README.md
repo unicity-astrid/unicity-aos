@@ -12,10 +12,11 @@ In the OS model, this capsule is the device manager. It discovers which LLM prov
 1. Waits for `astrid.v1.capsules_loaded` from the kernel (all capsules booted)
 2. Queries the kernel for capsule metadata via `GetCapsuleMetadata`
 3. Resolves provider entries: model ID, description, capsule name, request/stream topics, capabilities
-4. Persists the provider list and active model in the capsule KV store
-5. Auto-selects the sole provider when only one is available
+4. Stamps each entry's canonical selection id as `"<capsule>:<model>"`, where `<capsule>` is the publisher authenticated against the kernel-stamped IPC `source_id` (a provider cannot claim a qualifier it does not cryptographically own)
+5. Persists the provider list and active model in the capsule KV store
+6. Auto-selects a default for a fresh principal — the first discovered capsule's default-hint model (entry[0] of its contribution)
 
-On capsule reload events, the registry re-discovers providers, clears stale active model references, and auto-selects again if applicable.
+On capsule reload events, the registry re-discovers providers, reconciles a stale active model (remapping an old bare-provider selection to that capsule's default across a single->multi-model upgrade, clearing only when the model is genuinely gone), and auto-selects again if applicable.
 
 ## IPC protocol
 
@@ -26,16 +27,26 @@ On capsule reload events, the registry re-discovers providers, clears stale acti
 | Subscribe | `registry.v1.set_active_model` | Sets active model by ID |
 | Publish | `registry.v1.active_model_changed` | Emitted on model switch |
 | Publish | `registry.v1.response.*` | Per-request responses |
+| Subscribe | `cli.v1.command.run.registry` | Scriptable `models` verb runs |
+| Publish | `cli.v1.command.result.*` | Scriptable verb results, keyed by request id |
 
 ## CLI integration
 
-Handles the `/models` command:
+TUI slash command (`cli.v1.command.execute`):
 - `/models` - emits a `SelectionRequired` payload for the TUI picker
 - `/models <model_id>` - direct model switch
 
+Scriptable verb (`astrid capsule models ...`, over `cli.v1.command.run.registry` with the reply on `cli.v1.command.result.<req_id>`):
+- `models list [--json]` - list available models (canonical ids, active marked)
+- `models current [--json]` - print the active model id (or `none`)
+- `models set <id>` - switch the active model; accepts a bare model name when unambiguous, persists the canonical `"<capsule>:<model>"` form
+- `models unset` - clear the active model
+
+Selection ids are matched structurally so ollama-style model names with colons (`ollama:llama3.3:70b`) resolve correctly. A bare name that matches several capsules' models errors with the qualified candidates so you can disambiguate.
+
 ## Security
 
-Only accepts capsule metadata responses from the kernel's system session UUID. Messages from untrusted sources are logged and discarded.
+Reload/boot signals are only honoured from the kernel's system session UUID. Provider discovery entries are bound to a `<capsule>` qualifier only after the provider's self-reported routing is authenticated against the kernel-stamped IPC `source_id` (recomputed as `uuid_v5(namespace, candidate)`); a provider cannot publish entries shadowing another capsule's models. Entries that fail authentication, and messages from untrusted sources, are logged and discarded.
 
 ## Development
 

@@ -15,6 +15,7 @@ dependencies = [
  "astrid-sdk",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -12,6 +12,11 @@ crate-type = ["cdylib"]
 astrid-sdk = { version = "0.7", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# UUIDv5 only — used to authenticate a provider's self-reported `<capsule>`
+# qualifier against the kernel-stamped `source_id`. v5 is SHA-1 based and
+# pulls no RNG/getrandom, so `default-features = false` keeps the wasm build
+# clean.
+uuid = { version = "1", default-features = false, features = ["v5"] }
 
 [profile.release]
 opt-level = "z"
