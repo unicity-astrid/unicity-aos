@@ -28,12 +28,12 @@ generation and `/v1/models` for discovery. Do not include a `/v1` suffix.
 
 ## How it works
 
-1. Subscribes to `llm.v1.request.generate.astrid-capsule-openai-compat` IPC events
+1. Subscribes to `llm.v1.request.generate.openai-compat` IPC events
 2. Converts Astrid's `Message` format to the OpenAI Chat Completions JSON format (text, tool calls,
    tool results, multipart)
 3. Opens a streaming HTTP connection to `{base_url}/v1/chat/completions` via the HTTP streaming
    airlock
-4. Parses the SSE response in real-time and publishes standardized `llm.v1.stream.astrid-capsule-openai-compat`
+4. Parses the SSE response in real-time and publishes standardized `llm.v1.stream.openai-compat`
    events back to the IPC bus as chunks arrive
 
 Stream events cover the full response lifecycle: text deltas, parallel tool call
@@ -159,7 +159,7 @@ astrid models set gpt-5.4
 astrid models set llama3.3:70b
 
 # Disambiguate when two providers serve the same model name
-astrid models set astrid-capsule-openai-compat:gpt-5.4
+astrid models set openai-compat:gpt-5.4
 
 # Clear the active selection (falls back to the auto-selected default)
 astrid models unset
@@ -217,9 +217,9 @@ above).
 
 | Direction | Topic | Payload |
 |---|---|---|
-| Subscribe | `llm.v1.request.generate.astrid-capsule-openai-compat` | `IpcPayload::LlmRequest` |
+| Subscribe | `llm.v1.request.generate.openai-compat` | `IpcPayload::LlmRequest` |
 | Subscribe | `llm.v1.request.describe` | describe request (registry fan-out) |
-| Publish | `llm.v1.stream.astrid-capsule-openai-compat` | `IpcPayload::LlmStreamEvent` |
+| Publish | `llm.v1.stream.openai-compat` | `IpcPayload::LlmStreamEvent` |
 | Publish | `llm.v1.response.describe` | provider descriptor array |
 
 ## Development
