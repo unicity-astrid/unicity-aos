@@ -15,7 +15,7 @@ capabilities = { net = ["*"] }
 "astrid:llm" = "1.0.0"
 
 [publish]
-"llm.v1.stream.openai-compat" = { wit = "@unicity-astrid/wit/llm/stream-event" }
+"llm.v1.stream.astrid-capsule-openai-compat" = { wit = "@unicity-astrid/wit/llm/stream-event" }
 # Exact topic for the post-#752 registry fan-out (registry subscribes to
 # the unsuffixed name). The `.*` wildcard below stays for any future
 # call-site that wants per-provider response correlation routing.
@@ -24,7 +24,7 @@ capabilities = { net = ["*"] }
 
 [subscribe]
 "llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request", handler = "llm_describe" }
-"llm.v1.request.generate.openai-compat" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
+"llm.v1.request.generate.astrid-capsule-openai-compat" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
 
 [capabilities]
 net = ["*"]

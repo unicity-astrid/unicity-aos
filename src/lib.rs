@@ -5,9 +5,9 @@
 
 //! OpenAI-compatible LLM provider capsule.
 //!
-//! Subscribes to `llm.v1.request.generate.openai-compat` IPC events, calls any
+//! Subscribes to `llm.v1.request.generate.astrid-capsule-openai-compat` IPC events, calls any
 //! OpenAI-compatible Chat Completions API via the HTTP airlock, parses the SSE
-//! streaming response, and publishes standardized `llm.v1.stream.openai-compat`
+//! streaming response, and publishes standardized `llm.v1.stream.astrid-capsule-openai-compat`
 //! events back to the event bus.
 //!
 //! Configure `base_url` to point at any compatible provider:
@@ -26,11 +26,11 @@ use schemas::{ChatCompletionChunk, ModelList};
 use serde_json::Value;
 use uuid::Uuid;
 
-const STREAM_TOPIC: &str = "llm.v1.stream.openai-compat";
+const STREAM_TOPIC: &str = concat!("llm.v1.stream.", env!("CARGO_PKG_NAME"));
 /// IPC topic providers advertise (and the registry routes generation requests
-/// to) for this capsule. Single source of truth, reused by `describe_providers`
-/// and the test suite.
-const REQUEST_TOPIC: &str = "llm.v1.request.generate.openai-compat";
+/// to) for this capsule. The suffix must match the package id the kernel uses
+/// for IPC source stamps, or registry provider authentication will reject it.
+const REQUEST_TOPIC: &str = concat!("llm.v1.request.generate.", env!("CARGO_PKG_NAME"));
 /// Maximum SSE line buffer size (1 MB). If the server sends data without
 /// a newline that exceeds this, the stream is aborted.
 const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024;
@@ -590,7 +590,7 @@ impl OpenAICompatProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelList, OpenAICompatProvider, REQUEST_TOPIC};
+    use super::{ModelList, OpenAICompatProvider, REQUEST_TOPIC, STREAM_TOPIC};
 
     /// Helper: collect the `id` field of every provider entry, in order.
     fn ids(entries: &[serde_json::Value]) -> Vec<String> {
@@ -631,6 +631,21 @@ mod tests {
             ids(&entries),
             vec!["gpt-5.4", "llama3.3:70b", "mixtral-8x7b"]
         );
+    }
+
+    #[test]
+    fn advertised_topics_use_authenticated_package_id_suffix() {
+        // Registry authenticates the final topic segment against the kernel's
+        // package-id source stamp, not the component id (`openai-compat`).
+        assert_eq!(
+            REQUEST_TOPIC,
+            "llm.v1.request.generate.astrid-capsule-openai-compat"
+        );
+        assert_eq!(STREAM_TOPIC, "llm.v1.stream.astrid-capsule-openai-compat");
+        const CAPSULE_PACKAGE_ID: &str = env!("CARGO_PKG_NAME");
+        let authenticated_suffix = format!(".{CAPSULE_PACKAGE_ID}");
+        assert!(REQUEST_TOPIC.ends_with(&authenticated_suffix));
+        assert!(STREAM_TOPIC.ends_with(&authenticated_suffix));
     }
 
     #[test]
