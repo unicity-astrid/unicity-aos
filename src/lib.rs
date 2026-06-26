@@ -30,9 +30,16 @@ const STREAM_TOPIC: &str = "llm.v1.stream.openai-compat";
 /// IPC topic this provider advertises and the registry routes generation
 /// requests to. This is the stable provider route alias, not the package name.
 const REQUEST_TOPIC: &str = "llm.v1.request.generate.openai-compat";
+const PROVIDER_ALIAS: &str = "openai-compat";
 /// Maximum SSE line buffer size (1 MB). If the server sends data without
 /// a newline that exceeds this, the stream is aborted.
 const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024;
+
+#[derive(Debug)]
+enum SseData {
+    Done,
+    Chunk(ChatCompletionChunk),
+}
 
 /// OpenAI-compatible LLM provider capsule.
 #[derive(Default)]
@@ -275,11 +282,7 @@ impl OpenAICompatProvider {
         let base_url = env::var("base_url").unwrap_or_else(|_| "https://api.openai.com".into());
         let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
 
-        let resolved_model = if model.is_empty() {
-            env::var("model").unwrap_or_else(|_| "gpt-5.4".into())
-        } else {
-            model.to_string()
-        };
+        let resolved_model = Self::resolve_request_model(model, env::var("model").ok());
 
         let mut api_messages: Vec<Value> = Vec::new();
 
@@ -399,24 +402,48 @@ impl OpenAICompatProvider {
                     continue;
                 }
 
-                let Some(data) = line.strip_prefix("data: ") else {
+                let Some(data) = Self::sse_data_payload(&line) else {
                     continue;
                 };
 
-                if data == "[DONE]" {
-                    Self::publish_stream(request_id, StreamEvent::Done)?;
-                    return Ok(());
+                match Self::parse_sse_data(data)? {
+                    SseData::Done => {
+                        Self::publish_stream(request_id, StreamEvent::Done)?;
+                        return Ok(());
+                    }
+                    SseData::Chunk(chunk) => {
+                        Self::process_chunk(request_id, &chunk, &mut active_tools)?;
+                    }
                 }
-
-                let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(data) else {
-                    continue;
-                };
-
-                Self::process_chunk(request_id, &chunk, &mut active_tools)?;
             }
         }
 
-        Ok(())
+        if line_buffer.trim().is_empty() {
+            Err(SysError::ApiError("SSE stream ended before [DONE]".into()))
+        } else {
+            Err(SysError::ApiError(
+                "SSE stream ended with a partial line".into(),
+            ))
+        }
+    }
+
+    fn parse_sse_data(data: &str) -> Result<SseData, SysError> {
+        let data = data.trim();
+        if data == "[DONE]" {
+            return Ok(SseData::Done);
+        }
+
+        serde_json::from_str::<ChatCompletionChunk>(data)
+            .map(SseData::Chunk)
+            .map_err(|e| SysError::ApiError(format!("invalid SSE JSON: {e}")))
+    }
+
+    fn sse_data_payload(line: &str) -> Option<&str> {
+        let data = line.strip_prefix("data:")?.trim_start();
+        if data.trim().is_empty() {
+            return None;
+        }
+        Some(data)
     }
 
     /// Process a single parsed SSE chunk, emitting the appropriate stream events.
@@ -585,11 +612,27 @@ impl OpenAICompatProvider {
             MessageRole::Tool => "tool",
         }
     }
+
+    fn provider_model_id(model: &str) -> &str {
+        model
+            .strip_prefix(PROVIDER_ALIAS)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .unwrap_or(model)
+    }
+
+    fn resolve_request_model(model: &str, env_model: Option<String>) -> String {
+        let raw = if model.is_empty() {
+            env_model.unwrap_or_else(|| "gpt-5.4".into())
+        } else {
+            model.to_string()
+        };
+        Self::provider_model_id(&raw).to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelList, OpenAICompatProvider, REQUEST_TOPIC, STREAM_TOPIC};
+    use super::{ModelList, OpenAICompatProvider, REQUEST_TOPIC, STREAM_TOPIC, SseData};
 
     /// Helper: collect the `id` field of every provider entry, in order.
     fn ids(entries: &[serde_json::Value]) -> Vec<String> {
@@ -634,11 +677,117 @@ mod tests {
 
     #[test]
     fn advertised_topics_use_stable_provider_alias() {
-        const PROVIDER_TOPIC_ALIAS: &str = "openai-compat";
         assert_eq!(REQUEST_TOPIC, "llm.v1.request.generate.openai-compat");
         assert_eq!(STREAM_TOPIC, "llm.v1.stream.openai-compat");
-        assert!(REQUEST_TOPIC.ends_with(PROVIDER_TOPIC_ALIAS));
-        assert!(STREAM_TOPIC.ends_with(PROVIDER_TOPIC_ALIAS));
+        assert!(REQUEST_TOPIC.ends_with(super::PROVIDER_ALIAS));
+        assert!(STREAM_TOPIC.ends_with(super::PROVIDER_ALIAS));
+    }
+
+    #[test]
+    fn provider_request_model_strips_registry_prefix_only() {
+        assert_eq!(
+            OpenAICompatProvider::provider_model_id("openai-compat:gpt-5.4"),
+            "gpt-5.4"
+        );
+        assert_eq!(
+            OpenAICompatProvider::provider_model_id("openai-compat:llama3.3:70b"),
+            "llama3.3:70b"
+        );
+        assert_eq!(
+            OpenAICompatProvider::provider_model_id("llama3.3:70b"),
+            "llama3.3:70b"
+        );
+        assert_eq!(
+            OpenAICompatProvider::provider_model_id("other:gpt-5.4"),
+            "other:gpt-5.4"
+        );
+    }
+
+    #[test]
+    fn request_model_normalization_also_applies_to_env_default() {
+        assert_eq!(
+            OpenAICompatProvider::resolve_request_model(
+                "",
+                Some("openai-compat:gpt-5.4".to_string())
+            ),
+            "gpt-5.4"
+        );
+        assert_eq!(
+            OpenAICompatProvider::resolve_request_model(
+                "",
+                Some("openai-compat:llama3.3:70b".to_string())
+            ),
+            "llama3.3:70b"
+        );
+        assert_eq!(
+            OpenAICompatProvider::resolve_request_model(
+                "openai-compat:request-model",
+                Some("openai-compat:env-model".to_string())
+            ),
+            "request-model"
+        );
+        assert_eq!(
+            OpenAICompatProvider::resolve_request_model("", None),
+            "gpt-5.4"
+        );
+    }
+
+    #[test]
+    fn sse_data_payload_accepts_common_wire_variants() {
+        assert_eq!(
+            OpenAICompatProvider::sse_data_payload("data: {\"choices\":[]}"),
+            Some("{\"choices\":[]}")
+        );
+        assert_eq!(
+            OpenAICompatProvider::sse_data_payload("data:{\"choices\":[]}"),
+            Some("{\"choices\":[]}")
+        );
+        assert_eq!(
+            OpenAICompatProvider::sse_data_payload("data:   [DONE]"),
+            Some("[DONE]")
+        );
+        assert_eq!(OpenAICompatProvider::sse_data_payload("data:"), None);
+        assert_eq!(OpenAICompatProvider::sse_data_payload("data:   "), None);
+        assert_eq!(OpenAICompatProvider::sse_data_payload(": ping"), None);
+    }
+
+    #[test]
+    fn sse_data_done_is_terminal() {
+        assert!(matches!(
+            OpenAICompatProvider::parse_sse_data("[DONE]").expect("done parses"),
+            SseData::Done
+        ));
+        assert!(matches!(
+            OpenAICompatProvider::parse_sse_data("  [DONE]  ").expect("done parses"),
+            SseData::Done
+        ));
+    }
+
+    #[test]
+    fn sse_data_chunk_decodes_text_delta() {
+        let data = r#"{
+            "choices": [
+                {
+                    "delta": { "content": "hello" },
+                    "finish_reason": null
+                }
+            ]
+        }"#;
+        let parsed = OpenAICompatProvider::parse_sse_data(data).expect("chunk parses");
+        let SseData::Chunk(chunk) = parsed else {
+            panic!("expected chunk");
+        };
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn malformed_sse_data_is_error() {
+        let err = OpenAICompatProvider::parse_sse_data("{not-json}")
+            .expect_err("malformed data must fail");
+        assert!(
+            err.to_string().contains("invalid SSE JSON"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
