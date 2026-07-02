@@ -20,6 +20,10 @@ type = "executable"
 "spark.v1.request.build" = { wit = "@unicity-astrid/wit/spark/build-request" }
 "prompt_builder.v1.assemble" = { wit = "@unicity-astrid/wit/prompt/assemble-request" }
 "agent.v1.response" = { wit = "@unicity-astrid/wit/agent/response" }
+# Per-token streaming deltas (same agent-response shape as the terminal above).
+# Publish is gated separately from subscribe: without this row every delta dies
+# as a silent CapabilityDenied and streaming consumers see only the terminal.
+"agent.v1.stream.delta" = { wit = "@unicity-astrid/wit/agent/response" }
 "agent.v1.session_changed" = { wit = "@unicity-astrid/wit/agent/session-changed" }
 "tool.v1.request.execute" = { wit = "@unicity-astrid/wit/types/tool-call" }
 "tool.v1.request.cancel" = { wit = "@unicity-astrid/wit/tool/cancel-request" }

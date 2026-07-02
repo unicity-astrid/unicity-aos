@@ -145,6 +145,22 @@ fn delete_request_session(request_id: &Uuid) {
     }
 }
 
+/// Build the per-token streaming delta forwarded to platforms while the LLM
+/// generates, published on `agent.v1.stream.delta`.
+///
+/// It mirrors the terminal `agent.v1.response` except for `is_final: false`:
+/// a delta must NEVER carry `is_final: true`, or a streaming consumer (the HTTP
+/// gateway SSE, the CLI uplink) would treat it as the terminal reply and close
+/// the turn after the first token. The terminal full text is published
+/// separately by `handle_stream_done`.
+fn stream_delta_event(text: String, session_id: String) -> IpcPayload {
+    IpcPayload::AgentResponse {
+        text,
+        is_final: false,
+        session_id,
+    }
+}
+
 /// Clean up call_id -> session_id mappings after all tool results are collected.
 fn delete_call_sessions(call_ids: &[String]) {
     for call_id in call_ids {
@@ -960,6 +976,23 @@ impl ReactLoop {
         match event {
             StreamEvent::TextDelta(text) => {
                 state.response_text.push_str(&text);
+                // Forward the token to platforms for real-time display. The
+                // terminal `agent.v1.response` (handle_stream_done) still carries
+                // the full, authoritative text — covering non-streaming providers
+                // and acting as the source of truth — so streaming consumers
+                // accumulate these deltas and reconcile against that terminal.
+                // Skip empty deltas (some providers emit them): forwarding a
+                // no-op frame is pure IPC overhead in the hot streaming loop.
+                if !text.is_empty() {
+                    // Failure here must be visible: a missing [publish] ACL row
+                    // silently no-ops streaming for every consumer otherwise.
+                    if let Err(e) = ipc::publish_json(
+                        "agent.v1.stream.delta",
+                        &stream_delta_event(text, state.session_id.clone()),
+                    ) {
+                        log::warn(format!("stream delta publish failed: {e}"));
+                    }
+                }
             }
             StreamEvent::ToolCallStart { id, name } => {
                 state.pending_stream_tools.push(PendingToolCall {
@@ -2029,6 +2062,30 @@ mod tests {
         ActiveLlm {
             topic: topic.to_string(),
             model: model.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn stream_delta_event_is_never_final() {
+        // A streamed token is forwarded on `agent.v1.stream.delta` and must be
+        // `is_final: false`. Both streaming consumers (the HTTP gateway SSE and
+        // the CLI uplink) treat an `is_final` AgentResponse as the terminal
+        // reply and close the turn, so a delta marked final would truncate the
+        // whole reply to its first token. The `ipc::publish_json` call is
+        // IO-buried (the SDK host import traps off-wasm), so this pins the
+        // payload-shape seam the forwarding depends on.
+        let ev = stream_delta_event("tok".to_string(), "S1".to_string());
+        match ev {
+            IpcPayload::AgentResponse {
+                text,
+                is_final,
+                session_id,
+            } => {
+                assert_eq!(text, "tok");
+                assert!(!is_final, "a streamed delta must never be terminal");
+                assert_eq!(session_id, "S1");
+            }
+            _ => panic!("stream_delta_event must build an AgentResponse"),
         }
     }
 
