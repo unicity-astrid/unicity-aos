@@ -1,6 +1,6 @@
 [package]
 name = "astrid-capsule-hook-bridge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Hook bridge capsule — maps lifecycle events to semantic hooks with merge strategies"
 publish = false
