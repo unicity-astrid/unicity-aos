@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use astrid_sdk::net::{TcpStream, TryRecvError, bind_unix};
 use astrid_sdk::prelude::*;
 
@@ -165,12 +167,26 @@ fn should_deliver(
 /// connection is on (paired with [`CHAT_RESPONSE_TOPIC`]).
 const CHAT_REQUEST_TOPIC: &str = "user.v1.prompt";
 
-/// Topic carrying streamed chat responses — the only outbound topic that is
-/// session-demuxed. Everything else routes by principal alone (correlated
+/// Topic carrying streamed chat responses — session-demuxed, together with
+/// [`CHAT_DELTA_TOPIC`]. Everything else routes by principal alone (correlated
 /// request/response topics are already correlation-id filtered by the TUI), so
 /// a non-chat response that merely happens to carry a `session_id` is never
 /// dropped for a connection that has not bound that session.
 const CHAT_RESPONSE_TOPIC: &str = "agent.v1.response";
+
+/// Topic carrying incremental chat tokens (`is_final: false` `AgentResponse`s)
+/// while the agent generates. Session-demuxed exactly like [`CHAT_RESPONSE_TOPIC`]
+/// — a streamed token must reach only the connection on that session, never a
+/// same-principal connection on a different one. Forwarded live for real-time
+/// display; the proxy accumulates them per session so the terminal
+/// [`CHAT_RESPONSE_TOPIC`] can be reconciled (see [`reconcile_stream_payload`]).
+const CHAT_DELTA_TOPIC: &str = "agent.v1.stream.delta";
+
+/// Upper bound on concurrently-streaming sessions the proxy accumulates text
+/// for. A turn always drops its entry on its terminal response, so this is only
+/// a defensive ceiling against a turn that never finalizes; far above the
+/// host-enforced 8-connection cap.
+const MAX_STREAM_SESSIONS: usize = 64;
 
 /// Extract the top-level `"session_id"` string from a message payload, if any.
 ///
@@ -199,14 +215,89 @@ fn ingress_session_bind<'a>(topic: &str, payload: &'a serde_json::Value) -> Opti
 /// The conversation session an *outbound* message is scoped to for demux, or
 /// `None` to route by principal alone.
 ///
-/// Only streamed chat responses ([`CHAT_RESPONSE_TOPIC`]) are session-scoped.
-/// Correlated request/response replies keep principal routing even when their
-/// payload carries a `session_id`, so a connection awaiting such a reply (whose
-/// own session may not yet be bound) is never starved.
+/// Only streamed chat responses ([`CHAT_RESPONSE_TOPIC`]) and their incremental
+/// deltas ([`CHAT_DELTA_TOPIC`]) are session-scoped. Correlated request/response
+/// replies keep principal routing even when their payload carries a `session_id`,
+/// so a connection awaiting such a reply (whose own session may not yet be bound)
+/// is never starved.
 fn outbound_session_scope<'a>(topic: &str, payload: &'a serde_json::Value) -> Option<&'a str> {
-    (topic == CHAT_RESPONSE_TOPIC)
+    (topic == CHAT_RESPONSE_TOPIC || topic == CHAT_DELTA_TOPIC)
         .then(|| payload_session_id(payload))
         .flatten()
+}
+
+/// Reconcile a streamed chat payload against the per-session accumulator so the
+/// CLI TUI — which appends every `AgentResponse.text` it receives and flushes
+/// the buffer on `is_final` — renders the reply exactly once.
+///
+/// - A delta ([`CHAT_DELTA_TOPIC`]): record its text into the session's
+///   accumulator and forward it verbatim (the TUI appends it live).
+/// - The terminal ([`CHAT_RESPONSE_TOPIC`], `is_final: true`): the TUI has
+///   already received the streamed prefix, so rewrite the body to only the
+///   not-yet-streamed remainder (normally empty; a non-empty tail only when a
+///   delta was dropped) and drop the accumulator. A non-streaming turn (no
+///   deltas were seen for the session) keeps the full body untouched.
+///
+/// Mutates `payload` in place and updates `accum`. Relies on the delta
+/// subscription being polled before the response subscription each loop turn,
+/// so all deltas for a turn are accumulated before its terminal is reconciled.
+///
+/// Keyed by session, not connection: this is correct because a session is bound
+/// to a single connection (one client per session — a session retargets only
+/// from that connection's own chat prompt, see [`ingress_session_bind`]), so the
+/// one connection on a session has received every delta the terminal reconciles
+/// against. There is no second client on the same session to under-serve.
+fn reconcile_stream_payload(
+    topic: &str,
+    payload: &mut serde_json::Value,
+    accum: &mut HashMap<String, String>,
+) {
+    let Some(session) = payload_session_id(payload).map(str::to_string) else {
+        return;
+    };
+
+    if topic == CHAT_DELTA_TOPIC {
+        if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+            // Bound growth: a turn always closes with a terminal response that
+            // drops its entry, but cap defensively so a turn that never
+            // finalizes can't leak unboundedly across the proxy's lifetime.
+            // At the cap, evict an arbitrary old entry rather than refusing the
+            // new session: refusing would leave every subsequent session
+            // unreconciled (double-render) once leaked entries fill the map.
+            // The evicted entry is by construction a leaked/stale turn; if its
+            // terminal ever does arrive it renders in full (at worst
+            // duplicating deltas already shown for that stale session).
+            if accum.len() >= MAX_STREAM_SESSIONS
+                && !accum.contains_key(&session)
+                && let Some(stale) = accum.keys().next().cloned()
+            {
+                accum.remove(&stale);
+            }
+            accum.entry(session).or_default().push_str(text);
+        }
+        return;
+    }
+
+    if topic == CHAT_RESPONSE_TOPIC
+        && payload
+            .get("is_final")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        && let Some(streamed) = accum.remove(&session)
+    {
+        // The streamed prefix already reached the TUI; send only the remainder.
+        // `strip_prefix` is `None` only if a delta was dropped mid-stream (the
+        // proxy logs such drops separately) — fall back to an empty body rather
+        // than re-sending the whole reply on top of the streamed text.
+        let full = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let remainder = full
+            .strip_prefix(streamed.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("text".to_string(), serde_json::Value::String(remainder));
+        }
+    }
 }
 
 /// Collapse an SDK [`ipc::PrincipalAttribution`] to the target principal for
@@ -233,7 +324,11 @@ impl CliProxy {
         // Internal pipeline events (LLM requests, tool dispatch, identity builds)
         // must NOT be forwarded to the CLI socket.
         let topics = [
-            "agent.v1.response",
+            // ORDER MATTERS: the delta topic precedes the response topic so the
+            // accumulator is filled before a turn's terminal is reconciled
+            // (subscriptions are polled in this order; see `reconcile_stream_payload`).
+            CHAT_DELTA_TOPIC,
+            CHAT_RESPONSE_TOPIC,
             "astrid.v1.onboarding.required",
             "astrid.v1.elicit.*",
             "astrid.v1.approval",
@@ -295,6 +390,12 @@ impl CliProxy {
         // fired after the connection's verified identity was already gone — the
         // host stamped it `anonymous`, so the real principal's count leaked.
         let mut clients: Vec<ProxyClient> = Vec::new();
+
+        // Per-session accumulator of streamed chat tokens, so the terminal
+        // `agent.v1.response` can be reconciled against what the TUI already
+        // rendered live (see `reconcile_stream_payload`). Entries are dropped on
+        // each turn's terminal response.
+        let mut stream_accum: HashMap<String, String> = HashMap::new();
 
         'proxy: loop {
             // Phase A: block until at least one client is connected.
@@ -380,7 +481,12 @@ impl CliProxy {
                 match sub.poll() {
                     Ok(result) => {
                         if !result.messages.is_empty() {
-                            broadcast_poll_messages(&clients, &result, &mut broadcast_dead);
+                            broadcast_poll_messages(
+                                &clients,
+                                &result,
+                                &mut stream_accum,
+                                &mut broadcast_dead,
+                            );
                         }
                     }
                     Err(_) => {
@@ -530,9 +636,14 @@ struct OutboundMessage {
 /// session so a bound connection only sees IPC stamped with its own principal
 /// (plus unprincipaled system events), and a chat response only when it is on
 /// that session. Tracks failed stream indices (into `clients`) in `dead`.
+///
+/// `stream_accum` carries streamed chat tokens across calls so a turn's terminal
+/// response can be reconciled against what was already streamed live (see
+/// [`reconcile_stream_payload`]).
 fn broadcast_poll_messages(
     clients: &[ProxyClient],
     poll_result: &ipc::PollResult,
+    stream_accum: &mut HashMap<String, String>,
     dead: &mut Vec<usize>,
 ) {
     if poll_result.dropped > 0 {
@@ -551,11 +662,15 @@ fn broadcast_poll_messages(
         .filter_map(|msg| {
             // Parse the payload string back to a JSON value so the TUI
             // receives an embedded object, not an escaped string.
-            let payload = serde_json::from_str::<serde_json::Value>(&msg.payload)
+            let mut payload = serde_json::from_str::<serde_json::Value>(&msg.payload)
                 .unwrap_or(serde_json::Value::String(msg.payload.clone()));
-            // Scope to a session only for chat responses (free off the already-
-            // parsed payload) so a chat response routes only to the connection on
-            // that session; correlated/system replies stay principal-routed.
+            // Accumulate streamed tokens and reconcile the terminal response so
+            // the TUI (append-then-flush) renders the reply exactly once.
+            reconcile_stream_payload(&msg.topic, &mut payload, stream_accum);
+            // Scope to a session only for chat responses + deltas (free of the
+            // already-parsed payload) so a streamed reply routes only to the
+            // connection on that session; correlated/system replies stay
+            // principal-routed.
             let session = outbound_session_scope(&msg.topic, &payload).map(str::to_string);
             let bytes = serde_json::to_vec(&serde_json::json!({
                 "topic": msg.topic,
@@ -649,296 +764,5 @@ fn is_allowed_ingress_topic(topic: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- principal format validation ---
-
-    #[test]
-    fn valid_principals_accepted() {
-        assert!(is_valid_principal("default"));
-        assert!(is_valid_principal("alice"));
-        assert!(is_valid_principal("user_01-A"));
-        assert!(is_valid_principal("x")); // 1 char
-        assert!(is_valid_principal(&"a".repeat(64))); // boundary: 64 chars
-    }
-
-    #[test]
-    fn invalid_principals_rejected() {
-        assert!(!is_valid_principal("")); // empty
-        assert!(!is_valid_principal(&"a".repeat(65))); // too long
-        assert!(!is_valid_principal("has space"));
-        assert!(!is_valid_principal("dot.sep"));
-        assert!(!is_valid_principal("slash/x"));
-        assert!(!is_valid_principal("emoji\u{1f600}"));
-    }
-
-    // --- ingress binding state machine ---
-
-    #[test]
-    fn first_message_with_valid_principal_binds() {
-        assert_eq!(
-            decide_ingress(None, Some("alice")),
-            IngressDecision::Bind("alice".to_string())
-        );
-    }
-
-    #[test]
-    fn first_message_without_principal_binds_default() {
-        assert_eq!(
-            decide_ingress(None, None),
-            IngressDecision::Bind(DEFAULT_PRINCIPAL.to_string())
-        );
-    }
-
-    #[test]
-    fn first_message_with_invalid_principal_drops_and_stays_unbound() {
-        assert_eq!(
-            decide_ingress(None, Some("bad principal")),
-            IngressDecision::Drop {
-                reason: DropReason::InvalidPrincipal("bad principal".to_string())
-            }
-        );
-    }
-
-    #[test]
-    fn bound_connection_without_principal_forwards_as_bound() {
-        // Auto-attribution: un-stamped traffic rides the bound principal.
-        assert_eq!(
-            decide_ingress(Some("alice"), None),
-            IngressDecision::ForwardAs("alice".to_string())
-        );
-    }
-
-    #[test]
-    fn bound_connection_matching_principal_forwards() {
-        assert_eq!(
-            decide_ingress(Some("alice"), Some("alice")),
-            IngressDecision::ForwardAs("alice".to_string())
-        );
-    }
-
-    #[test]
-    fn bound_connection_conflicting_principal_drops_without_rebind() {
-        // Conflict drops the message and yields no Bind/ForwardAs, so the
-        // caller never mutates the binding.
-        assert_eq!(
-            decide_ingress(Some("alice"), Some("mallory")),
-            IngressDecision::Drop {
-                reason: DropReason::PrincipalConflict {
-                    bound: "alice".to_string(),
-                    claimed: "mallory".to_string(),
-                }
-            }
-        );
-    }
-
-    #[test]
-    fn post_conflict_connection_still_forwards_as_original() {
-        // After a conflict (binding unchanged), a subsequent matching/empty
-        // message still forwards under the original principal.
-        let binding = Some("alice");
-        let _conflict = decide_ingress(binding, Some("mallory"));
-        assert_eq!(
-            decide_ingress(binding, None),
-            IngressDecision::ForwardAs("alice".to_string())
-        );
-        assert_eq!(
-            decide_ingress(binding, Some("alice")),
-            IngressDecision::ForwardAs("alice".to_string())
-        );
-    }
-
-    // --- outbound demux decision (principal axis) ---
-
-    #[test]
-    fn principaled_message_delivers_only_to_matching_bound_client() {
-        assert!(should_deliver(Some("alice"), None, Some("alice"), None));
-        assert!(!should_deliver(Some("alice"), None, Some("bob"), None));
-    }
-
-    #[test]
-    fn principaled_message_not_delivered_to_unbound_client() {
-        assert!(!should_deliver(Some("alice"), None, None, None));
-    }
-
-    #[test]
-    fn unprincipaled_message_delivers_to_everyone() {
-        assert!(should_deliver(None, None, Some("alice"), None));
-        assert!(should_deliver(None, None, None, None)); // even an unbound client
-    }
-
-    // --- outbound demux decision (session axis: multi-session cross-talk) ---
-
-    #[test]
-    fn session_scoped_message_delivers_only_to_matching_session() {
-        assert!(should_deliver(
-            Some("default"),
-            Some("S1"),
-            Some("default"),
-            Some("S1")
-        ));
-    }
-
-    #[test]
-    fn session_scoped_message_not_delivered_across_sessions_of_same_principal() {
-        // THE cross-talk fix: same principal, different session -> dropped.
-        assert!(!should_deliver(
-            Some("default"),
-            Some("S1"),
-            Some("default"),
-            Some("S2")
-        ));
-    }
-
-    #[test]
-    fn session_scoped_message_not_delivered_to_sessionless_client() {
-        // A connection that has not started a chat session receives no
-        // session-scoped traffic.
-        assert!(!should_deliver(
-            Some("default"),
-            Some("S1"),
-            Some("default"),
-            None
-        ));
-    }
-
-    #[test]
-    fn non_session_message_keeps_principal_only_routing() {
-        // Correlated/system responses (no session_id) reach every same-principal
-        // connection regardless of its session; a different principal is still
-        // excluded.
-        assert!(should_deliver(
-            Some("default"),
-            None,
-            Some("default"),
-            Some("S1")
-        ));
-        assert!(should_deliver(Some("default"), None, Some("default"), None));
-        assert!(!should_deliver(
-            Some("default"),
-            None,
-            Some("alice"),
-            Some("S1")
-        ));
-    }
-
-    // --- payload session extraction ---
-
-    #[test]
-    fn payload_session_id_extracts_top_level_string() {
-        let v = serde_json::json!({
-            "type": "agent_response",
-            "text": "hi",
-            "is_final": true,
-            "session_id": "S1"
-        });
-        assert_eq!(payload_session_id(&v), Some("S1"));
-    }
-
-    #[test]
-    fn payload_session_id_none_when_absent_or_not_a_string() {
-        assert_eq!(payload_session_id(&serde_json::json!({"text": "hi"})), None);
-        assert_eq!(
-            payload_session_id(&serde_json::json!({"session_id": 5})),
-            None
-        );
-        assert_eq!(
-            payload_session_id(&serde_json::json!("not-an-object")),
-            None
-        );
-    }
-
-    // --- chat-topic session scoping (review: bootstrap + spoof safety) ---
-
-    #[test]
-    fn ingress_binds_session_only_from_chat_prompt() {
-        let with_sid = serde_json::json!({"type": "user_input", "session_id": "S1"});
-        assert_eq!(
-            ingress_session_bind(CHAT_REQUEST_TOPIC, &with_sid),
-            Some("S1")
-        );
-        // A non-prompt topic never retargets the connection's session, even when
-        // its payload carries a session_id (same-principal spoof guard).
-        assert_eq!(
-            ingress_session_bind("session.v1.request.create", &with_sid),
-            None
-        );
-        assert_eq!(
-            ingress_session_bind("astrid.v1.admin.agent.list", &with_sid),
-            None
-        );
-        // A prompt with no session_id leaves the binding unchanged.
-        assert_eq!(
-            ingress_session_bind(
-                CHAT_REQUEST_TOPIC,
-                &serde_json::json!({"type": "user_input"})
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn outbound_scopes_session_only_for_chat_response() {
-        let with_sid = serde_json::json!({"type": "agent_response", "session_id": "S1"});
-        assert_eq!(
-            outbound_session_scope(CHAT_RESPONSE_TOPIC, &with_sid),
-            Some("S1")
-        );
-        // A correlated reply that happens to carry a session_id is NOT
-        // session-gated.
-        assert_eq!(
-            outbound_session_scope("session.v1.response.create.abc", &with_sid),
-            None
-        );
-        assert_eq!(
-            outbound_session_scope("registry.v1.response.x", &with_sid),
-            None
-        );
-        // A chat response without a session_id routes by principal alone.
-        assert_eq!(
-            outbound_session_scope(
-                CHAT_RESPONSE_TOPIC,
-                &serde_json::json!({"type": "agent_response"})
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn correlated_reply_with_session_id_is_not_dropped_for_unbound_session_client() {
-        // Regression for the bootstrap case raised in review: a correlated /
-        // session-creation reply carries a session_id, but the requesting
-        // connection has not bound a session yet (client_session = None). Because
-        // the reply is not chat-scoped, its outbound scope is None, so the
-        // principal gate alone governs and it is delivered (not dropped).
-        let reply = serde_json::json!({"type": "session_created", "session_id": "S_new"});
-        let scope = outbound_session_scope("session.v1.response.create.abc", &reply);
-        assert_eq!(scope, None);
-        assert!(should_deliver(
-            Some("default"),
-            scope,
-            Some("default"),
-            None
-        ));
-    }
-
-    // --- attribution target mapping ---
-
-    #[test]
-    fn attribution_target_extracts_principal_for_verified_and_claimed() {
-        assert_eq!(
-            attribution_target(&ipc::PrincipalAttribution::Verified("alice".to_string())),
-            Some("alice")
-        );
-        assert_eq!(
-            attribution_target(&ipc::PrincipalAttribution::Claimed("bob".to_string())),
-            Some("bob")
-        );
-    }
-
-    #[test]
-    fn attribution_target_is_none_for_system() {
-        assert_eq!(attribution_target(&ipc::PrincipalAttribution::System), None);
-    }
-}
+#[path = "lib_tests.rs"]
+mod tests;
