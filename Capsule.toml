@@ -13,10 +13,13 @@ type = "executable"
 [capabilities]
 host_process = ["bash", "sh", "zsh"]
 
+# Publish ACL: the [publish] keys are the only IPC-publish declaration.
 [publish]
 "tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
 "tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
 
+# Interceptor bindings: a [subscribe] entry's `handler` binds the topic to a
+# `#[astrid::tool]`-generated export. The keys also serve as the subscribe ACL.
 [subscribe]
 "tool.v1.execute.run_shell_command" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_run_shell_command" }
 "tool.v1.execute.spawn_background_process" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_spawn_background_process" }
