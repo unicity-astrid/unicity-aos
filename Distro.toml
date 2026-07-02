@@ -27,7 +27,7 @@ tool = "^1.0"
 openai_api_key = { secret = true, description = "API key for OpenAI-compatible LLM provider" }
 openai_base_url = { description = "API base URL", default = "https://api.openai.com" }
 openai_model = { description = "Default model ID", default = "gpt-5.4" }
-openai_temperature = { description = "Default temperature (0.0-2.0, blank = provider default)" }
+openai_temperature = { description = "Default temperature (0.0-2.0, blank = provider default)", default = "" }
 openai_max_tokens = { description = "Max output tokens", default = "128000" }
 
 # ---------------------------------------------------------------------------
