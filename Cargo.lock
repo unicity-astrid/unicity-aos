@@ -10,7 +10,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "astrid-capsule-openai-compat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "astrid-sdk",
  "serde",
