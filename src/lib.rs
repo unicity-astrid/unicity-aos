@@ -11,7 +11,7 @@
 //!
 //! # Tools
 //!
-//! - `list_capsules` — enumerate installed capsules with versions/exports/imports
+//! - `list_capsules` — enumerate installed capsules with names and versions
 //! - `inspect_capsule` — read a capsule's manifest and metadata
 //! - `list_interfaces` — list available WIT interface contracts
 //! - `read_interface` — read a WIT interface definition
@@ -133,7 +133,8 @@ impl SystemTools {
         Ok(())
     }
 
-    /// List all installed capsules with their versions, exports, and imports.
+    /// List all installed capsules with their names and versions. Use `inspect_capsule`
+    /// for a capsule's manifest, exports, imports, and capabilities.
     /// Returns a JSON array of capsule summaries.
     #[astrid::tool("list_capsules")]
     pub fn list_capsules(&self, _args: EmptyArgs) -> Result<String, SysError> {

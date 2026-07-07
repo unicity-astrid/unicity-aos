@@ -11,7 +11,7 @@ This capsule gives the LLM typed tools to inspect and manage its own runtime. It
 
 | Tool | Description |
 |---|---|
-| `list_capsules` | List all installed capsules with versions, exports, and imports |
+| `list_capsules` | List installed capsules with names and versions (use `inspect_capsule` for exports, imports, capabilities) |
 | `inspect_capsule` | Read a capsule's Capsule.toml manifest and meta.json metadata |
 | `list_interfaces` | List available WIT interface definitions |
 | `read_interface` | Read a WIT interface definition (typed contract between capsules) |
