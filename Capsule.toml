@@ -1,6 +1,6 @@
 [package]
 name = "astrid-capsule-prompt-builder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Assembles LLM prompts with plugin interceptor hooks for context injection and override"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.1.0"

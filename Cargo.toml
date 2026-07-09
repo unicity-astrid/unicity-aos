@@ -1,6 +1,6 @@
 [package]
 name = "astrid-capsule-prompt-builder"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Prompt assembly capsule — fires interceptor hooks and merges plugin contributions into the final LLM prompt"
 publish = false
