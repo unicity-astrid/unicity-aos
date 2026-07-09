@@ -3,10 +3,10 @@ schema-version = 1
 [distro]
 id = "astralis"
 name = "Astralis"
-pretty-name = "Astralis 0.2.1 (Genesis)"
-version = "0.2.1"
+pretty-name = "Astralis 0.2.2 (Genesis)"
+version = "0.2.2"
 codename = "genesis"
-release-date = "2026-07-03"
+release-date = "2026-07-10"
 description = "The complete Astrid AI assistant experience"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 maintainers = ["Joshua J. Bouw <jjb@unicity-labs.com>"]
@@ -64,7 +64,7 @@ env = { api_key = "{{ openai_api_key }}", base_url = "{{ openai_base_url }}", mo
 [[capsule]]
 name = "astrid-capsule-react"
 source = "@unicity-astrid/capsule-react"
-version = "0.2.1"
+version = "0.2.2"
 
 [[capsule]]
 name = "astrid-capsule-session"
@@ -84,17 +84,17 @@ version = "0.1.0"
 [[capsule]]
 name = "astrid-capsule-router"
 source = "@unicity-astrid/capsule-router"
-version = "0.1.0"
+version = "0.2.0"
 
 [[capsule]]
 name = "astrid-capsule-prompt-builder"
 source = "@unicity-astrid/capsule-prompt-builder"
-version = "0.1.0"
+version = "0.2.0"
 
 [[capsule]]
 name = "astrid-capsule-context-engine"
 source = "@unicity-astrid/capsule-context-engine"
-version = "0.1.0"
+version = "0.2.0"
 
 [[capsule]]
 name = "astrid-capsule-hook-bridge"
@@ -118,12 +118,12 @@ version = "0.1.1"
 [[capsule]]
 name = "astrid-capsule-fs"
 source = "@unicity-astrid/capsule-fs"
-version = "0.1.0"
+version = "0.2.0"
 
 [[capsule]]
 name = "astrid-capsule-system"
 source = "@unicity-astrid/capsule-system"
-version = "0.1.0"
+version = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # Extensions
@@ -137,11 +137,11 @@ version = "0.2.0"
 [[capsule]]
 name = "astrid-capsule-agents"
 source = "@unicity-astrid/capsule-agents"
-version = "0.1.0"
+version = "0.2.0"
 env = { cwd_dir = ".astrid" }
 
 [[capsule]]
 name = "astrid-capsule-memory"
 source = "@unicity-astrid/capsule-memory"
-version = "0.1.0"
+version = "0.2.0"
 env = { cwd_dir = ".astrid" }
