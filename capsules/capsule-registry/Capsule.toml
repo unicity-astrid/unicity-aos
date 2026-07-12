@@ -1,0 +1,53 @@
+[package]
+name = "astrid-capsule-registry"
+version = "0.2.0"
+description = "LLM provider registry — discovers and manages available models"
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
+astrid-version = ">=0.1.0"
+
+[[component]]
+id = "registry"
+file = "astrid_capsule_registry.wasm"
+
+[exports]
+"astrid:registry" = "1.0.0"
+
+[publish]
+"registry.v1.response.*" = { wit = "@unicity-astrid/wit/registry/provider-entry" }
+# Carries a ProviderEntry on a change OR JSON `null` on a clear (see
+# publish_model_cleared / cleared_payload). A null payload does not satisfy the
+# provider-entry schema, so declaring that type would drop the clear event under
+# publish-side WIT enforcement. `opaque` admits both shapes.
+"registry.v1.active_model_changed" = { wit = "opaque" }
+"registry.v1.selection.*" = { wit = "@unicity-astrid/wit/registry/selection-required" }
+# Provider discovery broadcast — provider capsules (openai-compat etc.)
+# subscribe to this and respond on llm.v1.response.describe. Without
+# the declaration the publish was capability-denied and
+# discover_providers silently returned empty, leaving the registry
+# with no providers and no active model — react.handle_prompt_response
+# then published to an empty topic and the prompt pipeline halted.
+"llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request" }
+# Scriptable `models` verb result channel — the CLI dispatcher awaits the
+# reply on cli.v1.command.result.<req_id> (see astrid capsule_verb.rs).
+"cli.v1.command.result.*" = { wit = "opaque" }
+
+[subscribe]
+# 3-segment wildcard (covers registry.v1.{any_single_segment})
+"registry.v1.*" = { wit = "TODO" }   # wildcard covers heterogeneous registry inbound topics (get_providers, set_active_model, active_model_changed) — no single canonical type
+"cli.v1.command.execute" = { wit = "@unicity-astrid/wit/system/command-execute" }
+# Scriptable `models` verb runs — `astrid capsule models ...` dispatches the
+# run body here (see astrid capsule_verb.rs run topic = cli.v1.command.run.<provider_capsule>).
+"cli.v1.command.run.astrid-capsule-registry" = { wit = "opaque" }
+# 4-segment exact (topic_matches requires equal segment count, so registry.v1.* does NOT cover this)
+"registry.v1.selection.callback" = { wit = "@unicity-astrid/wit/registry/selection-callback" }
+"astrid.v1.capsules_loaded" = { wit = "@unicity-astrid/wit/system/capsules-loaded" }
+# Drain provider responses to the describe broadcast above.
+"llm.v1.response.describe" = { wit = "@unicity-astrid/wit/llm/describe-response" }
+
+[capabilities]
+uplink = true
+
+[[command]]
+name = "models"
+kind = "cli"
+description = "List available LLM models or switch the active model"
