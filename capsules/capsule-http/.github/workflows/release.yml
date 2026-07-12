@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Componentize with astrid-build (from the astrid release) rather than
+      # publishing a raw `cargo build` wasm. A raw core module is NOT installable
+      # — `astrid capsule install` expects a `.capsule` archive (wasm component +
+      # manifest + bundled WIT). Publishing raw wasm forced install into a
+      # clone-and-build fallback that needs a Rust toolchain, so binary-only
+      # (Homebrew) installs failed. The astrid repo is public, so the capsule's
+      # GITHUB_TOKEN can read its release assets.
+      - name: Fetch astrid-build from the astrid release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo unicity-astrid/astrid \
+            --pattern 'astrid-*-x86_64-unknown-linux-gnu.tar.gz' --dir /tmp/astrid-cli
+          tar xzf /tmp/astrid-cli/*.tar.gz -C /tmp/astrid-cli
+          echo "$(dirname "$(find /tmp/astrid-cli -name astrid-build -type f | head -1)")" >> "$GITHUB_PATH"
+
+      - name: Build .capsule (componentized, install-ready)
+        run: astrid-build . --output dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.capsule
+          generate_release_notes: true
