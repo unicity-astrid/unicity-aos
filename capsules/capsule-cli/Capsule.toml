@@ -1,0 +1,53 @@
+[package]
+name = "astrid-capsule-cli"
+version = "0.2.0"
+description = "Native Unix Socket bridge for the Astrid CLI frontend."
+
+[[component]]
+id = "main"
+file = "astrid_capsule_cli.wasm"
+
+[capabilities]
+uplink = true
+net_bind = ["unix:*"]
+
+[publish]
+"user.v1.prompt" = { wit = "opaque" }
+# `client.v1.connect` / `client.v1.disconnect` are NOT published by the proxy:
+# the host emits those connection-lifecycle events from the inbound-socket
+# accept/drop path, stamped with the handshake-verified principal, so connect
+# and disconnect always pair on the same identity (the proxy's post-close
+# disconnect lost its principal and leaked the kernel connection counter).
+"cli.v1.command.execute" = { wit = "opaque" }
+# Forwarded provider-targeted run requests for capsule CLI verbs (astrid#891):
+# every ingress topic the proxy forwards must also be declared here — the
+# publish ACL applies to publish-as forwards, not just self-originated events.
+"cli.v1.command.run.*" = { wit = "opaque" }
+"astrid.v1.request.*" = { wit = "opaque" }
+"astrid.v1.request.*.*" = { wit = "opaque" }
+"astrid.v1.request.mcp.tools.list" = { wit = "opaque" }
+"astrid.v1.request.mcp.tool.call" = { wit = "opaque" }
+"astrid.v1.request.mcp.approval.respond" = { wit = "opaque" }
+"astrid.v1.admin.*.*" = { wit = "opaque" }
+"astrid.v1.admin.*.*.*" = { wit = "opaque" }
+"astrid.v1.elicit.response.*" = { wit = "opaque" }
+"astrid.v1.approval.response.*" = { wit = "opaque" }
+"registry.v1.get_providers" = { wit = "opaque" }
+"registry.v1.set_active_model" = { wit = "opaque" }
+"registry.v1.selection.*" = { wit = "opaque" }
+"session.v1.request.*" = { wit = "opaque" }
+
+[subscribe]
+"agent.v1.response" = { wit = "opaque" }
+"agent.v1.stream.delta" = { wit = "opaque" }
+"astrid.v1.approval" = { wit = "opaque" }
+"astrid.v1.capsules_loaded" = { wit = "opaque" }
+"astrid.v1.elicit.*" = { wit = "opaque" }
+"astrid.v1.onboarding.required" = { wit = "opaque" }
+"astrid.v1.response.*" = { wit = "opaque" }
+"astrid.v1.admin.response.*" = { wit = "opaque" }
+"registry.v1.response.*" = { wit = "opaque" }
+"registry.v1.active_model_changed" = { wit = "opaque" }
+"registry.v1.selection.*" = { wit = "opaque" }
+"session.v1.response.*" = { wit = "opaque" }
+"cli.v1.command.result.*" = { wit = "opaque" }
