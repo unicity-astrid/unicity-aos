@@ -23,6 +23,11 @@ part of an import.
 | `unicity-astrid/capsule-registry` | `capsules/capsule-registry` | `e1338be5c4051996c3fcdfcf1618c021d140cd1f` | pending | pending | imported |
 | `unicity-astrid/capsule-router` | `capsules/capsule-router` | `01c648490e02dbcffc8f187c55aedd6ef467132b` | pending | pending | imported |
 | `unicity-astrid/capsule-session` | `capsules/capsule-session` | `3c572ad8d6afc86ff84d07245e35a9990a03e418` | pending | pending | imported |
+| `unicity-astrid/capsule-shell` | `capsules/capsule-shell` | `1f6261e4d0199e024bb883b0c8196f7d94ca6ab2` | pending | pending | imported |
+| `unicity-astrid/capsule-skills` | `capsules/capsule-skills` | `e78b4151889f130e45da4a3ca53ca8d2010ff436` | pending | pending | imported |
+| `unicity-astrid/capsule-system` | `capsules/capsule-system` | `44e98e5c170c2bf3c4b54b17bb7dd9ac58076562` | pending | pending | imported |
+| `unicity-astrid/capsule-telegram` | `capsules/capsule-telegram` | `4784799a853820424234f29f4613060b0cc5e880` | pending | pending | imported |
+| `unicity-astrid/capsule-users` | `capsules/capsule-users` | `cca205a0b17485eab0ebcf469737c4b641162114` | pending | pending | imported |
 | Remaining first-party `unicity-astrid/capsule-*` repositories | `capsules/<name>` | pending | pending | pending | planned |
 
 Copied or local-only capsule directories require a source, license, and
