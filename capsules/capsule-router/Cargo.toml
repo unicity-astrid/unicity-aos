@@ -1,0 +1,27 @@
+[package]
+name = "astrid-capsule-router"
+version = "0.2.0"
+edition = "2024"
+description = "Tool execution routing middleware for Astrid OS"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+astrid-sdk = { version = "0.7", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.22", features = ["v4", "serde", "rng-getrandom"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Local-development override during the per-domain WIT migration. The
+# `sdk-rust` workspace is not yet published to crates.io; resolve the
+# `astrid-sdk*` family from the sibling polyrepo checkout. Remove this
+# block once sdk-rust 0.7.0 lands on crates.io.

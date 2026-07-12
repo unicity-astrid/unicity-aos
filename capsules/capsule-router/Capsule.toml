@@ -1,0 +1,22 @@
+[package]
+name = "astrid-capsule-router"
+version = "0.2.0"
+description = "Tool execution routing middleware for Astrid OS"
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
+astrid-version = ">=0.1.0"
+
+[[component]]
+id = "router"
+file = "astrid_capsule_router.wasm"
+type = "executable"
+
+[exports]
+"astrid:tool" = "1.0.0"
+
+[publish]
+"tool.v1.execute.*" = { wit = "@unicity-astrid/wit/types/tool-call" }
+"tool.v1.execute.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+
+[subscribe]
+"tool.v1.request.execute" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "handle_execute_request" }
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result", handler = "handle_execute_result" }
