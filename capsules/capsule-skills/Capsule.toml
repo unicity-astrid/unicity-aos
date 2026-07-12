@@ -1,0 +1,23 @@
+[package]
+name = "astrid-capsule-skills"
+version = "0.2.0"
+description = "Skills Loader - Reads and loads Agent Skills via VFS"
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
+astrid-version = ">=0.1.0"
+
+[[component]]
+id = "skills-loader"
+file = "astrid_capsule_skills.wasm"
+type = "executable"
+# Broad home:// read needed — callers pass arbitrary dir_path (e.g. ".gemini/skills")
+# and the capsule scans both CWD and home trees under that path.
+capabilities = { fs_read = ["cwd://", "home://"] }
+
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+
+[subscribe]
+"tool.v1.execute.list_skills" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_list_skills" }
+"tool.v1.execute.read_skill" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_read_skill" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
