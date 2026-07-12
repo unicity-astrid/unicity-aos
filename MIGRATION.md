@@ -6,7 +6,7 @@ part of an import.
 
 | Source repository | Destination | Final source commit | Release tags | License | Status |
 | --- | --- | --- | --- | --- | --- |
-| `unicity-astrid/astralis` | `distros/community` | pending | pending | pending | planned |
+| `unicity-astrid/astralis` | `distros/community/astralis` | `b969dd816380e55b3054fefdfc78f711c4dfc2ef` | pending | pending | imported |
 | `unicity-astrid/capsule-cli` | `capsules/capsule-cli` | `e1e180a62f24d4f210c79d8330d625b28b4de3ce` | `v0.2.0` | MIT OR Apache-2.0 | imported |
 | `unicity-astrid/capsule-agents` | `capsules/capsule-agents` | `63b691e4e16e556b2363371f6e82e4a6ff3b7f5f` | pending | pending | imported |
 | `unicity-astrid/capsule-context-engine` | `capsules/capsule-context-engine` | `6a9f6554fcd9989913763e530284d46bdcc938fa` | pending | pending | imported |
