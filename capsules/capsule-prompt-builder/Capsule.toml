@@ -1,0 +1,48 @@
+[package]
+name = "astrid-capsule-prompt-builder"
+version = "0.2.0"
+description = "Assembles LLM prompts with plugin interceptor hooks for context injection and override"
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
+astrid-version = ">=0.1.0"
+
+[[component]]
+id = "prompt-builder"
+file = "astrid_capsule_prompt_builder.wasm"
+type = "executable"
+
+[publish]
+"prompt_builder.v1.response.*" = { wit = "@unicity-astrid/wit/prompt/assemble-response" }
+"prompt_builder.v1.hook.before_build" = { wit = "@unicity-astrid/wit/prompt/before-build-hook" }
+"prompt_builder.v1.hook.after_build" = { wit = "@unicity-astrid/wit/prompt/after-build-event" }
+"session.v1.request.get_messages" = { wit = "@unicity-astrid/wit/session/get-messages-request" }
+# `collect_tool_schemas()` fans out a tool-describe request to every
+# tool-providing capsule. Without this publish grant the publish is
+# CapabilityDenied, the fan-out never fires, and the assembled prompt carries
+# zero tools — the LLM sees no tools at all. Do not remove.
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request" }
+
+[subscribe]
+# Assemble requests from react, handler-bound so the kernel dispatches
+# each as a pooled interceptor (concurrent across the capsule's Store
+# pool) instead of the former single #[astrid::run] loop draining them
+# one-at-a-time (astrid#816). Replaces the old `prompt_builder.v1.*`
+# wildcard; the capsule no longer subscribes to its own hook topics
+# (it only publishes them) so the run-loop self-filter is gone too.
+"prompt_builder.v1.assemble" = { wit = "@unicity-astrid/wit/prompt/assemble-request", handler = "handle_assemble" }
+# Per-request hook responses. handle_assemble subscribes dynamically to
+# `...hook_response.<request_id>`; this grants the capability. No handler
+# attribute — drained inline inside the interceptor (request/response
+# correlation, same as react's own lazy lookups).
+"prompt_builder.v1.hook_response.*" = { wit = "@unicity-astrid/wit/prompt/before-build-hook-response" }
+"session.v1.response.get_messages.*" = { wit = "@unicity-astrid/wit/session/get-messages-response" }
+# Drain channel for the tool-describe fan-out above: tool capsules publish
+# their descriptors on `tool.v1.response.describe.<source_id>`. Without this
+# subscribe grant the subscribe is CapabilityDenied and collect_tool_schemas()
+# returns empty. No handler — drained synchronously inside collect_tool_schemas.
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+# Kernel broadcast after capsules (un)load, dispatched to `on_capsules_loaded`
+# as a pooled interceptor: it invalidates the KV-cached tool schemas so a
+# freshly installed tool capsule's tools reach the LLM on the next prompt
+# instead of being masked by a stale cache (which otherwise persists across
+# daemon restarts).
+"astrid.v1.capsules_loaded" = { wit = "@unicity-astrid/wit/system/capsules-loaded", handler = "on_capsules_loaded" }
