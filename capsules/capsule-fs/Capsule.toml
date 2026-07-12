@@ -1,0 +1,31 @@
+[package]
+name = "astrid-capsule-fs"
+version = "0.2.0"
+description = "Core filesystem tools for the Astrid OS"
+authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
+astrid-version = ">=0.1.0"
+
+[[component]]
+id = "fs-tools"
+file = "astrid_capsule_fs.wasm"
+type = "executable"
+# Note: home:// write is intentionally omitted — fs-tools should not write
+# to ~/.astrid/ (which contains keys, audit DBs, etc.). Read is permitted for
+# file inspection. Write access to home should be granted per-capsule only
+# when needed (e.g. a plugin installer capsule).
+capabilities = { fs_read = ["cwd://", "home://"], fs_write = ["cwd://"] }
+
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+
+[subscribe]
+"tool.v1.execute.read_file" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_read_file" }
+"tool.v1.execute.write_file" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_write_file" }
+"tool.v1.execute.replace_in_file" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_replace_in_file" }
+"tool.v1.execute.list_directory" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_list_directory" }
+"tool.v1.execute.grep_search" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_grep_search" }
+"tool.v1.execute.create_directory" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_create_directory" }
+"tool.v1.execute.delete_file" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_delete_file" }
+"tool.v1.execute.move_file" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_move_file" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
