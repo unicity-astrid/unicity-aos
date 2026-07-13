@@ -88,8 +88,14 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
         if !receipt_matches(&staging, &receipt)? {
             return invalid("staged runtime did not validate against its import manifest");
         }
-        replace_target(&target, &staging)?;
-        write_receipt(&receipt_path, &receipt)?;
+        let staged_receipt = write_staged_receipt(&receipt_path, &receipt)?;
+        let backup = replace_target(&target, &staging)?;
+        if let Err(error) = finalize_receipt(&staged_receipt, &receipt_path) {
+            let _ = fs::remove_file(&staged_receipt);
+            rollback_target(&target, &backup)?;
+            return Err(error);
+        }
+        remove_backup(&backup)?;
         Ok(())
     })();
     if result.is_err() && staging.exists() {
@@ -116,7 +122,13 @@ fn validate_target(target: &Path) -> io::Result<()> {
         return invalid("bundled product runtime is not installed");
     }
     let allowed = target.join("bin").join(runtime_binary_name());
-    if !allowed.is_file() {
+    let metadata = fs::symlink_metadata(&allowed).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bundled product runtime executable is not installed",
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return invalid("bundled product runtime executable is not installed");
     }
     for entry in fs::read_dir(target)? {
@@ -248,7 +260,7 @@ fn copy_executable(source: &Path, destination: &Path) -> io::Result<()> {
     fs::set_permissions(destination, metadata.permissions())
 }
 
-fn replace_target(target: &Path, staging: &Path) -> io::Result<()> {
+fn replace_target(target: &Path, staging: &Path) -> io::Result<PathBuf> {
     let backup = target.with_extension("pre-migration");
     if backup.exists() {
         return invalid("previous product runtime backup exists; inspect it before migration");
@@ -257,11 +269,26 @@ fn replace_target(target: &Path, staging: &Path) -> io::Result<()> {
         fs::rename(target, &backup)?;
     }
     if let Err(error) = fs::rename(staging, target) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, target);
-        }
+        let _ = fs::rename(&backup, target);
         return Err(error);
     }
+    Ok(backup)
+}
+
+fn rollback_target(target: &Path, backup: &Path) -> io::Result<()> {
+    let failed_target = target.with_extension("failed-migration");
+    if failed_target.exists() {
+        return invalid("failed migration target already exists; manual recovery is required");
+    }
+    fs::rename(target, &failed_target)?;
+    if let Err(error) = fs::rename(backup, target) {
+        let _ = fs::rename(&failed_target, target);
+        return Err(error);
+    }
+    fs::remove_dir_all(failed_target)
+}
+
+fn remove_backup(backup: &Path) -> io::Result<()> {
     if backup.exists() {
         fs::remove_dir_all(backup)?;
     }
@@ -285,10 +312,14 @@ fn receipt_matches(root: &Path, receipt: &Receipt) -> io::Result<bool> {
     })
 }
 
-fn write_receipt(path: &Path, receipt: &Receipt) -> io::Result<()> {
+fn write_staged_receipt(path: &Path, receipt: &Receipt) -> io::Result<PathBuf> {
     let temporary = path.with_extension("tmp");
     let bytes = serde_json::to_vec_pretty(receipt).map_err(io::Error::other)?;
     fs::write(&temporary, bytes)?;
+    Ok(temporary)
+}
+
+fn finalize_receipt(temporary: &Path, path: &Path) -> io::Result<()> {
     fs::rename(temporary, path)
 }
 
@@ -442,6 +473,33 @@ mod tests {
             fs::read(product.runtime_home().join("bin/astrid")).unwrap(),
             b"bundled-binary"
         );
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_symlinked_bundled_runtime_executable() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("runtime-binary-symlink");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(root.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(
+            &product.runtime_home(),
+            "bin/runtime-target",
+            b"bundled-binary",
+        );
+        symlink(
+            product.runtime_home().join("bin/runtime-target"),
+            product.runtime_home().join("bin/astrid"),
+        )
+        .expect("create bundled binary symlink");
+
+        let error =
+            migrate_runtime(&product, &source).expect_err("binary symlink must be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!product.runtime_home().join("keys/runtime.key").exists());
         fs::remove_dir_all(root).expect("remove fixture root");
     }
 }

@@ -4,7 +4,7 @@
 //! binary therefore delegates runtime and operator commands directly to its
 //! bundled runtime, scoped to this installation's private `ASTRID_HOME`.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
@@ -137,7 +137,7 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
         eprintln!("Usage: unicity migrate runtime --from <absolute-legacy-home>");
         return ExitCode::FAILURE;
     };
-    if subcommand != "runtime" || flag != "--from" {
+    if subcommand.as_os_str() != OsStr::new("runtime") || flag.as_os_str() != OsStr::new("--from") {
         eprintln!("Usage: unicity migrate runtime --from <absolute-legacy-home>");
         return ExitCode::FAILURE;
     }
@@ -149,7 +149,7 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match home.migrate_runtime_from(source) {
+    match home.migrate_runtime_from(std::path::Path::new(source)) {
         Ok(unicity_aos_bootstrap::MigrationOutcome::Migrated) => {
             println!(
                 "Unicity AOS: imported the standalone runtime; the source was left unchanged."
