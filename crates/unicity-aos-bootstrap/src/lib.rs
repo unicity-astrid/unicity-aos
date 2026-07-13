@@ -5,7 +5,7 @@
 //! to the bundled runtime process only; it never changes the caller's process
 //! environment or rewrites a standalone runtime installation.
 
-use std::env;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -25,17 +25,44 @@ impl AosHome {
     /// # Errors
     /// Returns an error when neither `UNICITY_AOS_HOME` nor `HOME` is present.
     pub fn resolve() -> io::Result<Self> {
-        if let Some(root) = env::var_os("UNICITY_AOS_HOME") {
-            return Ok(Self::from_root(root));
+        Self::resolve_with(|name| std::env::var_os(name))
+    }
+
+    fn resolve_with<F>(get: F) -> io::Result<Self>
+    where
+        F: Fn(&str) -> Option<OsString>,
+    {
+        if let Some(root) = get("UNICITY_AOS_HOME") {
+            return Self::from_environment_root(root, "UNICITY_AOS_HOME");
         }
 
-        let home = env::var_os("HOME").ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "UNICITY_AOS_HOME and HOME are both unset",
-            )
-        })?;
-        Ok(Self::from_root(PathBuf::from(home).join(".unicity-os")))
+        let home = default_home(&get)?;
+        let home = Self::validated_environment_root(home, default_home_name())?;
+        Ok(Self::from_root(home.join(".unicity-os")))
+    }
+
+    fn from_environment_root(root: OsString, variable: &str) -> io::Result<Self> {
+        Ok(Self::from_root(Self::validated_environment_root(
+            root, variable,
+        )?))
+    }
+
+    fn validated_environment_root(root: OsString, variable: &str) -> io::Result<PathBuf> {
+        if root.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{variable} must not be empty"),
+            ));
+        }
+
+        let root = PathBuf::from(root);
+        if !root.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{variable} must be an absolute path"),
+            ));
+        }
+        Ok(root)
     }
 
     /// Build an AOS home from an explicit root, useful for embedding and tests.
@@ -106,6 +133,47 @@ impl AosHome {
 }
 
 #[cfg(windows)]
+fn default_home<F>(get: &F) -> io::Result<OsString>
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    if let Some(home) = get("USERPROFILE") {
+        return Ok(home);
+    }
+
+    match (get("HOMEDRIVE"), get("HOMEPATH")) {
+        (Some(drive), Some(path)) => Ok(PathBuf::from(drive).join(path).into_os_string()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "UNICITY_AOS_HOME, USERPROFILE, and HOMEDRIVE/HOMEPATH are all unset",
+        )),
+    }
+}
+
+#[cfg(not(windows))]
+fn default_home<F>(get: &F) -> io::Result<OsString>
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    get("HOME").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "UNICITY_AOS_HOME and HOME are both unset",
+        )
+    })
+}
+
+#[cfg(windows)]
+const fn default_home_name() -> &'static str {
+    "USERPROFILE"
+}
+
+#[cfg(not(windows))]
+const fn default_home_name() -> &'static str {
+    "HOME"
+}
+
+#[cfg(windows)]
 const fn runtime_binary_name() -> &'static str {
     "astrid.exe"
 }
@@ -118,6 +186,8 @@ const fn runtime_binary_name() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::AosHome;
+    use std::ffi::OsString;
+    use std::io::ErrorKind;
     use std::path::PathBuf;
 
     #[test]
@@ -145,5 +215,39 @@ mod tests {
             .expect("runtime command sets ASTRID_HOME");
 
         assert_eq!(runtime_home, "/tmp/unicity-aos-test/runtime");
+    }
+
+    #[test]
+    fn explicit_home_override_wins_over_the_host_home() {
+        let home = AosHome::resolve_with(|name| match name {
+            "UNICITY_AOS_HOME" => Some(OsString::from("/var/lib/unicity-aos")),
+            "HOME" => Some(OsString::from("/home/operator")),
+            _ => None,
+        })
+        .expect("absolute override resolves");
+
+        assert_eq!(home.root(), PathBuf::from("/var/lib/unicity-aos"));
+    }
+
+    #[test]
+    fn empty_or_relative_override_is_rejected() {
+        for root in ["", "runtime"] {
+            let error = AosHome::resolve_with(|name| match name {
+                "UNICITY_AOS_HOME" => Some(OsString::from(root)),
+                _ => None,
+            })
+            .expect_err("unsafe override must fail");
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn empty_default_home_is_rejected() {
+        let error = AosHome::resolve_with(|name| match name {
+            "HOME" => Some(OsString::new()),
+            _ => None,
+        })
+        .expect_err("empty host home must fail");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
     }
 }
