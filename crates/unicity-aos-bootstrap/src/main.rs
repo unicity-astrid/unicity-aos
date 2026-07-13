@@ -10,20 +10,23 @@ use std::process::ExitCode;
 
 use unicity_aos_bootstrap::AosHome;
 
-const UNICITY_CE_DISTRO: &str = "https://raw.githubusercontent.com/unicity-aos/aos-ce/main/distros/community/unicity-ce/Distro.toml";
-
 #[cfg(unix)]
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
     }
-    let args = product_runtime_args(args);
-
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
             eprintln!("unicity: failed to resolve product home: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let args = match product_runtime_args(&home, args) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("unicity: failed to prepare Unicity CE: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -43,12 +46,17 @@ fn main() -> ExitCode {
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
     }
-    let args = product_runtime_args(args);
-
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
             eprintln!("unicity: failed to resolve product home: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let args = match product_runtime_args(&home, args) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("unicity: failed to prepare Unicity CE: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -98,17 +106,17 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
     }
 }
 
-fn product_runtime_args(args: Vec<OsString>) -> Vec<OsString> {
+fn product_runtime_args(home: &AosHome, args: Vec<OsString>) -> io::Result<Vec<OsString>> {
     if args.first().is_some_and(|arg| arg == "init") {
         let mut runtime_args = vec![
             OsString::from("init"),
             OsString::from("--distro"),
-            OsString::from(UNICITY_CE_DISTRO),
+            home.ensure_unicity_ce_manifest()?.into_os_string(),
         ];
         runtime_args.extend(args.into_iter().skip(1));
-        runtime_args
+        Ok(runtime_args)
     } else {
-        args
+        Ok(args)
     }
 }
 
@@ -209,41 +217,60 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
 
 fn print_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  unicity migrate runtime --from <absolute-legacy-home>\n  unicity <runtime command> [arguments...]\n\n`unicity init` installs the pinned Unicity CE distribution. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`unicity self-update` is intentionally disabled; AOS updates use the product updater."
+        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  unicity migrate runtime --from <absolute-legacy-home>\n  unicity <runtime command> [arguments...]\n\n`unicity init` installs the Unicity CE manifest bundled with this product release. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`unicity self-update` is intentionally disabled; AOS updates use the product updater."
     );
 }
 
 fn print_init_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the product-pinned distribution manifest. For a different distro, use the Astrid Runtime CLI directly."
+        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use the Astrid Runtime CLI directly."
     );
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{UNICITY_CE_DISTRO, has_distro_override, product_runtime_args};
+    use super::{has_distro_override, product_runtime_args};
+    use unicity_aos_bootstrap::AosHome;
+
+    fn temporary_home() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "unicity-aos-product-init-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn product_init_pins_unicity_ce_and_preserves_flags() {
-        let args = product_runtime_args(vec![
-            OsString::from("init"),
-            OsString::from("--yes"),
-            OsString::from("--var"),
-            OsString::from("model=gpt-5"),
-        ]);
+        let root = temporary_home();
+        let home = AosHome::from_root(&root);
+        let args = product_runtime_args(
+            &home,
+            vec![
+                OsString::from("init"),
+                OsString::from("--yes"),
+                OsString::from("--var"),
+                OsString::from("model=gpt-5"),
+            ],
+        )
+        .expect("materialize product manifest");
         assert_eq!(
-            args,
-            [
-                "init",
-                "--distro",
-                UNICITY_CE_DISTRO,
-                "--yes",
-                "--var",
-                "model=gpt-5"
-            ]
+            [&args[0], &args[1], &args[3], &args[4], &args[5]],
+            ["init", "--distro", "--yes", "--var", "model=gpt-5"]
         );
+        assert_eq!(
+            args[2],
+            root.join("distributions/unicity-ce/Distro.toml")
+                .into_os_string()
+        );
+        fs::remove_dir_all(root).expect("remove temporary product home");
     }
 
     #[test]

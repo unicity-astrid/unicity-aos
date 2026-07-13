@@ -14,6 +14,8 @@ use std::process::{Child, Command, ExitStatus};
 mod migration;
 pub use migration::MigrationOutcome;
 
+const UNICITY_CE_MANIFEST: &str = include_str!("../../../distros/community/unicity-ce/Distro.toml");
+
 /// Product state owned by one Unicity AOS installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AosHome {
@@ -91,6 +93,37 @@ impl AosHome {
     #[must_use]
     pub fn migration_receipt(&self) -> PathBuf {
         self.root.join("migrations/astrid-home-v1.json")
+    }
+
+    /// Product-managed location for the Unicity CE manifest bundled with this AOS
+    /// release.
+    #[must_use]
+    pub fn unicity_ce_manifest_path(&self) -> PathBuf {
+        self.root
+            .join("distributions")
+            .join("unicity-ce")
+            .join("Distro.toml")
+    }
+
+    /// Materialize the Unicity CE manifest embedded in this product binary.
+    ///
+    /// The product CLI hands this local path to the neutral runtime, so first-run
+    /// provisioning uses the manifest shipped with the installed AOS release rather
+    /// than following a mutable repository branch.
+    ///
+    /// # Errors
+    /// Returns an error when the product manifest cannot be written atomically.
+    pub fn ensure_unicity_ce_manifest(&self) -> io::Result<PathBuf> {
+        let path = self.unicity_ce_manifest_path();
+        if fs::read(&path).ok().as_deref() == Some(UNICITY_CE_MANIFEST.as_bytes()) {
+            return Ok(path);
+        }
+        let parent = path.parent().expect("manifest path has a parent");
+        fs::create_dir_all(parent)?;
+        let temporary = path.with_extension("toml.tmp");
+        fs::write(&temporary, UNICITY_CE_MANIFEST)?;
+        fs::rename(&temporary, &path)?;
+        Ok(path)
     }
 
     /// The conventional standalone Astrid Runtime home that first-run AOS can offer
@@ -285,10 +318,23 @@ const fn runtime_binary_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AosHome, runtime_binary_name};
+    use super::{AosHome, UNICITY_CE_MANIFEST, runtime_binary_name};
     use std::ffi::OsString;
+    use std::fs;
     use std::io::ErrorKind;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_home() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "unicity-aos-bundled-manifest-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn runtime_is_scoped_beneath_the_product_home() {
@@ -359,5 +405,40 @@ mod tests {
         })
         .expect_err("empty host home must fail");
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn bundled_unicity_ce_manifest_is_restored_at_its_product_path() {
+        let root = temporary_home();
+        let home = AosHome::from_root(&root);
+        let path = home
+            .ensure_unicity_ce_manifest()
+            .expect("write bundled manifest");
+        assert_eq!(path, root.join("distributions/unicity-ce/Distro.toml"));
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read manifest")
+                .contains("id = \"unicity-ce\"")
+        );
+
+        fs::write(&path, "tampered").expect("tamper product manifest");
+        home.ensure_unicity_ce_manifest()
+            .expect("restore bundled manifest");
+        assert!(
+            fs::read_to_string(path)
+                .expect("read restored manifest")
+                .contains("id = \"unicity-ce\"")
+        );
+        fs::remove_dir_all(root).expect("remove temporary product home");
+    }
+
+    #[test]
+    fn bundled_distro_version_matches_the_product_release() {
+        let manifest: toml::Value = UNICITY_CE_MANIFEST.parse().expect("parse bundled manifest");
+        assert_eq!(
+            manifest["distro"]["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "the product binary and bundled Unicity CE manifest must release together"
+        );
     }
 }
