@@ -1,4 +1,4 @@
-//! `unicity` — the product command surface for Unicity AOS.
+//! `aos` — the product command surface for Unicity AOS.
 //!
 //! Unicity AOS is a trusted distribution built on Astrid Runtime. The product
 //! binary therefore delegates runtime and operator commands directly to its
@@ -19,14 +19,14 @@ fn main() -> ExitCode {
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
-            eprintln!("unicity: failed to resolve product home: {error}");
+            eprintln!("aos: failed to resolve product home: {error}");
             return ExitCode::FAILURE;
         }
     };
     let args = match product_runtime_args(&home, args) {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("unicity: failed to prepare Unicity CE: {error}");
+            eprintln!("aos: failed to prepare Unicity CE: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -34,7 +34,7 @@ fn main() -> ExitCode {
     match home.exec_runtime_with_args(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("unicity: failed to start bundled runtime: {error}");
+            eprintln!("aos: failed to start bundled runtime: {error}");
             ExitCode::FAILURE
         }
     }
@@ -49,14 +49,14 @@ fn main() -> ExitCode {
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
-            eprintln!("unicity: failed to resolve product home: {error}");
+            eprintln!("aos: failed to resolve product home: {error}");
             return ExitCode::FAILURE;
         }
     };
     let args = match product_runtime_args(&home, args) {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("unicity: failed to prepare Unicity CE: {error}");
+            eprintln!("aos: failed to prepare Unicity CE: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -65,7 +65,7 @@ fn main() -> ExitCode {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(status) => ExitCode::from(status.code().unwrap_or(1).clamp(1, i32::from(u8::MAX)) as u8),
         Err(error) => {
-            eprintln!("unicity: failed to start bundled runtime: {error}");
+            eprintln!("aos: failed to start bundled runtime: {error}");
             ExitCode::FAILURE
         }
     }
@@ -87,15 +87,13 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
         }
         Some("self-update" | "self_update") => {
             eprintln!(
-                "unicity: runtime self-update is disabled; update Unicity AOS through its product updater"
+                "aos: runtime self-update is disabled; update Unicity AOS through its product updater"
             );
             Some(ExitCode::FAILURE)
         }
         Some("migrate") => Some(handle_migrate_command(&args[1..])),
         Some("init") if has_distro_override(&args[1..]) => {
-            eprintln!(
-                "unicity init always installs Unicity CE; use `astrid init` for another distro"
-            );
+            eprintln!("aos init always installs Unicity CE; use `astrid init` for another distro");
             Some(ExitCode::FAILURE)
         }
         Some("init") if has_help_flag(&args[1..]) => {
@@ -159,7 +157,7 @@ fn offer_first_run_migration() -> Option<ExitCode> {
     io::stdin().read_line(&mut answer).ok()?;
     if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         println!(
-            "Skipped. You can import later with `unicity migrate runtime --from {}`.",
+            "Skipped. You can import later with `aos migrate runtime --from {}`.",
             source.display()
         );
         return Some(ExitCode::SUCCESS);
@@ -174,7 +172,7 @@ fn offer_first_run_migration() -> Option<ExitCode> {
         }
         Ok(unicity_aos_bootstrap::MigrationOutcome::AlreadyMigrated) => Some(ExitCode::SUCCESS),
         Err(error) => {
-            eprintln!("unicity: runtime migration failed: {error}");
+            eprintln!("aos: runtime migration failed: {error}");
             Some(ExitCode::FAILURE)
         }
     }
@@ -182,18 +180,18 @@ fn offer_first_run_migration() -> Option<ExitCode> {
 
 fn handle_migrate_command(args: &[OsString]) -> ExitCode {
     let [subcommand, flag, source] = args else {
-        eprintln!("Usage: unicity migrate runtime --from <absolute-legacy-home>");
+        eprintln!("Usage: aos migrate runtime --from <absolute-legacy-home>");
         return ExitCode::FAILURE;
     };
     if subcommand.as_os_str() != OsStr::new("runtime") || flag.as_os_str() != OsStr::new("--from") {
-        eprintln!("Usage: unicity migrate runtime --from <absolute-legacy-home>");
+        eprintln!("Usage: aos migrate runtime --from <absolute-legacy-home>");
         return ExitCode::FAILURE;
     }
 
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
-            eprintln!("unicity: failed to resolve product home: {error}");
+            eprintln!("aos: failed to resolve product home: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -209,7 +207,7 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("unicity: runtime migration failed: {error}");
+            eprintln!("aos: runtime migration failed: {error}");
             ExitCode::FAILURE
         }
     }
@@ -217,13 +215,13 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
 
 fn print_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  unicity migrate runtime --from <absolute-legacy-home>\n  unicity <runtime command> [arguments...]\n\n`unicity init` installs the Unicity CE manifest bundled with this product release. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`unicity self-update` is intentionally disabled; AOS updates use the product updater."
+        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos <runtime command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`aos self-update` is intentionally disabled; AOS updates use the product updater."
     );
 }
 
 fn print_init_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  unicity init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use the Astrid Runtime CLI directly."
+        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use the Astrid Runtime CLI directly."
     );
 }
 

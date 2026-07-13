@@ -7,15 +7,15 @@ capsules for the complete agent operating system experience.
 
 Unicity CE is a **distro manifest** — a `Distro.toml` file that declares which
 capsules to install, their versions, and how they connect. It is not code. It is
-product metadata that `unicity init` reads to set up a working environment.
+product metadata that `aos init` reads to set up a working environment.
 
 ## Quick start
 
 ```bash
-unicity init
+aos init
 ```
 
-`unicity init` fetches this manifest, prompts you to select providers (for example,
+`aos init` fetches this manifest, prompts you to select providers (for example,
 which LLM backend), and installs everything.
 
 ## What's included

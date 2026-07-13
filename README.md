@@ -3,7 +3,7 @@
 AOS Community Edition is the open agent operating system for people who want
 an inspectable, composable environment for agents.
 
-It owns the Community Edition product surface: the `unicity` CLI, HTTP API,
+It owns the Community Edition product surface: the `aos` CLI, HTTP API,
 distributions, first-party capsules, provider and model experience, and
 Unicity Audit.
 
