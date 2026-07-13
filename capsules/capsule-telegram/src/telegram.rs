@@ -48,8 +48,7 @@ fn unwrap_envelope(resp: http::Response, method: &str) -> Result<String, SysErro
     }
     if envelope.status >= 400 {
         // Try to extract the Telegram error description from the response body.
-        if let Ok(err_resp) =
-            serde_json::from_str::<TgResponse<serde_json::Value>>(&envelope.body)
+        if let Ok(err_resp) = serde_json::from_str::<TgResponse<serde_json::Value>>(&envelope.body)
         {
             if !err_resp.ok {
                 return Err(SysError::ApiError(format!(
@@ -77,8 +76,9 @@ fn parse_response<T: serde::de::DeserializeOwned>(
     let body = unwrap_envelope(resp, method)?;
 
     // Parse the Telegram JSON from the body string.
-    let parsed: TgResponse<T> = serde_json::from_str(&body)
-        .map_err(|e| SysError::ApiError(format!("{method}: failed to parse Telegram response: {e}")))?;
+    let parsed: TgResponse<T> = serde_json::from_str(&body).map_err(|e| {
+        SysError::ApiError(format!("{method}: failed to parse Telegram response: {e}"))
+    })?;
 
     if !parsed.ok {
         return Err(SysError::ApiError(format!(

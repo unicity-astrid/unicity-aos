@@ -10,12 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 astrid-sdk = { version = "0.5.3", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 extism-pdk = "1.4.1"
 regex = "1"
-
-[profile.release]
-codegen-units = 1
-lto = true
-strip = true

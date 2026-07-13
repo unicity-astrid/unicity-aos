@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+# Astrid supplies random bytes to OS-less WASM capsules through
+# `astrid:sys.random-bytes`.
+rustflags = ["--cfg=getrandom_backend=\"custom\""]

@@ -208,8 +208,7 @@ impl TelegramBot {
             } else {
                 consecutive_ipc_errors = consecutive_ipc_errors.saturating_add(1);
                 if consecutive_ipc_errors >= 50 {
-                    let _ =
-                        log::error("Too many consecutive IPC errors — shutting down");
+                    let _ = log::error("Too many consecutive IPC errors — shutting down");
                     return Err(SysError::ApiError(
                         "IPC subscription failed, capsule terminated".into(),
                     ));
@@ -299,7 +298,14 @@ fn handle_telegram_update(
         );
     }
     if let Some(cb) = &update.callback_query {
-        handle_callback(token, allowed_users, cb, sessions, pending_approvals, pending_elicitations);
+        handle_callback(
+            token,
+            allowed_users,
+            cb,
+            sessions,
+            pending_approvals,
+            pending_elicitations,
+        );
     }
 }
 
@@ -396,9 +402,7 @@ fn handle_message(
         TurnState {
             msg_id: placeholder.message_id,
             text_buffer: String::new(),
-            last_edit: now
-                .checked_sub(EDIT_THROTTLE)
-                .unwrap_or_else(Instant::now),
+            last_edit: now.checked_sub(EDIT_THROTTLE).unwrap_or_else(Instant::now),
             finalized: false,
             created_at: now,
             last_activity: now,
@@ -590,8 +594,7 @@ fn handle_callback(
                     Some(&format!("Selected: {value}")),
                 );
             } else {
-                let _ =
-                    telegram::answer_callback_query(token, &cb.id, Some("Elicitation expired"));
+                let _ = telegram::answer_callback_query(token, &cb.id, Some("Elicitation expired"));
             }
         }
         _ => {
@@ -728,13 +731,7 @@ fn handle_ipc_event(
             if let Some(turn) = turns.get_mut(&chat_id) {
                 turn.last_activity = Instant::now();
             }
-            handle_elicitation_request(
-                token,
-                chat_id,
-                request_id,
-                field,
-                pending_elicitations,
-            );
+            handle_elicitation_request(token, chat_id, request_id, field, pending_elicitations);
         }
 
         // Catch-all for stream deltas that use a different topic pattern.
@@ -815,11 +812,9 @@ fn handle_final_response(
             if let Some((first, rest)) = chunks.split_first() {
                 if turn.finalized {
                     // Send as new message.
-                    let _ =
-                        telegram::send_message(token, chat_id, first, Some("HTML"), None);
+                    let _ = telegram::send_message(token, chat_id, first, Some("HTML"), None);
                     for chunk in rest {
-                        let _ =
-                            telegram::send_message(token, chat_id, chunk, Some("HTML"), None);
+                        let _ = telegram::send_message(token, chat_id, chunk, Some("HTML"), None);
                     }
                 } else {
                     // Edit the existing message with the final text.
@@ -1089,13 +1084,17 @@ fn save_session(chat_id: i64, session_id: &str) {
             session_id: session_id.to_string(),
         },
     ) {
-        let _ = log::warn(format!("Failed to persist session for chat {chat_id}: {e:?}"));
+        let _ = log::warn(format!(
+            "Failed to persist session for chat {chat_id}: {e:?}"
+        ));
     }
 }
 
 fn delete_session(chat_id: i64) {
     if let Err(e) = kv::delete(&session_kv_key(chat_id)) {
-        let _ = log::warn(format!("Failed to delete session for chat {chat_id}: {e:?}"));
+        let _ = log::warn(format!(
+            "Failed to delete session for chat {chat_id}: {e:?}"
+        ));
     }
 }
 
@@ -1125,7 +1124,10 @@ mod tests {
 
     #[test]
     fn parse_allowed_users_with_spaces() {
-        assert_eq!(parse_allowed_users(" 123 , 456 , 789 "), vec![123, 456, 789]);
+        assert_eq!(
+            parse_allowed_users(" 123 , 456 , 789 "),
+            vec![123, 456, 789]
+        );
     }
 
     #[test]

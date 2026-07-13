@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "capsules/capsule-agents",
+    "capsules/capsule-cli",
+    "capsules/capsule-context-engine",
+    "capsules/capsule-forge",
+    "capsules/capsule-fs",
+    "capsules/capsule-hook-bridge",
+    "capsules/capsule-http",
+    "capsules/capsule-identity",
+    "capsules/capsule-memory",
+    "capsules/capsule-openai",
+    "capsules/capsule-openai-compat",
+    "capsules/capsule-prompt-builder",
+    "capsules/capsule-react",
+    "capsules/capsule-registry",
+    "capsules/capsule-router",
+    "capsules/capsule-session",
+    "capsules/capsule-shell",
+    "capsules/capsule-skills",
+    "capsules/capsule-system",
+    "capsules/capsule-telegram",
+    "capsules/capsule-users",
+]
+resolver = "3"
+
+[workspace.dependencies]
+astrid-sdk = { version = "0.7.1", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+uuid = { version = "1.22", features = ["rng-getrandom", "serde", "v4"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
