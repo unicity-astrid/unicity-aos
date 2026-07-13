@@ -9,14 +9,35 @@ use std::process::ExitCode;
 
 use unicity_aos_bootstrap::AosHome;
 
+#[cfg(unix)]
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    if matches!(
-        args.first().and_then(|arg| arg.to_str()),
-        Some("-h" | "--help")
-    ) {
-        print_help();
-        return ExitCode::SUCCESS;
+    if let Some(exit_code) = handle_product_command(&args) {
+        return exit_code;
+    }
+
+    let home = match AosHome::resolve() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("unicity: failed to resolve product home: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match home.exec_runtime_with_args(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("unicity: failed to start bundled runtime: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let Some(exit_code) = handle_product_command(&args) {
+        return exit_code;
     }
 
     let home = match AosHome::resolve() {
@@ -37,8 +58,28 @@ fn main() -> ExitCode {
     }
 }
 
+fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
+    match args.first().and_then(|arg| arg.to_str()) {
+        None | Some("-h" | "--help") => {
+            print_help();
+            Some(ExitCode::SUCCESS)
+        }
+        Some("-V" | "--version") => {
+            println!("Unicity AOS {}", env!("CARGO_PKG_VERSION"));
+            Some(ExitCode::SUCCESS)
+        }
+        Some("self-update" | "self_update") => {
+            eprintln!(
+                "unicity: runtime self-update is disabled; update Unicity AOS through its product updater"
+            );
+            Some(ExitCode::FAILURE)
+        }
+        Some(_) => None,
+    }
+}
+
 fn print_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  unicity <runtime command> [arguments...]\n\nUnicity delegates local runtime and operator commands to its bundled Astrid Runtime.\nThe runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME)."
+        "Unicity AOS\n\nUsage:\n  unicity <runtime command> [arguments...]\n\nUnicity delegates local runtime and operator commands to its bundled Astrid Runtime.\nThe runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`unicity self-update` is intentionally disabled; AOS updates use the product updater."
     );
 }

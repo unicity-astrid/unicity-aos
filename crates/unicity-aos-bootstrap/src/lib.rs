@@ -148,18 +148,27 @@ impl AosHome {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let binary = self.runtime_binary();
-        if !binary.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "bundled runtime executable not found at {}",
-                    binary.display()
-                ),
-            ));
-        }
-        self.ensure_layout()?;
+        self.ensure_runtime_available()?;
         self.runtime_command_with_args(args).spawn()
+    }
+
+    /// Replace the current Unix process with a bundled runtime command.
+    ///
+    /// `exec` preserves the runtime's signal and exit semantics for terminal
+    /// users and service managers; it never returns on success.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled executable is absent or cannot start.
+    #[cfg(unix)]
+    pub fn exec_runtime_with_args<I, S>(&self, args: I) -> io::Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        use std::os::unix::process::CommandExt;
+
+        self.ensure_runtime_available()?;
+        Err(self.runtime_command_with_args(args).exec())
     }
 
     /// Run an Astrid Runtime command as an AOS product command.
@@ -176,6 +185,20 @@ impl AosHome {
         S: AsRef<OsStr>,
     {
         self.spawn_runtime_with_args(args)?.wait()
+    }
+
+    fn ensure_runtime_available(&self) -> io::Result<()> {
+        let binary = self.runtime_binary();
+        if !binary.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "bundled runtime executable not found at {}",
+                    binary.display()
+                ),
+            ));
+        }
+        self.ensure_layout()
     }
 }
 
@@ -232,7 +255,7 @@ const fn runtime_binary_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::AosHome;
+    use super::{AosHome, runtime_binary_name};
     use std::ffi::OsString;
     use std::io::ErrorKind;
     use std::path::PathBuf;
@@ -247,7 +270,7 @@ mod tests {
         );
         assert_eq!(
             home.runtime_binary(),
-            PathBuf::from("/tmp/unicity-aos-test/runtime/bin/astrid")
+            home.runtime_home().join("bin").join(runtime_binary_name())
         );
     }
 
@@ -271,10 +294,7 @@ mod tests {
         let args: Vec<_> = command.get_args().collect();
 
         assert_eq!(args, ["status", "--json"]);
-        assert_eq!(
-            command.get_program(),
-            "/tmp/unicity-aos-test/runtime/bin/astrid"
-        );
+        assert_eq!(command.get_program(), home.runtime_binary());
     }
 
     #[test]
