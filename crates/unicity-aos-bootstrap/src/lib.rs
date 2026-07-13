@@ -6,9 +6,13 @@
 //! environment or rewrites a standalone runtime installation.
 
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
+
+mod migration;
+pub use migration::MigrationOutcome;
 
 /// Product state owned by one Unicity AOS installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,10 +87,36 @@ impl AosHome {
         self.root.join("runtime")
     }
 
+    /// The receipt written only after a successful standalone-runtime import.
+    #[must_use]
+    pub fn migration_receipt(&self) -> PathBuf {
+        self.root.join("migrations/astrid-home-v1.json")
+    }
+
+    /// The conventional standalone Astrid Runtime home that first-run AOS can offer
+    /// to import. This does not inspect `ASTRID_HOME`: an override may name another
+    /// product or service installation and must be supplied explicitly by the user.
+    pub fn default_legacy_runtime_home() -> io::Result<PathBuf> {
+        let home = default_home(&|name| std::env::var_os(name))?;
+        Ok(PathBuf::from(home).join(".astrid"))
+    }
+
     /// The installed bundled-runtime executable.
     #[must_use]
     pub fn runtime_binary(&self) -> PathBuf {
         self.runtime_home().join("bin").join(runtime_binary_name())
+    }
+
+    /// Import a standalone Astrid Runtime home into this product installation.
+    ///
+    /// This is an explicit copy operation. It leaves the standalone source in
+    /// place so the operator retains a rollback path and historical provenance.
+    ///
+    /// # Errors
+    /// Returns an error for unsafe paths, a running source runtime, an
+    /// incompatible target, or a failed staging/validation operation.
+    pub fn migrate_runtime_from(&self, source: impl AsRef<Path>) -> io::Result<MigrationOutcome> {
+        migration::migrate_runtime(self, source.as_ref())
     }
 
     /// Create the product and bundled-runtime state directories.
@@ -97,7 +127,7 @@ impl AosHome {
     /// # Errors
     /// Returns an error when the directories cannot be created.
     pub fn ensure_layout(&self) -> io::Result<()> {
-        std::fs::create_dir_all(self.runtime_home())
+        fs::create_dir_all(self.runtime_home())
     }
 
     /// Build a command for the bundled runtime with a process-local home.
