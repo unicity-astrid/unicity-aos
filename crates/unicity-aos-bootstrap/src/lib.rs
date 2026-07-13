@@ -318,7 +318,7 @@ const fn runtime_binary_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AosHome, runtime_binary_name};
+    use super::{AosHome, UNICITY_CE_MANIFEST, runtime_binary_name};
     use std::ffi::OsString;
     use std::fs;
     use std::io::ErrorKind;
@@ -430,5 +430,15 @@ mod tests {
                 .contains("id = \"unicity-ce\"")
         );
         fs::remove_dir_all(root).expect("remove temporary product home");
+    }
+
+    #[test]
+    fn bundled_distro_version_matches_the_product_release() {
+        let manifest: toml::Value = UNICITY_CE_MANIFEST.parse().expect("parse bundled manifest");
+        assert_eq!(
+            manifest["distro"]["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "the product binary and bundled Unicity CE manifest must release together"
+        );
     }
 }
