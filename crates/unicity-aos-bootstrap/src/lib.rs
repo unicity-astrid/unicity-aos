@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 
 mod migration;
-pub use migration::MigrationOutcome;
+pub use migration::{LegacyDistro, MigrationOutcome};
 
 const UNICITY_CE_MANIFEST: &str = include_str!("../../../distros/community/unicity-ce/Distro.toml");
 
@@ -150,6 +150,11 @@ impl AosHome {
     /// incompatible target, or a failed staging/validation operation.
     pub fn migrate_runtime_from(&self, source: impl AsRef<Path>) -> io::Result<MigrationOutcome> {
         migration::migrate_runtime(self, source.as_ref())
+    }
+
+    /// Legacy product distro locks preserved by the last runtime import.
+    pub fn imported_legacy_distros(&self) -> io::Result<Vec<LegacyDistro>> {
+        migration::imported_legacy_distros(self)
     }
 
     /// Create the product and bundled-runtime state directories.

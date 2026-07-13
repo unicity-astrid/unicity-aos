@@ -18,10 +18,19 @@ pub enum MigrationOutcome {
     AlreadyMigrated,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyDistro {
+    pub principal: String,
+    pub id: String,
+    pub version: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Receipt {
     source: PathBuf,
     entries: Vec<Entry>,
+    #[serde(default)]
+    legacy_distros: Vec<LegacyDistro>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,6 +93,7 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
         let receipt = Receipt {
             source: source.clone(),
             entries,
+            legacy_distros: legacy_distros(&staging)?,
         };
         if !receipt_matches(&staging, &receipt)? {
             return invalid("staged runtime did not validate against its import manifest");
@@ -102,6 +112,48 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
         let _ = fs::remove_dir_all(&staging);
     }
     result.map(|()| MigrationOutcome::Migrated)
+}
+
+pub(crate) fn imported_legacy_distros(home: &AosHome) -> io::Result<Vec<LegacyDistro>> {
+    let receipt = read_receipt(&home.migration_receipt())?;
+    Ok(receipt.legacy_distros)
+}
+
+fn legacy_distros(runtime_home: &Path) -> io::Result<Vec<LegacyDistro>> {
+    let homes = runtime_home.join("home");
+    if !homes.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut distros = Vec::new();
+    for entry in fs::read_dir(homes)? {
+        let entry = entry?;
+        let principal = entry.file_name().to_string_lossy().into_owned();
+        let lock = entry.path().join(".config/distro.lock");
+        let Ok(contents) = fs::read_to_string(lock) else {
+            continue;
+        };
+        let Ok(value) = contents.parse::<toml::Value>() else {
+            continue;
+        };
+        let Some(distro) = value.get("distro") else {
+            continue;
+        };
+        let (Some(id), Some(version)) = (
+            distro.get("id").and_then(toml::Value::as_str),
+            distro.get("version").and_then(toml::Value::as_str),
+        ) else {
+            continue;
+        };
+        if matches!(id, "astralis" | "aos-ce") {
+            distros.push(LegacyDistro {
+                principal,
+                id: id.to_owned(),
+                version: version.to_owned(),
+            });
+        }
+    }
+    distros.sort_by(|left, right| left.principal.cmp(&right.principal));
+    Ok(distros)
 }
 
 fn checked_root(path: &Path, description: &str) -> io::Result<PathBuf> {
@@ -448,6 +500,91 @@ mod tests {
         assert_eq!(
             fs::read(product.runtime_home().join("var/state.db")).unwrap(),
             b"existing-state"
+        );
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn records_legacy_distro_locks_without_rewriting_them() {
+        let root = fixture_root("legacy-distros");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(root.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(&product.runtime_home(), "bin/astrid", b"bundled-binary");
+        let astralis = b"[distro]\nid = \"astralis\"\nversion = \"0.2.2\"\n";
+        let aos_ce = b"[distro]\nid = \"aos-ce\"\nversion = \"2026.1.0\"\n";
+        write(&source, "home/alice/.config/distro.lock", astralis);
+        write(&source, "home/bob/.config/distro.lock", aos_ce);
+        write(
+            &source,
+            "home/carol/.config/distro.lock",
+            b"[distro]\nid = \"unicity-ce\"\nversion = \"2026.1.0\"\n",
+        );
+        write(&source, "home/dan/.config/distro.lock", b"not toml");
+
+        migrate_runtime(&product, &source).expect("migration succeeds");
+        assert_eq!(
+            product.imported_legacy_distros().expect("read receipt"),
+            vec![
+                super::LegacyDistro {
+                    principal: "alice".into(),
+                    id: "astralis".into(),
+                    version: "0.2.2".into()
+                },
+                super::LegacyDistro {
+                    principal: "bob".into(),
+                    id: "aos-ce".into(),
+                    version: "2026.1.0".into()
+                },
+            ]
+        );
+        assert_eq!(
+            fs::read(
+                product
+                    .runtime_home()
+                    .join("home/alice/.config/distro.lock")
+            )
+            .unwrap(),
+            astralis
+        );
+        assert_eq!(
+            fs::read(product.runtime_home().join("home/bob/.config/distro.lock")).unwrap(),
+            aos_ce
+        );
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn accepts_a_receipt_written_before_legacy_distro_tracking() {
+        let root = fixture_root("legacy-receipt");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(root.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(&product.runtime_home(), "keys/runtime.key", b"runtime-key");
+
+        let source = source.canonicalize().expect("canonical source");
+        let receipt = serde_json::json!({
+            "source": source,
+            "entries": [{ "path": "keys/runtime.key", "bytes": 11 }],
+        });
+        let receipt_path = product.migration_receipt();
+        fs::create_dir_all(receipt_path.parent().expect("receipt parent"))
+            .expect("create receipt parent");
+        fs::write(
+            &receipt_path,
+            serde_json::to_vec(&receipt).expect("serialize legacy receipt"),
+        )
+        .expect("write legacy receipt");
+
+        assert_eq!(
+            migrate_runtime(&product, &source).expect("legacy receipt remains idempotent"),
+            MigrationOutcome::AlreadyMigrated
+        );
+        assert!(
+            product
+                .imported_legacy_distros()
+                .expect("read legacy receipt")
+                .is_empty()
         );
         fs::remove_dir_all(root).expect("remove fixture root");
     }

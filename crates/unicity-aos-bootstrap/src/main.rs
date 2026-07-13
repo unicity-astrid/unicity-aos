@@ -168,6 +168,7 @@ fn offer_first_run_migration() -> Option<ExitCode> {
             println!(
                 "Unicity AOS: imported the standalone runtime; the source was left unchanged."
             );
+            print_legacy_distro_handoff(&home);
             Some(ExitCode::SUCCESS)
         }
         Ok(unicity_aos_bootstrap::MigrationOutcome::AlreadyMigrated) => Some(ExitCode::SUCCESS),
@@ -200,6 +201,7 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
             println!(
                 "Unicity AOS: imported the standalone runtime; the source was left unchanged."
             );
+            print_legacy_distro_handoff(&home);
             ExitCode::SUCCESS
         }
         Ok(unicity_aos_bootstrap::MigrationOutcome::AlreadyMigrated) => {
@@ -210,6 +212,17 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
             eprintln!("aos: runtime migration failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn print_legacy_distro_handoff(home: &AosHome) {
+    let Ok(distros) = home.imported_legacy_distros() else {
+        return;
+    };
+    if !distros.is_empty() {
+        println!(
+            "Imported legacy distro state was preserved. Run `aos init` to deliberately apply Unicity CE; provider configuration and imported state remain in place."
+        );
     }
 }
 
