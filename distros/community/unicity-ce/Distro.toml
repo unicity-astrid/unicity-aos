@@ -3,8 +3,8 @@ schema-version = 1
 [distro]
 id = "unicity-ce"
 name = "Unicity CE"
-pretty-name = "Unicity CE 0.2.2 (Genesis)"
-version = "0.2.2"
+pretty-name = "Unicity CE 2026.1.0 (Genesis)"
+version = "2026.1.0"
 codename = "genesis"
 release-date = "2026-07-10"
 description = "The complete Unicity AOS agent operating system experience"
