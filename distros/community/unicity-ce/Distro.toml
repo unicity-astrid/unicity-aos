@@ -1,19 +1,19 @@
 schema-version = 1
 
 [distro]
-id = "astralis"
-name = "Astralis"
-pretty-name = "Astralis 0.2.2 (Genesis)"
-version = "0.2.2"
+id = "unicity-ce"
+name = "Unicity CE"
+pretty-name = "Unicity CE 2026.1.0 (Genesis)"
+version = "2026.1.0"
 codename = "genesis"
 release-date = "2026-07-10"
-description = "The complete Astrid AI assistant experience"
+description = "The complete Unicity AOS agent operating system experience"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 maintainers = ["Joshua J. Bouw <jjb@unicity-labs.com>"]
-homepage = "https://github.com/unicity-astrid/astralis"
-support = "https://github.com/unicity-astrid/astrid/discussions"
-bug-tracker = "https://github.com/unicity-astrid/astralis/issues"
-repository = "https://github.com/unicity-astrid/astralis"
+homepage = "https://github.com/unicity-aos/aos-ce"
+support = "https://github.com/unicity-aos/aos-ce/discussions"
+bug-tracker = "https://github.com/unicity-aos/aos-ce/issues"
+repository = "https://github.com/unicity-aos/aos-ce"
 license = "MIT OR Apache-2.0"
 astrid-version = ">=0.9.1"  # 0.9.0 shipped a broken astrid:process@1.0.0 host ABI (capsules like shell fail to instantiate); fixed in 0.9.1
 
