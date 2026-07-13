@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Product-owned runtime layout and launcher for Unicity AOS."
+
+[[bin]]
+name = "unicity"
+path = "src/main.rs"

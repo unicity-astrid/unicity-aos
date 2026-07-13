@@ -5,10 +5,10 @@
 //! to the bundled runtime process only; it never changes the caller's process
 //! environment or rewrites a standalone runtime installation.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 
 /// Product state owned by one Unicity AOS installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,8 +107,23 @@ impl AosHome {
     /// shell, another AOS install, or a standalone Astrid Runtime installation.
     #[must_use]
     pub fn runtime_command(&self) -> Command {
+        self.runtime_command_with_args(std::iter::empty::<&OsStr>())
+    }
+
+    /// Build a command for the bundled runtime with product CLI arguments.
+    ///
+    /// The command is executed directly, not through a shell. This preserves
+    /// argument boundaries and leaves the runtime in charge of its established
+    /// local socket, credentials, and operator protocol.
+    #[must_use]
+    pub fn runtime_command_with_args<I, S>(&self, args: I) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let mut command = Command::new(self.runtime_binary());
         command.env("ASTRID_HOME", self.runtime_home());
+        command.args(args);
         command
     }
 
@@ -117,6 +132,62 @@ impl AosHome {
     /// # Errors
     /// Returns an error when the bundled executable is absent or cannot start.
     pub fn spawn_runtime(&self) -> io::Result<Child> {
+        self.spawn_runtime_with_args(std::iter::empty::<&OsStr>())
+    }
+
+    /// Spawn the bundled runtime with product CLI arguments.
+    ///
+    /// Unicity AOS is a trusted distribution built on Astrid Runtime, so this
+    /// path uses the runtime's normal local operator credentials. The runtime
+    /// home remains scoped to this AOS installation.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled executable is absent or cannot start.
+    pub fn spawn_runtime_with_args<I, S>(&self, args: I) -> io::Result<Child>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.ensure_runtime_available()?;
+        self.runtime_command_with_args(args).spawn()
+    }
+
+    /// Replace the current Unix process with a bundled runtime command.
+    ///
+    /// `exec` preserves the runtime's signal and exit semantics for terminal
+    /// users and service managers; it never returns on success.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled executable is absent or cannot start.
+    #[cfg(unix)]
+    pub fn exec_runtime_with_args<I, S>(&self, args: I) -> io::Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        use std::os::unix::process::CommandExt;
+
+        self.ensure_runtime_available()?;
+        Err(self.runtime_command_with_args(args).exec())
+    }
+
+    /// Run an Astrid Runtime command as an AOS product command.
+    ///
+    /// The runtime remains the authority for socket authentication and local
+    /// credentials. Unicity provides only product-owned installation state and
+    /// preserves the runtime's exit status for scripts and service managers.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled executable is absent or cannot start.
+    pub fn run_runtime_with_args<I, S>(&self, args: I) -> io::Result<ExitStatus>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.spawn_runtime_with_args(args)?.wait()
+    }
+
+    fn ensure_runtime_available(&self) -> io::Result<()> {
         let binary = self.runtime_binary();
         if !binary.is_file() {
             return Err(io::Error::new(
@@ -127,8 +198,7 @@ impl AosHome {
                 ),
             ));
         }
-        self.ensure_layout()?;
-        self.runtime_command().spawn()
+        self.ensure_layout()
     }
 }
 
@@ -185,7 +255,7 @@ const fn runtime_binary_name() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::AosHome;
+    use super::{AosHome, runtime_binary_name};
     use std::ffi::OsString;
     use std::io::ErrorKind;
     use std::path::PathBuf;
@@ -200,7 +270,7 @@ mod tests {
         );
         assert_eq!(
             home.runtime_binary(),
-            PathBuf::from("/tmp/unicity-aos-test/runtime/bin/astrid")
+            home.runtime_home().join("bin").join(runtime_binary_name())
         );
     }
 
@@ -215,6 +285,16 @@ mod tests {
             .expect("runtime command sets ASTRID_HOME");
 
         assert_eq!(runtime_home, "/tmp/unicity-aos-test/runtime");
+    }
+
+    #[test]
+    fn runtime_command_forwards_product_cli_arguments_without_a_shell() {
+        let home = AosHome::from_root("/tmp/unicity-aos-test");
+        let command = home.runtime_command_with_args(["status", "--json"]);
+        let args: Vec<_> = command.get_args().collect();
+
+        assert_eq!(args, ["status", "--json"]);
+        assert_eq!(command.get_program(), home.runtime_binary());
     }
 
     #[test]
