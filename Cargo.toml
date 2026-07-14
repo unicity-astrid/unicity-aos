@@ -27,8 +27,12 @@ resolver = "3"
 
 [workspace.dependencies]
 astrid-sdk = { version = "0.7.1", features = ["derive"] }
+astrid-core = "0.9.4"
+astrid-uplink = "0.9.4"
+axum = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["net", "rt", "time"] }
 toml = "0.8"
 uuid = { version = "1.22", features = ["rng-getrandom", "serde", "v4"] }
 

@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 
+pub mod health;
 mod migration;
 pub use migration::{LegacyDistro, MigrationOutcome};
 

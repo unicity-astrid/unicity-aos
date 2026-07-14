@@ -6,11 +6,16 @@ license = "Apache-2.0"
 description = "Product-owned runtime layout and launcher for Unicity AOS."
 
 [dependencies]
+astrid-core.workspace = true
+astrid-uplink.workspace = true
+axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "aos"

@@ -92,6 +92,7 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
             Some(ExitCode::FAILURE)
         }
         Some("migrate") => Some(handle_migrate_command(&args[1..])),
+        Some("serve-health") => Some(handle_health_service()),
         Some("init") if has_distro_override(&args[1..]) => {
             eprintln!("aos init always installs Unicity CE; use `astrid init` for another distro");
             Some(ExitCode::FAILURE)
@@ -101,6 +102,41 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
             Some(ExitCode::SUCCESS)
         }
         Some(_) => None,
+    }
+}
+
+fn handle_health_service() -> ExitCode {
+    let home = match AosHome::resolve() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("aos: failed to resolve product home: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Safety: this runs before the Tokio runtime and the health server starts
+    // any threads. The override affects only this dedicated child process, not
+    // the invoking shell or a standalone Astrid Runtime installation.
+    unsafe {
+        std::env::set_var("ASTRID_HOME", home.runtime_home());
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("aos: failed to start product health runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(unicity_aos_bootstrap::health::serve_default()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("aos: health service failed: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -232,7 +268,7 @@ fn print_legacy_distro_handoff(home: &AosHome) {
 
 fn print_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos <runtime command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`aos self-update` is intentionally disabled; AOS updates use the product updater."
+        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos serve-health\n  aos <runtime command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. `aos serve-health` binds only 127.0.0.1:8765 and exposes GET /v1/runtime/health. Unicity delegates runtime and operator commands to its bundled Astrid Runtime. The runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME).\n\n`aos self-update` is intentionally disabled; AOS updates use the product updater."
     );
 }
 
