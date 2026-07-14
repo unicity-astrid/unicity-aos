@@ -36,7 +36,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download --repo unicity-astrid/astrid \
+          gh release download --repo astrid-runtime/astrid \
             --pattern 'astrid-*-x86_64-unknown-linux-gnu.tar.gz' --dir /tmp/astrid-cli
           tar xzf /tmp/astrid-cli/*.tar.gz -C /tmp/astrid-cli
           echo "$(dirname "$(find /tmp/astrid-cli -name astrid-build -type f | head -1)")" >> "$GITHUB_PATH"
