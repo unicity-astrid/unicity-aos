@@ -114,21 +114,17 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if command -v cosign >/dev/null 2>&1; then
-  COSIGN_BIN=$(command -v cosign)
-else
-  COSIGN_BIN="$work/cosign"
-  echo "Downloading the pinned Sigstore verifier..."
-  curl --proto '=https' --tlsv1.2 -fsSL \
-    "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/${cosign_asset}" \
-    -o "$COSIGN_BIN"
-  [ ! -L "$COSIGN_BIN" ] || { echo "downloaded Sigstore verifier is a symlink" >&2; exit 1; }
-  [ "$(sha256_file "$COSIGN_BIN")" = "$cosign_sha256" ] || {
-    echo "Sigstore verifier checksum mismatch" >&2
-    exit 1
-  }
-  chmod 700 "$COSIGN_BIN"
-fi
+COSIGN_BIN="$work/cosign"
+echo "Downloading the pinned Sigstore verifier..."
+curl --proto '=https' --tlsv1.2 -fsSL \
+  "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/${cosign_asset}" \
+  -o "$COSIGN_BIN"
+[ ! -L "$COSIGN_BIN" ] || { echo "downloaded Sigstore verifier is a symlink" >&2; exit 1; }
+[ "$(sha256_file "$COSIGN_BIN")" = "$cosign_sha256" ] || {
+  echo "Sigstore verifier checksum mismatch" >&2
+  exit 1
+}
+chmod 700 "$COSIGN_BIN"
 
 echo "Downloading Unicity AOS for $target..."
 curl --proto '=https' --tlsv1.2 -fsSL "$base/$asset" -o "$work/$asset"
@@ -205,6 +201,18 @@ if [ "$bundle_name" != "unicity-aos-${staged_version}-${target}" ]; then
   exit 1
 fi
 
+for managed in "$AOS_HOME" "$AOS_HOME/runtime" "$AOS_HOME/runtime/bin" "$AOS_HOME/releases"; do
+  [ ! -L "$managed" ] || { echo "refusing symlinked managed path: $managed" >&2; exit 1; }
+done
+if [ -L "$AOS_BIN_DIR" ]; then
+  echo "refusing symlinked managed path: $AOS_BIN_DIR" >&2
+  exit 1
+fi
+if [ -L "$AOS_BIN_DIR/aos" ] || { [ -e "$AOS_BIN_DIR/aos" ] && [ ! -f "$AOS_BIN_DIR/aos" ]; }; then
+  echo "refusing non-regular install destination: $AOS_BIN_DIR/aos" >&2
+  exit 1
+fi
+
 if [ -x "$AOS_BIN_DIR/aos" ] && [ "$ASSUME_YES" -ne 1 ] && [ -t 0 ]; then
   printf 'Replace the existing Unicity AOS installation? [y/N] '
   read -r answer
@@ -213,14 +221,6 @@ fi
 
 if [ -x "$AOS_BIN_DIR/aos" ]; then
   "$AOS_BIN_DIR/aos" stop >/dev/null 2>&1 || true
-fi
-
-for managed in "$AOS_HOME" "$AOS_HOME/runtime" "$AOS_HOME/runtime/bin" "$AOS_HOME/releases"; do
-  [ ! -L "$managed" ] || { echo "refusing symlinked managed path: $managed" >&2; exit 1; }
-done
-if [ "$AOS_BIN_DIR" = "$AOS_HOME/bin" ] && [ -L "$AOS_BIN_DIR" ]; then
-  echo "refusing symlinked managed path: $AOS_BIN_DIR" >&2
-  exit 1
 fi
 
 mkdir -p "$AOS_BIN_DIR" "$AOS_HOME/runtime/bin" "$AOS_HOME/releases"

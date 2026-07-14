@@ -26,7 +26,7 @@ for binary in astrid astrid-daemon astrid-build astrid-emit; do
   printf '#!/bin/sh\necho %s\n' "$binary" > "$runtime_root/$binary"
   chmod 755 "$runtime_root/$binary"
 done
-tar -czf "$work/runtime.tar.gz" -C "$work" "$(basename "$runtime_root")"
+COPYFILE_DISABLE=1 tar -czf "$work/runtime.tar.gz" -C "$work" "$(basename "$runtime_root")"
 "$repo_root/scripts/package-release.sh" \
   x86_64-unknown-linux-gnu \
   "$work/aos" \
@@ -69,13 +69,48 @@ done
 [ -n "$url" ]
 cp "$AOS_TEST_FIXTURE/$(basename "$url")" "$output"
 EOF
-cat > "$fake_bin/cosign" <<'EOF'
+cat > "$fixture/cosign-linux-amd64" <<'EOF'
 #!/bin/sh
 set -eu
 [ "${1:-}" = verify-blob ]
 : > "$AOS_TEST_FIXTURE/cosign-called"
 EOF
-chmod 755 "$fake_bin/uname" "$fake_bin/curl" "$fake_bin/cosign"
+cat > "$fake_bin/cosign" <<'EOF'
+#!/bin/sh
+set -eu
+: > "$AOS_TEST_FIXTURE/path-cosign-called"
+exit 99
+EOF
+
+if command -v sha256sum >/dev/null 2>&1; then
+  REAL_HASH=$(command -v sha256sum)
+  HASH_KIND=sha256sum
+else
+  REAL_HASH=$(command -v shasum)
+  HASH_KIND=shasum
+fi
+export REAL_HASH HASH_KIND
+cat > "$fake_bin/sha256sum" <<'EOF'
+#!/bin/sh
+set -eu
+case "$1" in
+  */cosign)
+    if [ "${AOS_TEST_BAD_COSIGN_DIGEST:-0}" = 1 ]; then
+      printf '%064d  %s\n' 0 "$1"
+    else
+      printf '%s  %s\n' ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc "$1"
+    fi
+    ;;
+  *)
+    if [ "$HASH_KIND" = shasum ]; then
+      exec "$REAL_HASH" -a 256 "$@"
+    fi
+    exec "$REAL_HASH" "$@"
+    ;;
+esac
+EOF
+chmod 755 "$fake_bin/uname" "$fake_bin/curl" "$fake_bin/cosign" \
+  "$fake_bin/sha256sum" "$fixture/cosign-linux-amd64"
 
 PATH="$fake_bin:$PATH" \
 HOME="$work/home" \
@@ -89,48 +124,19 @@ test -f "$work/home/.unicity-os/releases/2026.1.0.json"
 test "$("$work/home/.unicity-os/bin/aos" --version)" = 'Unicity AOS 2026.1.0'
 test "$(cat "$work/home/.astrid/sentinel")" = 'standalone-runtime-state'
 test -f "$fixture/cosign-called"
+test ! -e "$fixture/path-cosign-called"
 test "$(stat -c '%a' "$work/home/.unicity-os" 2>/dev/null || stat -f '%Lp' "$work/home/.unicity-os")" = 700
 test "$(stat -c '%a' "$work/home/.unicity-os/releases/2026.1.0.json" 2>/dev/null || stat -f '%Lp' "$work/home/.unicity-os/releases/2026.1.0.json")" = 600
 
-# Exercise the no-preinstalled-cosign path without downloading the 140 MB real
-# verifier. The production digest stays hard-coded; only this fake hash command
-# substitutes that digest for the tiny fixture executable.
-bootstrap_bin="$work/bootstrap-bin"
-mkdir "$bootstrap_bin"
-if command -v sha256sum >/dev/null 2>&1; then
-  real_hash=$(command -v sha256sum)
-  hash_kind=sha256sum
-else
-  real_hash=$(command -v shasum)
-  hash_kind=shasum
-fi
-cat > "$bootstrap_bin/sha256sum" <<'EOF'
-#!/bin/sh
-set -eu
-case "$1" in
-  */cosign)
-    printf '%s  %s\n' ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc "$1"
-    ;;
-  *)
-    if [ "$HASH_KIND" = shasum ]; then
-      exec "$REAL_HASH" -a 256 "$@"
-    fi
-    exec "$REAL_HASH" "$@"
-    ;;
-esac
-EOF
-chmod 755 "$bootstrap_bin/sha256sum"
-mv "$fake_bin/cosign" "$fixture/cosign-linux-amd64"
 rm -f "$fixture/cosign-called"
-PATH="$bootstrap_bin:$fake_bin:/usr/bin:/bin" \
-HOME="$work/bootstrap-home" \
-AOS_TEST_FIXTURE="$fixture" \
-AOS_VERSION=2026.1.0 \
-REAL_HASH="$real_hash" \
-HASH_KIND="$hash_kind" \
-sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null
-test -f "$fixture/cosign-called"
-mv "$fixture/cosign-linux-amd64" "$fake_bin/cosign"
+if PATH="$fake_bin:$PATH" HOME="$work/bad-verifier-home" AOS_TEST_FIXTURE="$fixture" \
+  AOS_TEST_BAD_COSIGN_DIGEST=1 AOS_VERSION=2026.1.0 \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer accepted a Sigstore verifier with the wrong digest" >&2
+  exit 1
+fi
+test ! -e "$fixture/cosign-called"
+test ! -e "$work/bad-verifier-home/.unicity-os"
 
 cp "$fixture/SHA256SUMS.txt" "$work/good-sums"
 
@@ -157,15 +163,48 @@ cp "$work/good-sums" "$fixture/SHA256SUMS.txt"
 
 symlink_home="$work/symlink-destination-home"
 mkdir -p "$symlink_home/.unicity-os/bin"
-printf 'outside-install-root\n' > "$work/symlink-target"
+cat > "$work/symlink-target" <<'EOF'
+#!/bin/sh
+set -eu
+: > "$AOS_SYMLINK_MARKER"
+EOF
+chmod 755 "$work/symlink-target"
 ln -s "$work/symlink-target" "$symlink_home/.unicity-os/bin/aos"
 if PATH="$fake_bin:$PATH" HOME="$symlink_home" AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
+  AOS_SYMLINK_MARKER="$work/symlink-executed" \
   sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
   echo "installer replaced a symlinked destination" >&2
   exit 1
 fi
 test -L "$symlink_home/.unicity-os/bin/aos"
-test "$(cat "$work/symlink-target")" = outside-install-root
+test ! -e "$work/symlink-executed"
+
+custom_bin_home="$work/custom-bin-home"
+custom_bin_target="$work/custom-bin-target"
+custom_bin_link="$work/custom-bin-link"
+mkdir -p "$custom_bin_home" "$custom_bin_target"
+cp "$work/symlink-target" "$custom_bin_target/aos"
+ln -s "$custom_bin_target" "$custom_bin_link"
+if PATH="$fake_bin:$PATH" HOME="$custom_bin_home" AOS_BIN_DIR="$custom_bin_link" \
+  AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
+  AOS_SYMLINK_MARKER="$work/custom-bin-symlink-executed" \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer accepted a symlinked custom binary directory" >&2
+  exit 1
+fi
+test ! -e "$work/custom-bin-symlink-executed"
+
+managed_symlink_home="$work/managed-symlink-home"
+mkdir -p "$managed_symlink_home" "$work/managed-symlink-target/bin"
+ln -s "$work/managed-symlink-target" "$managed_symlink_home/.unicity-os"
+ln -s "$work/symlink-target" "$work/managed-symlink-target/bin/aos"
+if PATH="$fake_bin:$PATH" HOME="$managed_symlink_home" AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
+  AOS_SYMLINK_MARKER="$work/managed-symlink-executed" \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer accepted a symlinked managed installation root" >&2
+  exit 1
+fi
+test ! -e "$work/managed-symlink-executed"
 
 directory_home="$work/directory-destination-home"
 mkdir -p "$directory_home/.unicity-os/bin/aos"
@@ -260,7 +299,7 @@ for binary in astrid astrid-daemon astrid-build astrid-emit; do
   cp "$runtime_root/$binary" "$unsafe_root/runtime/bin/$binary"
 done
 printf '{}\n' > "$unsafe_root/release-manifest.json"
-tar -czf "$fixture/unicity-aos-x86_64-unknown-linux-gnu.tar.gz" \
+COPYFILE_DISABLE=1 tar -czf "$fixture/unicity-aos-x86_64-unknown-linux-gnu.tar.gz" \
   -C "$work/unsafe-bundle" "$(basename "$unsafe_root")"
 (
   cd "$fixture"
