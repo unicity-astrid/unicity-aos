@@ -446,14 +446,12 @@ fn parse_hook_message(msg: &ipc::Message) -> Option<Vec<SourcedHookResponse>> {
                 .filter(HookResponse::has_any_field)
         });
 
-    if let Some(response) = maybe_response {
-        Some(vec![SourcedHookResponse {
+    maybe_response.map(|response| {
+        vec![SourcedHookResponse {
             source_id,
             response,
-        }])
-    } else {
-        None
-    }
+        }]
+    })
 }
 
 /// Parse the poll envelope and extract hook responses with source capsule IDs.

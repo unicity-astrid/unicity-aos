@@ -656,12 +656,10 @@ fn dispatch_cli_run_messages(result: &ipc::PollResult) {
                     set_active_model_by_id(input, None);
                 }
             }
-            Some("unset") => {
-                if state.active_model_id.is_some() {
-                    state.active_model_id = None;
-                    save_state(&state);
-                    publish_model_cleared();
-                }
+            Some("unset") if state.active_model_id.is_some() => {
+                state.active_model_id = None;
+                save_state(&state);
+                publish_model_cleared();
             }
             _ => {}
         }
