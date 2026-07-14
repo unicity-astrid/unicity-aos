@@ -261,7 +261,7 @@ jobs:
           Install or upgrade:
 
           \`\`\`sh
-          curl -fsSL https://aos.unicity.ai/install.sh | sh
+          curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh
           \`\`\`
           EOF
       - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1

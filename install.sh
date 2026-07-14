@@ -227,7 +227,11 @@ install_one() {
   name=$3
   mode=$4
   temporary="${destination}.new.$$"
-  if [ -e "$destination" ] || [ -L "$destination" ]; then
+  if [ -L "$destination" ] || { [ -e "$destination" ] && [ ! -f "$destination" ]; }; then
+    echo "refusing non-regular install destination: $destination" >&2
+    return 1
+  fi
+  if [ -f "$destination" ]; then
     cp -p "$destination" "$rollback/$name" || return 1
   fi
   cp "$source" "$temporary" || return 1

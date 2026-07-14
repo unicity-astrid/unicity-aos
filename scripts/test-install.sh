@@ -141,6 +141,27 @@ if PATH="$fake_bin:$PATH" HOME="$work/other-home" AOS_TEST_FIXTURE="$fixture" AO
 fi
 cp "$work/good-sums" "$fixture/SHA256SUMS.txt"
 
+symlink_home="$work/symlink-destination-home"
+mkdir -p "$symlink_home/.unicity-os/bin"
+printf 'outside-install-root\n' > "$work/symlink-target"
+ln -s "$work/symlink-target" "$symlink_home/.unicity-os/bin/aos"
+if PATH="$fake_bin:$PATH" HOME="$symlink_home" AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer replaced a symlinked destination" >&2
+  exit 1
+fi
+test -L "$symlink_home/.unicity-os/bin/aos"
+test "$(cat "$work/symlink-target")" = outside-install-root
+
+directory_home="$work/directory-destination-home"
+mkdir -p "$directory_home/.unicity-os/bin/aos"
+if PATH="$fake_bin:$PATH" HOME="$directory_home" AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer replaced a directory destination" >&2
+  exit 1
+fi
+test -d "$directory_home/.unicity-os/bin/aos"
+
 for binary in aos astrid astrid-daemon astrid-build astrid-emit; do
   case "$binary" in
     aos) destination="$work/home/.unicity-os/bin/aos" ;;

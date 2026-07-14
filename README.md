@@ -22,7 +22,7 @@ The supported installer installs both the `aos` product command and its pinned
 runtime under the product-owned `~/.unicity-os` root:
 
 ```sh
-curl -fsSL https://aos.unicity.ai/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh
 aos init
 ```
 
