@@ -17,8 +17,9 @@ without confirmation.
 
 The importer copies persistent runtime state only:
 
-- keys, secrets, databases, WIT content, principal homes, shared libraries,
-  trusted distribution keys, system capsules, and CLI history;
+- user configuration, keys, secrets, databases, WIT content, principal homes,
+  shared libraries, trusted distribution keys, system capsules, and CLI
+  history;
 - content-addressed `.wasm` files from `bin/`;
 - the known `etc/` configuration surface: runtime, MCP, gateway and HTTP
   configuration; layout version; group, invite, pairing and gateway revocation
@@ -59,5 +60,9 @@ The receipt is product state at:
 
 Keep the standalone runtime stopped throughout the import. The importer refuses
 to proceed while its system socket is present, when either root is a symlink,
-when the AOS runtime home already contains user state, or when any source file
-would require following a symlink.
+when the source and product roots overlap, when the AOS runtime home already
+contains user state, or when any source file would require following a symlink.
+
+Only one import may run for an AOS home at a time. Concurrent attempts fail
+before staging or replacing runtime state, and a process crash releases the
+operating-system lock so the recovery path can run on the next attempt.

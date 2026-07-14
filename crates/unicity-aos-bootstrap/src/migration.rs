@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -13,8 +14,18 @@ use crate::{AosHome, runtime_binary_name};
 const MIGRATION_VERSION: u32 = 1;
 const RECEIPT_SCHEMA_VERSION: u32 = 2;
 const STAGING_DIR: &str = ".runtime-import";
+const LOCK_FILE: &str = "astrid-home-v1.lock";
 const PERSISTENT_TOP_LEVEL: &[&str] = &[
-    "keys", "secrets", "var", "wit", "home", "lib", "trust", "capsules", "history",
+    "config.toml",
+    "keys",
+    "secrets",
+    "var",
+    "wit",
+    "home",
+    "lib",
+    "trust",
+    "capsules",
+    "history",
 ];
 const EPHEMERAL_TOP_LEVEL: &[&str] = &["run", "log", "cow"];
 const ETC_ALLOWLIST: &[&str] = &[
@@ -64,16 +75,49 @@ struct Entry {
     sha256: String,
 }
 
+struct MigrationLock {
+    _file: File,
+}
+
+impl MigrationLock {
+    fn acquire(home: &AosHome) -> io::Result<Self> {
+        let path = home.root().join("migrations").join(LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        if !file.metadata()?.is_file() {
+            return invalid("runtime migration lock must be a regular file");
+        }
+        set_private_permissions(&path, false)?;
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "another runtime migration is already in progress",
+                )
+            } else {
+                error
+            }
+        })?;
+        Ok(Self { _file: file })
+    }
+}
+
 pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<MigrationOutcome> {
     let source = checked_root(source, "legacy runtime home")?;
-    let target = home.runtime_home();
-    if source == target {
-        return invalid("legacy runtime home and product runtime home must differ");
+    let target = checked_target_path(&home.runtime_home())?;
+    if source == target || source.starts_with(&target) || target.starts_with(&source) {
+        return invalid("legacy runtime home and product runtime home must not overlap");
     }
     if source.join("run/system.sock").exists() {
         return invalid("stop the standalone runtime before migration");
     }
 
+    create_private_dir(&home.root().join("migrations"))?;
+    let _migration_lock = MigrationLock::acquire(home)?;
     let receipt_path = home.migration_receipt();
     recover_interrupted_transaction(home, &target, &source, &receipt_path)?;
     if receipt_path.is_file() {
@@ -89,7 +133,6 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
 
     validate_target(&target)?;
     validate_source_layout(&source)?;
-    create_private_dir(&home.root().join("migrations"))?;
     let staging = home.root().join(STAGING_DIR);
     if staging.exists() {
         return invalid(
@@ -99,8 +142,7 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
 
     let result = (|| {
         create_private_dir(&staging)?;
-        copy_product_binary(&target, &staging)?;
-        let mut entries = Vec::new();
+        let mut entries = vec![copy_product_binary(&target, &staging)?];
         copy_etc_state(&source, &staging, &mut entries)?;
         for name in PERSISTENT_TOP_LEVEL {
             copy_if_present(
@@ -138,6 +180,33 @@ pub(crate) fn migrate_runtime(home: &AosHome, source: &Path) -> io::Result<Migra
         let _ = remove_path(&staging);
     }
     result.map(|()| MigrationOutcome::Migrated)
+}
+
+fn checked_target_path(path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return invalid("bundled product runtime must be a real directory");
+            }
+            path.canonicalize()
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bundled product runtime path must have a parent",
+                )
+            })?;
+            let name = path.file_name().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bundled product runtime path must have a final component",
+                )
+            })?;
+            Ok(parent.canonicalize()?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn imported_legacy_distros(home: &AosHome) -> io::Result<Vec<LegacyDistro>> {
@@ -286,10 +355,11 @@ fn copy_etc_state(source_root: &Path, staging: &Path, entries: &mut Vec<Entry>) 
     Ok(())
 }
 
-fn copy_product_binary(target: &Path, staging: &Path) -> io::Result<()> {
+fn copy_product_binary(target: &Path, staging: &Path) -> io::Result<Entry> {
     let source = target.join("bin").join(runtime_binary_name());
-    let destination = staging.join("bin").join(runtime_binary_name());
-    copy_executable(&source, &destination)
+    let relative = PathBuf::from("bin").join(runtime_binary_name());
+    let destination = staging.join(&relative);
+    copy_executable(&source, &destination, &relative)
 }
 
 fn copy_if_present(
@@ -402,7 +472,7 @@ fn copy_file(source: &Path, destination: &Path, relative: &Path) -> io::Result<E
     })
 }
 
-fn copy_executable(source: &Path, destination: &Path) -> io::Result<()> {
+fn copy_executable(source: &Path, destination: &Path, relative: &Path) -> io::Result<Entry> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return invalid("bundled runtime executable must be a regular file");
@@ -410,10 +480,15 @@ fn copy_executable(source: &Path, destination: &Path) -> io::Result<()> {
     if let Some(parent) = destination.parent() {
         create_private_dir(parent)?;
     }
-    fs::copy(source, destination)?;
+    let bytes = fs::copy(source, destination)?;
     fs::set_permissions(destination, metadata.permissions())?;
     File::open(destination)?.sync_all()?;
-    sync_parent(destination)
+    sync_parent(destination)?;
+    Ok(Entry {
+        path: relative.to_path_buf(),
+        bytes,
+        sha256: sha256_file(destination)?,
+    })
 }
 
 fn replace_target(target: &Path, staging: &Path) -> io::Result<PathBuf> {
@@ -680,8 +755,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        MIGRATION_VERSION, MigrationOutcome, RECEIPT_SCHEMA_VERSION, migrate_runtime,
-        recover_interrupted_transaction,
+        MIGRATION_VERSION, MigrationLock, MigrationOutcome, RECEIPT_SCHEMA_VERSION,
+        create_private_dir, migrate_runtime, recover_interrupted_transaction,
     };
     use crate::AosHome;
 
@@ -717,6 +792,7 @@ mod tests {
         write(&source, "trust/unicity-ce.pub", b"distro-key");
         write(&source, "capsules/system/meta.toml", b"system-capsule");
         write(&source, "history", b"aos status\n");
+        write(&source, "config.toml", b"[security]\nstrict = true\n");
         write(&source, "etc/config.toml", b"[runtime]\n");
         write(&source, "etc/servers.toml", b"[servers]\n");
         write(&source, "etc/gateway.toml", b"[gateway]\n");
@@ -761,6 +837,10 @@ mod tests {
             b"distro-key"
         );
         assert_eq!(fs::read(runtime.join("history")).unwrap(), b"aos status\n");
+        assert_eq!(
+            fs::read(runtime.join("config.toml")).unwrap(),
+            b"[security]\nstrict = true\n"
+        );
         assert_eq!(
             fs::read(runtime.join("bin/astrid")).unwrap(),
             b"bundled-binary"
@@ -940,6 +1020,84 @@ mod tests {
         let error = migrate_runtime(&product, &source)
             .expect_err("same-length tampering must invalidate the receipt");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn detects_bundled_runtime_executable_tampering() {
+        let root = fixture_root("runtime-binary-tamper");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(root.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(&product.runtime_home(), "bin/astrid", b"bundled-binary");
+        migrate_runtime(&product, &source).expect("migration succeeds");
+
+        write(&product.runtime_home(), "bin/astrid", b"tamperd-binary");
+        let error = migrate_runtime(&product, &source)
+            .expect_err("runtime executable tampering must invalidate the receipt");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn rejects_a_lexical_alias_of_the_product_runtime_as_source() {
+        let root = fixture_root("runtime-source-alias");
+        fs::create_dir_all(root.join("alias")).expect("create alias path component");
+        let product = AosHome::from_root(root.join("alias/../product"));
+        write(&product.runtime_home(), "bin/astrid", b"bundled-binary");
+        let source = root.join("product/runtime");
+
+        let error = migrate_runtime(&product, &source)
+            .expect_err("the product runtime cannot be imported through a path alias");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            fs::read(source.join("bin/astrid")).unwrap(),
+            b"bundled-binary"
+        );
+        assert!(!product.migration_receipt().exists());
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn rejects_overlapping_roots_without_modifying_the_source() {
+        let root = fixture_root("runtime-overlapping-roots");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(source.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(&product.runtime_home(), "bin/astrid", b"bundled-binary");
+
+        let error = migrate_runtime(&product, &source)
+            .expect_err("product state must not be created beneath the source");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!product.root().join("migrations").exists());
+        assert!(!product.root().join(".runtime-import").exists());
+        assert_eq!(
+            fs::read(source.join("keys/runtime.key")).unwrap(),
+            b"runtime-key"
+        );
+        fs::remove_dir_all(root).expect("remove fixture root");
+    }
+
+    #[test]
+    fn serializes_concurrent_runtime_migrations() {
+        let root = fixture_root("runtime-concurrent");
+        let source = root.join("legacy");
+        let product = AosHome::from_root(root.join("product"));
+        write(&source, "keys/runtime.key", b"runtime-key");
+        write(&product.runtime_home(), "bin/astrid", b"bundled-binary");
+        create_private_dir(&product.root().join("migrations")).expect("create migrations dir");
+        let held = MigrationLock::acquire(&product).expect("hold migration lock");
+
+        let error = migrate_runtime(&product, &source)
+            .expect_err("a concurrent migration must fail before staging");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(!product.root().join(".runtime-import").exists());
+        assert!(!product.migration_receipt().exists());
+        assert_eq!(
+            fs::read(product.runtime_home().join("bin/astrid")).unwrap(),
+            b"bundled-binary"
+        );
+        drop(held);
         fs::remove_dir_all(root).expect("remove fixture root");
     }
 
