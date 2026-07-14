@@ -17,6 +17,7 @@ pub mod status;
 pub use migration::{LegacyDistro, MigrationOutcome};
 
 const UNICITY_CE_MANIFEST: &str = include_str!("../../../distros/community/unicity-ce/Distro.toml");
+const AOS_WORKSPACE_STATE_DIR: &str = ".unicity-os";
 
 /// Product state owned by one Unicity AOS installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,7 +214,9 @@ impl AosHome {
         S: AsRef<OsStr>,
     {
         let mut command = Command::new(self.runtime_binary());
-        command.env("ASTRID_HOME", self.runtime_home());
+        command
+            .env("ASTRID_HOME", self.runtime_home())
+            .env("ASTRID_WORKSPACE_STATE_DIR", AOS_WORKSPACE_STATE_DIR);
         command.args(args);
         command
     }
@@ -411,16 +414,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_command_scopes_astrid_home_to_the_child() {
+    fn runtime_command_scopes_global_and_project_state_to_aos() {
         let home = AosHome::from_root("/tmp/unicity-aos-test");
         let command = home.runtime_command();
-        let runtime_home = command
-            .get_envs()
-            .find_map(|(name, value)| (name == "ASTRID_HOME").then_some(value))
-            .flatten()
-            .expect("runtime command sets ASTRID_HOME");
+        let env_value = |target: &str| {
+            command
+                .get_envs()
+                .find_map(|(name, value)| (name == target).then_some(value))
+                .flatten()
+                .expect("runtime command sets product-scoped environment")
+        };
 
-        assert_eq!(runtime_home, "/tmp/unicity-aos-test/runtime");
+        assert_eq!(env_value("ASTRID_HOME"), "/tmp/unicity-aos-test/runtime");
+        assert_eq!(env_value("ASTRID_WORKSPACE_STATE_DIR"), ".unicity-os");
     }
 
     #[test]
