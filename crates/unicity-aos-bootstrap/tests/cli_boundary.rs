@@ -71,30 +71,26 @@ exit "${AOS_TEST_EXIT:-0}"
 "#;
 
 #[test]
-fn unknown_root_fails_without_invoking_the_runtime() {
-    let fixture = Fixture::new("unknown");
+fn unowned_root_passes_through_with_argv_home_and_exit_code() {
+    let fixture = Fixture::new("passthrough");
     fixture.install_runtime(RECORDING_RUNTIME);
 
-    let output = fixture.command().arg("capsule").output().expect("run aos");
+    let output = fixture
+        .command()
+        .env("AOS_TEST_EXIT", "37")
+        .args(["doctor", "--json", "space value", "$(not-a-shell)"])
+        .output()
+        .expect("run aos");
 
-    assert_eq!(output.status.code(), Some(1));
-    assert!(!fixture.args.exists());
-    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
-    assert!(stderr.contains("aos: unknown command `capsule`"));
-    assert!(stderr.contains("aos --help"));
-}
-
-#[test]
-fn runtime_requires_an_explicit_subcommand() {
-    let fixture = Fixture::new("missing-runtime-command");
-    fixture.install_runtime(RECORDING_RUNTIME);
-
-    let output = fixture.command().arg("runtime").output().expect("run aos");
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(!fixture.args.exists());
-    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
-    assert!(stderr.contains("Usage: aos runtime <command>"));
+    assert_eq!(output.status.code(), Some(37));
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read delegated args"),
+        "<doctor>\n<--json>\n<space value>\n<$(not-a-shell)>\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-home")).expect("read runtime home"),
+        format!("{}\n", fixture.home.join("runtime").display())
+    );
 }
 
 #[test]
@@ -121,31 +117,20 @@ fn product_help_version_and_usage_errors_never_delegate() {
 }
 
 #[test]
-fn runtime_escape_preserves_arguments_home_and_exit_code() {
-    let fixture = Fixture::new("runtime-delegation");
+fn runtime_is_an_inherited_root_not_a_special_alias() {
+    let fixture = Fixture::new("runtime-root");
     fixture.install_runtime(RECORDING_RUNTIME);
 
     let output = fixture
         .command()
-        .env("AOS_TEST_EXIT", "37")
-        .args([
-            "runtime",
-            "doctor",
-            "--json",
-            "space value",
-            "$(not-a-shell)",
-        ])
+        .args(["runtime", "status", "--json"])
         .output()
         .expect("run aos");
 
-    assert_eq!(output.status.code(), Some(37));
+    assert!(output.status.success());
     assert_eq!(
         fs::read_to_string(&fixture.args).expect("read delegated args"),
-        "<doctor>\n<--json>\n<space value>\n<$(not-a-shell)>\n"
-    );
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("child-home")).expect("read runtime home"),
-        format!("{}\n", fixture.home.join("runtime").display())
+        "<runtime>\n<status>\n<--json>\n"
     );
 }
 
@@ -176,7 +161,7 @@ fn product_init_pins_the_bundled_distro_and_rejects_overrides() {
     assert!(
         String::from_utf8(output.stderr)
             .expect("utf8 stderr")
-            .contains("aos runtime init")
+            .contains("astrid init")
     );
 }
 
@@ -201,7 +186,7 @@ fn native_status_does_not_invoke_the_runtime_cli() {
 }
 
 #[test]
-fn unix_runtime_escape_preserves_signal_termination() {
+fn unix_passthrough_preserves_signal_termination() {
     let fixture = Fixture::new("signal");
     let ready = fixture.root.join("ready");
     fixture.install_runtime(&format!(
@@ -211,9 +196,9 @@ fn unix_runtime_escape_preserves_signal_termination() {
 
     let mut child = fixture
         .command()
-        .args(["runtime", "wait"])
+        .arg("wait")
         .spawn()
-        .expect("spawn aos runtime");
+        .expect("spawn inherited command");
     for _ in 0..200 {
         if ready.exists() {
             break;

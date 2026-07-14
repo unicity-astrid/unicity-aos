@@ -33,21 +33,28 @@ checksums, Sigstore bundles, GitHub build-provenance attestations, and
 
 ## Command boundary
 
-The `aos` root accepts only AOS product commands. Unknown commands fail instead
-of falling through to another CLI:
+AOS owns its product roots, including `init`, `status`, migration, updates, and
+health:
 
 ```sh
 aos status
 aos status --json
 ```
 
-Operator and capsule-author commands remain available through the explicit
-runtime escape hatch. Its arguments, exit code, and signals pass directly to
-the bundled Astrid Runtime:
+Every other root inherits the bundled Astrid CLI transparently. Arguments, exit
+codes, and signals pass through unchanged:
 
 ```sh
-aos runtime doctor
-aos runtime capsule build
+aos doctor
+aos capsule build
+```
+
+An AOS-owned root intentionally shadows the runtime root with the same name.
+Use the standalone runtime CLI when the raw command is required:
+
+```sh
+astrid status
+astrid init --help
 ```
 
 ## Import an existing runtime

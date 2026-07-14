@@ -1,7 +1,7 @@
 //! `aos` — the product command surface for Unicity AOS.
 //!
-//! Unicity AOS is a distribution built on Astrid Runtime. Runtime and operator
-//! commands remain available only through the explicit `aos runtime` escape.
+//! Unicity AOS is a distribution built on Astrid Runtime. AOS commands override
+//! the corresponding runtime roots; every other root passes through unchanged.
 
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
@@ -43,19 +43,7 @@ fn run() -> ExitCode {
         RootCommand::ServeHealth(args) => handle_health_service(args),
         RootCommand::Status(args) => handle_status(args),
         RootCommand::Init(args) => handle_init(args),
-        RootCommand::Runtime(args) => handle_runtime_escape(args),
-        RootCommand::MissingRuntimeCommand => {
-            eprintln!("Usage: aos runtime <command> [arguments...]");
-            eprintln!(
-                "Runs an operator or capsule-author command with the bundled Astrid Runtime."
-            );
-            ExitCode::FAILURE
-        }
-        RootCommand::Unknown(command) => {
-            eprintln!("aos: unknown command `{}`", command.to_string_lossy());
-            eprintln!("Run `aos --help` for available commands.");
-            ExitCode::FAILURE
-        }
+        RootCommand::Passthrough(args) => handle_runtime_passthrough(args),
     }
 }
 
@@ -69,9 +57,7 @@ enum RootCommand<'a> {
     ServeHealth(&'a [OsString]),
     Status(&'a [OsString]),
     Init(&'a [OsString]),
-    Runtime(&'a [OsString]),
-    MissingRuntimeCommand,
-    Unknown(&'a OsStr),
+    Passthrough(&'a [OsString]),
 }
 
 impl<'a> RootCommand<'a> {
@@ -87,9 +73,7 @@ impl<'a> RootCommand<'a> {
             Some("serve-health") => Self::ServeHealth(&args[1..]),
             Some("status") => Self::Status(&args[1..]),
             Some("init") => Self::Init(&args[1..]),
-            Some("runtime") if args.len() == 1 => Self::MissingRuntimeCommand,
-            Some("runtime") => Self::Runtime(&args[1..]),
-            _ => Self::Unknown(command),
+            _ => Self::Passthrough(args),
         }
     }
 }
@@ -103,7 +87,7 @@ fn resolve_home() -> Result<AosHome, ExitCode> {
 
 fn handle_init(args: &[OsString]) -> ExitCode {
     if has_distro_override(args) {
-        eprintln!("aos init always installs Unicity CE; use `aos runtime init` for another distro");
+        eprintln!("aos init always installs Unicity CE; use `astrid init` for another distro");
         return ExitCode::FAILURE;
     }
     if has_help_flag(args) {
@@ -125,7 +109,7 @@ fn handle_init(args: &[OsString]) -> ExitCode {
     run_runtime(&home, args)
 }
 
-fn handle_runtime_escape(args: &[OsString]) -> ExitCode {
+fn handle_runtime_passthrough(args: &[OsString]) -> ExitCode {
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
@@ -477,13 +461,13 @@ fn print_legacy_distro_handoff(home: &AosHome) {
 
 fn print_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos status [--json]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos self-update\n  aos serve-health\n  aos runtime <command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. `aos status` reads the typed local runtime status operation. `aos self-update` updates AOS and its pinned runtime. `aos serve-health` binds only 127.0.0.1:8765 and exposes GET /v1/runtime/health. `aos runtime` is the explicit escape hatch for operator and capsule-author commands provided by the bundled Astrid Runtime. Runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME)."
+        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos status [--json]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos self-update\n  aos serve-health\n  aos <runtime command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. `aos status` reads the typed local runtime status operation. `aos self-update` updates AOS and its pinned runtime. `aos serve-health` binds only 127.0.0.1:8765 and exposes GET /v1/runtime/health. Commands not owned by AOS pass through unchanged to the bundled Astrid Runtime. AOS roots intentionally shadow runtime roots; use `astrid <command>` when the raw runtime command is required. Runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME)."
     );
 }
 
 fn print_init_help() {
     println!(
-        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use `aos runtime init`."
+        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use `astrid init`."
     );
 }
 
@@ -545,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_recognizes_only_product_roots_and_explicit_runtime_escape() {
+    fn parser_recognizes_product_roots() {
         assert_eq!(RootCommand::parse(&[]), RootCommand::NoArguments);
 
         let help = [OsString::from("--help")];
@@ -575,41 +559,31 @@ mod tests {
         );
         let init = [OsString::from("init"), OsString::from("--yes")];
         assert_eq!(RootCommand::parse(&init), RootCommand::Init(&init[1..]));
-        let runtime = [
-            OsString::from("runtime"),
-            OsString::from("capsule"),
-            OsString::from("build"),
-        ];
-        assert_eq!(
-            RootCommand::parse(&runtime),
-            RootCommand::Runtime(&runtime[1..])
-        );
     }
 
     #[test]
-    fn parser_rejects_missing_runtime_and_unknown_roots() {
-        let runtime = [OsString::from("runtime")];
+    fn parser_passes_every_unowned_root_through_unchanged() {
+        let inherited = [OsString::from("capsule"), OsString::from("build")];
+        assert_eq!(
+            RootCommand::parse(&inherited),
+            RootCommand::Passthrough(&inherited)
+        );
+        let runtime = [OsString::from("runtime"), OsString::from("status")];
         assert_eq!(
             RootCommand::parse(&runtime),
-            RootCommand::MissingRuntimeCommand
-        );
-
-        let unknown = [OsString::from("capsule")];
-        assert_eq!(
-            RootCommand::parse(&unknown),
-            RootCommand::Unknown(unknown[0].as_os_str())
+            RootCommand::Passthrough(&runtime)
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn parser_rejects_non_utf8_root_commands() {
+    fn parser_preserves_non_utf8_runtime_roots() {
         use std::os::unix::ffi::OsStringExt;
 
-        let unknown = [OsString::from_vec(vec![0xff, b'x'])];
+        let inherited = [OsString::from_vec(vec![0xff, b'x'])];
         assert_eq!(
-            RootCommand::parse(&unknown),
-            RootCommand::Unknown(unknown[0].as_os_str())
+            RootCommand::parse(&inherited),
+            RootCommand::Passthrough(&inherited)
         );
     }
 

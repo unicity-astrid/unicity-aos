@@ -226,7 +226,7 @@ impl AosHome {
         self.spawn_runtime_with_args(std::iter::empty::<&OsStr>())
     }
 
-    /// Spawn the bundled runtime with explicit runtime CLI arguments.
+    /// Spawn the bundled runtime with runtime CLI arguments.
     ///
     /// The runtime home remains scoped to this AOS installation.
     ///
@@ -260,7 +260,7 @@ impl AosHome {
         Err(self.runtime_command_with_args(args).exec())
     }
 
-    /// Run an explicit bundled-runtime command.
+    /// Run a bundled-runtime command.
     ///
     /// The runtime remains the authority for socket authentication and local
     /// credentials. AOS provides only product-owned installation state and
