@@ -248,12 +248,9 @@ fn handle_health_service(args: &[OsString]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let home = match AosHome::resolve() {
+    let home = match resolve_home() {
         Ok(home) => home,
-        Err(error) => {
-            eprintln!("aos: failed to resolve product home: {error}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
 
     set_runtime_environment(&home);
