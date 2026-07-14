@@ -1,7 +1,7 @@
 [package]
 name = "astrid-capsule-forge"
 version = "0.1.0"
-description = "Capsule-authoring forge — tools and a Skill that teach a fresh LLM to build Astrid capsules"
+description = "Capsule-authoring forge for Unicity AOS components"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.7.0"
 

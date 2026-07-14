@@ -2,7 +2,7 @@
 name = "astrid-capsule-registry"
 version = "0.2.0"
 edition = "2024"
-description = "LLM provider registry capsule for Astrid OS"
+description = "LLM provider registry capsule for Unicity AOS"
 publish = false
 
 [lib]

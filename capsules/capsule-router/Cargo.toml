@@ -2,7 +2,7 @@
 name = "astrid-capsule-router"
 version = "0.2.0"
 edition = "2024"
-description = "Tool execution routing middleware for Astrid OS"
+description = "Tool execution routing middleware for Unicity AOS"
 publish = false
 
 [lib]

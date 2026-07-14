@@ -1,7 +1,7 @@
 [package]
 name = "astrid-capsule-http"
 version = "0.1.1"
-description = "HTTP fetch tool for Astrid agents"
+description = "HTTP fetch tool for Unicity AOS agents"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.1.0"
 

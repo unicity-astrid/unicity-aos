@@ -2,7 +2,7 @@
 name = "astrid-capsule-system"
 version = "0.2.0"
 edition = "2024"
-description = "System management tools for the Astrid microkernel"
+description = "System management tools for Unicity AOS"
 license = "MIT OR Apache-2.0"
 publish = false
 

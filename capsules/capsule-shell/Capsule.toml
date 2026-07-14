@@ -1,7 +1,7 @@
 [package]
 name = "astrid-capsule-shell"
 version = "0.2.0"
-description = "Core shell execution tools for the Astrid OS"
+description = "Core shell execution tools for Unicity AOS"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.1.0"
 

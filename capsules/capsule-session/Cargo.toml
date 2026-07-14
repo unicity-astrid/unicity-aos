@@ -2,7 +2,7 @@
 name = "astrid-capsule-session"
 version = "0.2.0"
 edition = "2024"
-description = "Persistent conversation session store for Astrid OS"
+description = "Persistent conversation session store for Unicity AOS"
 publish = false
 
 [lib]

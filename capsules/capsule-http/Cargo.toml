@@ -3,7 +3,7 @@ name = "astrid-capsule-http"
 version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "HTTP fetch tool for Astrid agents"
+description = "HTTP fetch tool for Unicity AOS agents"
 publish = false
 
 [lib]

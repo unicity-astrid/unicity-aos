@@ -3,7 +3,7 @@ name = "astrid-capsule-telegram"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Telegram Bot uplink capsule for Astrid OS"
+description = "Telegram Bot uplink capsule for Unicity AOS"
 
 [lib]
 crate-type = ["cdylib"]

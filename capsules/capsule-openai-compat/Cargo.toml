@@ -2,7 +2,7 @@
 name = "astrid-capsule-openai-compat"
 version = "0.2.0"
 edition = "2024"
-description = "OpenAI-compatible LLM provider capsule for Astrid OS"
+description = "OpenAI-compatible LLM provider capsule for Unicity AOS"
 publish = false
 
 [lib]

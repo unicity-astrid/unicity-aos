@@ -2,7 +2,7 @@
 name = "astrid-capsule-identity"
 version = "0.2.0"
 edition = "2024"
-description = "Context Builder Capsule for Astrid OS"
+description = "Context builder capsule for Unicity AOS"
 publish = false
 
 [lib]

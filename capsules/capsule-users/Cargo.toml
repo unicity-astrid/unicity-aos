@@ -2,7 +2,7 @@
 name = "astrid-capsule-users"
 version = "0.1.0"
 edition = "2024"
-description = "Within-principal user identity store for Astrid OS"
+description = "Within-principal user identity store for Unicity AOS"
 publish = false
 
 [lib]

@@ -2,7 +2,7 @@
 name = "astrid-capsule-openai"
 version = "0.2.0"
 edition = "2024"
-description = "Native OpenAI LLM provider capsule for Astrid OS"
+description = "Native OpenAI LLM provider capsule for Unicity AOS"
 publish = false
 
 [lib]
