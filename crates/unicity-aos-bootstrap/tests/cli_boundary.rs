@@ -112,6 +112,24 @@ fn unowned_root_passes_through_with_argv_home_and_exit_code() {
 }
 
 #[test]
+fn leading_runtime_globals_on_unowned_roots_pass_through_exactly() {
+    let fixture = Fixture::new("leading-global-passthrough");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    let output = fixture
+        .command()
+        .args(["--principal", "alice", "doctor", "--json"])
+        .output()
+        .expect("run inherited command with a leading global");
+
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read delegated args"),
+        "<--principal>\n<alice>\n<doctor>\n<--json>\n"
+    );
+}
+
+#[test]
 fn product_help_version_and_usage_errors_never_delegate() {
     let fixture = Fixture::new("product-roots");
     fixture.install_runtime(RECORDING_RUNTIME);
@@ -218,6 +236,31 @@ fn product_non_default_init_delegates_principal_and_capsule_grants() {
 }
 
 #[test]
+fn product_init_preserves_authenticated_operator_and_separate_target() {
+    let fixture = Fixture::new("init-operator-target");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    let status = fixture
+        .command()
+        .args([
+            "--principal",
+            "operator",
+            "init",
+            "--target-principal",
+            "alice",
+            "--yes",
+        ])
+        .status()
+        .expect("run product init with an explicit operator");
+
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read operator init args"),
+        "<--principal>\n<operator>\n<init>\n<--target-principal>\n<alice>\n<--yes>\n<--grant-capsules>\n"
+    );
+}
+
+#[test]
 fn product_init_rejects_caller_distro_selection() {
     let fixture = Fixture::new("init-distro-override");
     fixture.install_runtime(RECORDING_RUNTIME);
@@ -237,25 +280,129 @@ fn product_init_rejects_caller_distro_selection() {
 }
 
 #[test]
-fn leading_runtime_globals_cannot_bypass_product_roots() {
+fn unsupported_leading_globals_cannot_bypass_product_roots() {
     let fixture = Fixture::new("leading-global");
     fixture.install_runtime(RECORDING_RUNTIME);
 
-    for root in ["init", "status"] {
+    for args in [
+        vec!["--principal", "alice", "status"],
+        vec!["--format", "json", "init"],
+        vec!["-p", "prompt text", "init"],
+        vec!["--principal", "alice", "update"],
+    ] {
         let output = fixture
             .command()
-            .args(["--principal", "alice", root])
+            .args(args)
             .output()
             .expect("run protected product root");
 
         assert_eq!(output.status.code(), Some(2));
         assert!(!fixture.args.exists());
-        assert!(
-            String::from_utf8(output.stderr)
-                .expect("utf8 stderr")
-                .contains("cannot be preceded by runtime-global options")
-        );
     }
+}
+
+#[test]
+fn malformed_or_ambiguous_product_principals_never_delegate() {
+    let fixture = Fixture::new("malformed-principals");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    for args in [
+        vec!["--principal", "init"],
+        vec!["--principal", "init", "--yes"],
+        vec!["--principal=", "init"],
+        vec!["--principal", "operator", "init", "--target-principal"],
+        vec!["--principal", "operator", "init", "--target-principal="],
+        vec!["--principal", "operator", "--principal", "other", "init"],
+    ] {
+        let output = fixture
+            .command()
+            .args(args)
+            .output()
+            .expect("run malformed product invocation");
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!fixture.args.exists());
+    }
+}
+
+#[test]
+fn product_owns_and_refuses_distro_mutation() {
+    let fixture = Fixture::new("owned-distro");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    for args in [
+        vec!["distro", "apply", "https://example.invalid/other.toml"],
+        vec!["--principal", "operator", "distro", "apply", "other"],
+    ] {
+        let output = fixture
+            .command()
+            .args(args)
+            .output()
+            .expect("run protected distro command");
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!fixture.args.exists());
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(stderr.contains("Unicity CE owns the distribution state"));
+        assert!(stderr.contains("standalone `astrid distro ...`"));
+    }
+}
+
+#[test]
+fn direct_update_fails_closed_without_running_an_installer() {
+    let fixture = Fixture::new("direct-update");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    for alias in ["update", "self-update", "self_update"] {
+        let output = fixture
+            .command()
+            .env_remove("UNICITY_AOS_INSTALL_METHOD")
+            .arg(alias)
+            .output()
+            .expect("run staged direct update");
+
+        assert!(!output.status.success());
+        assert!(!fixture.args.exists());
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(stderr.contains("2026.1.0 is staged"));
+        assert!(stderr.contains("no signed stable, dev, or nightly AOS update channel"));
+    }
+}
+
+#[test]
+fn homebrew_update_uses_the_formula_upgrade_path() {
+    let fixture = Fixture::new("homebrew-update");
+    fixture.install_runtime(RECORDING_RUNTIME);
+    let bin = fixture.root.join("bin");
+    fs::create_dir_all(&bin).expect("create fake bin");
+    let brew = bin.join("brew");
+    fs::write(
+        &brew,
+        r#"#!/bin/sh
+for arg in "$@"; do
+    printf '<%s>\n' "$arg"
+done > "$AOS_TEST_ARGS"
+exit 23
+"#,
+    )
+    .expect("write fake brew");
+    let mut permissions = fs::metadata(&brew).expect("brew metadata").permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&brew, permissions).expect("make fake brew executable");
+
+    let output = fixture
+        .command()
+        .env("UNICITY_AOS_INSTALL_METHOD", "homebrew")
+        .env("PATH", &bin)
+        .arg("update")
+        .output()
+        .expect("run Homebrew product update");
+
+    assert_eq!(output.status.code(), Some(23));
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read brew args"),
+        "<upgrade>\n<unicity-aos/tap/aos>\n"
+    );
 }
 
 #[test]

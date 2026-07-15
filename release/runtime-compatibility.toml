@@ -6,6 +6,10 @@ version = "2026.1.0"
 
 [runtime]
 repository = "astrid-runtime/astrid"
+# Release blocker: 0.9.4 does not implement the separate authenticated-operator
+# and target-principal init contract required by the staged AOS CLI, including
+# daemon readiness before the grant preflight. Do not package or publish
+# 2026.1.0 until an approved, published runtime provides that neutral contract.
 version = "0.9.4"
 tag = "v0.9.4"
 version-requirement = "=0.9.4"

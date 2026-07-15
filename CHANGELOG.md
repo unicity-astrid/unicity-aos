@@ -30,5 +30,8 @@
 - Initialize against the operator-enforced Community Edition manifest and ask
   the runtime to grant its installed capsule set to the resolved target
   principal.
+- Keep the authenticated init operator separate from its target principal,
+  prevent AOS distribution replacement, and fail closed while signed direct
+  update channels remain unpublished.
 - Present product-facing capsule copy consistently as Unicity AOS while
   preserving stable Astrid Runtime crate, WIT, topic, artifact, and ABI names.

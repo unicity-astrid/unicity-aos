@@ -5,17 +5,11 @@
 //! the bundled runtime under the product-owned home and workspace layout.
 
 use std::ffi::{OsStr, OsString};
-#[cfg(unix)]
-use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Write};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 #[cfg(any(not(unix), test))]
 use std::process::ExitStatus;
 use std::process::{Command, ExitCode};
-#[cfg(unix)]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
@@ -31,6 +25,13 @@ use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
     after_help = "All other commands are inherited from the bundled runtime. Running `aos` without a command displays product help until the native AOS chat surface lands."
 )]
 struct ProductCli {
+    /// Authenticated runtime operator used to provision another principal.
+    #[arg(
+        long,
+        value_name = "OPERATOR_PRINCIPAL",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
+    principal: Option<String>,
     #[command(subcommand)]
     command: Option<ProductCommand>,
 }
@@ -49,8 +50,17 @@ enum ProductCommand {
     /// Update AOS and its coordinated runtime executable set.
     #[command(name = "update", alias = "self-update", alias = "self_update")]
     Update,
+    /// Distribution state is fixed to Unicity CE in this AOS release.
+    Distro(DistroArgs),
     /// Serve the loopback-only product health endpoint.
     ServeHealth,
+}
+
+#[derive(Args)]
+struct DistroArgs {
+    /// Runtime distribution arguments retained only to provide a safe refusal.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    arguments: Vec<OsString>,
 }
 
 #[derive(Args)]
@@ -70,7 +80,10 @@ struct InitArgs {
     #[arg(short, long)]
     verbose: bool,
     /// Principal whose AOS environment is provisioned.
-    #[arg(long)]
+    #[arg(
+        long,
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     target_principal: Option<String>,
     /// Accept defaults without prompting.
     #[arg(short = 'y', long = "yes")]
@@ -159,28 +172,18 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
     if args.is_empty() {
         return offer_first_run_migration().or_else(|| Some(print_product_help()));
     }
-    if let Some(root) = leading_owned_root(args) {
+    if let Some(root) = ambiguous_leading_principal(args) {
         eprintln!(
-            "aos: AOS-owned command '{root}' cannot be preceded by runtime-global options; place supported product options after the command or use `astrid {root}` for the raw runtime form"
+            "aos: ambiguous '--principal {root}': provide an operator principal before the AOS-owned command, for example `aos --principal operator {root}`"
         );
         return Some(ExitCode::from(2));
     }
 
     let first = args.first()?.to_str()?;
-    if !matches!(
-        first,
-        "-h" | "--help"
-            | "-V"
-            | "--version"
-            | "help"
-            | "init"
-            | "status"
-            | "migrate"
-            | "update"
-            | "self-update"
-            | "self_update"
-            | "serve-health"
-    ) {
+    let product_invocation = matches!(first, "-h" | "--help" | "-V" | "--version" | "help")
+        || is_owned_root(first)
+        || leading_owned_root(args).is_some();
+    if !product_invocation {
         return None;
     }
 
@@ -202,6 +205,18 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
         }
     };
 
+    if cli.principal.is_some()
+        && !matches!(
+            &cli.command,
+            Some(ProductCommand::Init(_) | ProductCommand::Distro(_))
+        )
+    {
+        eprintln!(
+            "aos: '--principal' is supported for `aos init`; this AOS-owned command does not accept an operator principal"
+        );
+        return Some(ExitCode::from(2));
+    }
+
     match cli.command {
         Some(ProductCommand::Init(_)) => None,
         Some(ProductCommand::Status(args)) => Some(handle_status(args.json)),
@@ -209,13 +224,19 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
             command: MigrateCommand::Runtime { from },
         }) => Some(handle_migrate_runtime(&from)),
         Some(ProductCommand::Update) => Some(handle_self_update()),
+        Some(ProductCommand::Distro(args)) => Some(refuse_distro_command(&args.arguments)),
         Some(ProductCommand::ServeHealth) => Some(handle_health_service()),
         None => Some(print_product_help()),
     }
 }
 
 fn runtime_args_for_dispatch(mut args: Vec<OsString>) -> Vec<OsString> {
-    if args.first().is_some_and(|arg| arg == "init") {
+    if leading_runtime_root_index(&args)
+        .ok()
+        .flatten()
+        .and_then(|index| args.get(index))
+        .is_some_and(|arg| arg == "init")
+    {
         args.push(OsString::from("--grant-capsules"));
     }
     args
@@ -224,8 +245,27 @@ fn runtime_args_for_dispatch(mut args: Vec<OsString>) -> Vec<OsString> {
 fn is_owned_root(value: &str) -> bool {
     matches!(
         value,
-        "init" | "status" | "migrate" | "update" | "self-update" | "self_update" | "serve-health"
+        "init"
+            | "status"
+            | "migrate"
+            | "update"
+            | "self-update"
+            | "self_update"
+            | "distro"
+            | "serve-health"
     )
+}
+
+fn ambiguous_leading_principal(args: &[OsString]) -> Option<&str> {
+    if args.first()?.to_str()? != "--principal" {
+        return None;
+    }
+    let value = args.get(1)?.to_str().filter(|value| is_owned_root(value))?;
+    let later_command = leading_runtime_root_index(args.get(2..).unwrap_or_default())
+        .ok()
+        .flatten()
+        .is_some();
+    (!later_command).then_some(value)
 }
 
 fn leading_owned_root(args: &[OsString]) -> Option<&str> {
@@ -304,6 +344,10 @@ fn leading_runtime_root_index(args: &[OsString]) -> Result<Option<usize>, ()> {
             index += 1;
             continue;
         }
+        if arg.starts_with("-p") && arg.len() > 2 {
+            index += 1;
+            continue;
+        }
         return Err(());
     }
     Ok(None)
@@ -319,64 +363,21 @@ fn handle_self_update() -> ExitCode {
         );
     }
 
-    #[cfg(unix)]
-    {
-        let installer = std::env::temp_dir().join(format!(
-            "unicity-aos-update-{}-{}.sh",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let create = create_private_update_file(&installer);
-        if let Err(error) = create {
-            eprintln!("aos: failed to stage product updater: {error}");
-            return ExitCode::FAILURE;
-        }
-
-        let url = "https://aos.unicity.ai/install.sh";
-        let download = Command::new("curl")
-            .args(["--proto", "=https", "--tlsv1.2", "-fsSL", url, "-o"])
-            .arg(&installer)
-            .status();
-        let download_code = command_exit_code(download, "download the product updater");
-        if download_code != ExitCode::SUCCESS {
-            let _ = std::fs::remove_file(&installer);
-            return download_code;
-        }
-
-        let mut update = Command::new("sh");
-        update
-            .arg(&installer)
-            .args(["--yes", "--no-migrate-prompt"])
-            .env_remove("AOS_VERSION");
-        if let Ok(executable) = std::env::current_exe()
-            && let Some(bin_dir) = executable.parent()
-        {
-            update.env("AOS_BIN_DIR", bin_dir);
-        }
-        let status = update.status();
-        let _ = std::fs::remove_file(&installer);
-        command_exit_code(status, "run the product updater")
-    }
-
-    #[cfg(not(unix))]
-    {
-        eprintln!(
-            "aos: automatic product updates are not available on this platform; install the latest AOS package"
-        );
-        ExitCode::FAILURE
-    }
+    eprintln!(
+        "aos: direct updates are not yet available: 2026.1.0 is staged and no signed stable, dev, or nightly AOS update channel has been published"
+    );
+    eprintln!("Install an approved signed AOS bundle when a release channel is available.");
+    ExitCode::FAILURE
 }
 
-#[cfg(unix)]
-fn create_private_update_file(path: &Path) -> io::Result<std::fs::File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
+fn refuse_distro_command(_arguments: &[OsString]) -> ExitCode {
+    eprintln!(
+        "aos: Unicity CE owns the distribution state for this AOS installation; `aos distro` cannot apply or replace it"
+    );
+    eprintln!(
+        "Use the standalone `astrid distro ...` command with a separate Astrid Runtime home to manage another distribution."
+    );
+    ExitCode::from(2)
 }
 
 fn command_exit_code(status: io::Result<std::process::ExitStatus>, operation: &str) -> ExitCode {
@@ -568,36 +569,20 @@ fn print_product_help() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[cfg(unix)]
-    use super::create_private_update_file;
     use clap::Parser;
+    use std::ffi::OsString;
 
     use super::{
         ProductCli, ProductCommand, child_exit_code, handle_product_command, leading_owned_root,
         runtime_args_for_dispatch,
     };
 
-    fn temporary_home() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "unicity-aos-product-init-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
-        ))
-    }
-
     #[test]
     fn product_cli_parses_owned_init_surface() {
         let cli = ProductCli::try_parse_from([
             "aos",
+            "--principal",
+            "operator",
             "init",
             "--target-principal",
             "alice",
@@ -613,6 +598,7 @@ mod tests {
         let Some(ProductCommand::Init(init)) = cli.command else {
             panic!("expected product init command");
         };
+        assert_eq!(cli.principal.as_deref(), Some("operator"));
         assert_eq!(init.target_principal.as_deref(), Some("alice"));
         assert!(init.verbose);
         assert!(init.yes);
@@ -685,6 +671,23 @@ mod tests {
             ]
         );
         assert_eq!(
+            runtime_args_for_dispatch(vec![
+                OsString::from("--principal"),
+                OsString::from("operator"),
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("alice"),
+            ]),
+            [
+                OsString::from("--principal"),
+                OsString::from("operator"),
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("alice"),
+                OsString::from("--grant-capsules"),
+            ]
+        );
+        assert_eq!(
             runtime_args_for_dispatch(vec![OsString::from("doctor")]),
             [OsString::from("doctor")]
         );
@@ -719,7 +722,7 @@ mod tests {
                 OsString::from("alice"),
                 OsString::from("init"),
             ])
-            .is_some()
+            .is_none()
         );
         assert!(
             handle_product_command(&[
@@ -728,6 +731,10 @@ mod tests {
                 OsString::from("status"),
             ])
             .is_some()
+        );
+        assert!(
+            handle_product_command(&[OsString::from("--principal"), OsString::from("init")])
+                .is_some()
         );
     }
 
@@ -784,20 +791,5 @@ mod tests {
             child_exit_code(std::process::ExitStatus::from_raw(9)),
             std::process::ExitCode::FAILURE
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn product_updater_is_staged_privately() {
-        let path = temporary_home();
-        let file = create_private_update_file(&path).expect("create private updater");
-        drop(file);
-        let mode = fs::metadata(&path)
-            .expect("read updater metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
-        fs::remove_file(path).expect("remove updater");
     }
 }

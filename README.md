@@ -33,8 +33,8 @@ checksums, Sigstore bundles, GitHub build-provenance attestations, and
 
 ## Command boundary
 
-AOS owns its product roots, including `init`, `status`, `migrate`,
-`self-update`, and `serve-health`:
+AOS owns its product roots, including `init`, `status`, `migrate`, `update`,
+`distro`, and `serve-health`:
 
 ```sh
 aos status
@@ -56,6 +56,18 @@ Use the standalone runtime CLI when the raw command is required:
 astrid status
 astrid init --help
 ```
+
+Provisioning another principal keeps the authenticated operator separate from
+the target environment:
+
+```sh
+aos --principal operator init --target-principal alice
+```
+
+This AOS release fixes its distribution state to Unicity CE. Use a standalone
+`astrid` installation and runtime home to apply another distribution. Homebrew
+installations update with `aos update`; direct-install update channels remain
+disabled until signed stable, dev, or nightly channel metadata is published.
 
 ## Import an existing runtime
 
