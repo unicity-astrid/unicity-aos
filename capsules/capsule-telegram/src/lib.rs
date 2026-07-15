@@ -2,7 +2,7 @@
 #![deny(clippy::all)]
 #![warn(missing_docs)]
 
-//! Telegram Bot uplink capsule for Astrid OS.
+//! Telegram Bot uplink capsule for Unicity AOS.
 //!
 //! Bridges the Telegram Bot API to the kernel IPC bus. Polls Telegram for
 //! updates, publishes user input as `user.v1.prompt`, and renders agent
@@ -439,7 +439,7 @@ fn handle_command(
     let cmd = text.split_whitespace().next().unwrap_or("");
     match cmd {
         "/start" | "/help" => {
-            let help = "<b>Astrid Telegram Bot</b>\n\n\
+            let help = "<b>Unicity AOS Telegram Bot</b>\n\n\
                         Send any text message to interact with the agent.\n\n\
                         <b>Commands:</b>\n\
                         /start — Welcome message\n\

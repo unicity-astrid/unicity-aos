@@ -11,7 +11,7 @@ In the OS model, this capsule is the persistent swap file. It carries context ac
 
 Hooks into `prompt_builder.v1.hook.before_build`. On each prompt assembly cycle:
 
-1. Reads `.astrid/memory.md` from the workspace via the VFS
+1. Reads `.unicity-os/memory.md` from the workspace via the VFS
 2. Wraps the content in a `# Memory` section
 3. Publishes an `appendSystemContext` hook response on the per-request response topic
 
@@ -23,7 +23,7 @@ Agent-written content can grow without limit (unlike human-authored `AGENTS.md`)
 
 ## Read-only
 
-This capsule handles the read/inject side only. The agent writes to `.astrid/memory.md` using existing filesystem tools (`write_file`, `replace_in_file`) from `astrid-capsule-fs`. No new tools needed.
+This capsule handles the read/inject side only. The agent writes to `.unicity-os/memory.md` using existing filesystem tools (`write_file`, `replace_in_file`) from `astrid-capsule-fs`. No new tools needed.
 
 ## Development
 

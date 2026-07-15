@@ -591,7 +591,7 @@ fn dispatch_cli_run_messages(result: &ipc::PollResult) {
             continue;
         }
         // The run topic `cli.v1.command.run.<provider_capsule>` is per-CAPSULE, not
-        // per-verb: every `astrid capsule <verb>` the registry declares lands
+        // per-verb: every `aos capsule <verb>` the registry declares lands
         // here. We only implement `models`, so reject any other `command` rather
         // than treating its args as a models subcommand.
         if !is_models_command(&payload) {

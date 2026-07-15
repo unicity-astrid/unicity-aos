@@ -9,7 +9,7 @@ This capsule owns the cross-platform user-identity surface that used to live ins
 
 Kernel-side principal tenancy is unchanged. This capsule covers identity *within* one principal: every record lives in the capsule's per-principal KV scope, and different principals have independent stores.
 
-Implements the [`astrid:users@1.0.0`](https://github.com/unicity-astrid/wit/blob/main/interfaces/users.wit) interface.
+Implements the [`astrid:users@1.0.0`](https://github.com/astrid-runtime/wit/blob/main/interfaces/users.wit) interface.
 
 ## Topics
 
@@ -36,11 +36,11 @@ Every request carries a `source` envelope:
 }
 ```
 
-`channel` identifies the originating uplink (free-form string), `user-id` is the requester's own `AstridUserId` when known, and `correlation-id` is the token the requester filters the response topic by. Multi-tenant uplinks (one Astrid principal, many end-users) generate a fresh correlation per inflight request and route each response back to the originating end-user.
+`channel` identifies the originating uplink (free-form string), `user-id` is the requester's own `AstridUserId` when known, and `correlation-id` is the token the requester filters the response topic by. Multi-tenant uplinks (one runtime principal, many end-users) generate a fresh correlation per inflight request and route each response back to the originating end-user.
 
 ## Why a capsule instead of a host fn
 
-Identity-as-domain is business logic: what counts as a link, how platforms map, how pairing works, how recovery flows. The kernel principle is to route events and enforce capabilities; everything domain-specific belongs in capsule-space. Until now identity lived in the kernel because nobody had written this capsule yet. Tracked in [unicity-astrid/astrid#747](https://github.com/unicity-astrid/astrid/issues/747).
+Identity-as-domain is business logic: what counts as a link, how platforms map, how pairing works, how recovery flows. The kernel principle is to route events and enforce capabilities; everything domain-specific belongs in capsule-space. Until now identity lived in the kernel because nobody had written this capsule yet. Tracked in [astrid-runtime/astrid#747](https://github.com/astrid-runtime/astrid/issues/747).
 
 ## Storage layout
 

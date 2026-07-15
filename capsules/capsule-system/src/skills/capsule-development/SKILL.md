@@ -1,94 +1,136 @@
 ---
 name: Capsule Development
-description: How to build, configure, and install Astrid capsules from scratch
+description: Build, test, package, install, and debug a current Unicity AOS capsule
 ---
 
 # Capsule Development
 
-An Astrid capsule is a WebAssembly (WASM) module compiled from Rust that runs inside the Astrid kernel sandbox. Capsules communicate exclusively via IPC events — they have no direct access to the host system except through kernel-mediated host functions.
+A capsule is a Rust WebAssembly component that runs inside the Astrid Runtime
+sandbox shipped by Unicity AOS. The runtime routes IPC, enforces capabilities,
+mediates host access, and audits execution. Business logic belongs in capsules.
 
-## Project Layout
+The manifest is part of the security boundary. Its `[publish]` and `[subscribe]`
+tables are the IPC access-control list: a topic that is not declared is denied.
+Capsules target `wasm32-unknown-unknown`, not WASI, and reach the host only through
+the audited SDK/WIT imports granted by the manifest.
 
+## Start from the supported scaffold
+
+```bash
+aos capsule new my-capsule
+cd my-capsule
 ```
+
+The generated project contains:
+
+```text
 my-capsule/
-├── Capsule.toml       # Manifest (name, version, capabilities, interceptors)
-├── Cargo.toml         # Rust crate (lib crate, cdylib)
-└── src/
-    └── lib.rs         # Capsule logic
+├── .cargo/config.toml
+├── rust-toolchain.toml
+├── Cargo.toml
+├── Capsule.toml
+└── src/lib.rs
 ```
 
-## Capsule.toml
+Do not begin from an old `[[interceptor]]` manifest or an `ipc_publish` /
+`ipc_subscribe` capability array. Those formats are obsolete.
+
+## Compiler target
+
+`.cargo/config.toml` selects the capsule target and activates the SDK's custom
+randomness backend:
+
+```toml
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg=getrandom_backend=\"custom\""]
+```
+
+The `getrandom_backend` setting must live in the final capsule crate. Without it,
+dependencies such as UUID generators or randomized hash maps can fail to link.
+
+Pin the toolchain and target in `rust-toolchain.toml`:
+
+```toml
+[toolchain]
+channel = "1.94.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]
+```
+
+## Cargo package
+
+Use a `cdylib` and the current 0.7 SDK surface:
 
 ```toml
 [package]
 name = "my-capsule"
 version = "0.1.0"
-description = "Short description of what this capsule does"
-authors = ["Your Name"]
-astrid-version = ">=0.5.0"
-
-[[component]]
-id = "my-capsule"
-file = "my_capsule.wasm"   # underscores, not hyphens
-type = "executable"
-
-[capabilities]
-# Filesystem access (read and/or write)
-fs_read  = ["home://data/"]
-fs_write = ["home://data/"]
-
-# IPC topics this capsule publishes to
-ipc_publish = ["my.namespace.events.*"]
-
-# IPC topics this capsule subscribes to (must match interceptor events)
-ipc_subscribe = ["my.namespace.request.*"]
-
-# Spawn host processes (list allowed binary names)
-host_process = ["git", "cargo"]
-
-# Allow outbound HTTP requests
-allow_http = true
-
-# Allow outbound network connections
-allow_network = true
-
-[imports]
-# Interfaces this capsule requires from others
-astrid = { session = "^1.0" }
-
-[exports]
-# Interfaces this capsule provides to others
-my-namespace = { "my-interface" = "1.0.0" }
-
-[[interceptor]]
-event  = "my.namespace.request.do-thing"
-action = "tool_execute_do_thing"      # must match generated arm name
-
-[[interceptor]]
-event    = "system.v1.lifecycle.capsule_loaded"
-action   = "on_capsule_loaded"
-priority = 50   # lower fires first; default 100
-```
-
-## Cargo.toml
-
-```toml
-[package]
-name = "my-capsule"
-version = "0.1.0"
-edition = "2021"
+edition = "2024"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-astrid-sdk  = "0.5.0"
-serde       = { version = "1", features = ["derive"] }
-serde_json  = "1"
-uuid        = { version = "1", features = ["v4"] }
+astrid-sdk = { version = "0.7", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
 ```
 
-## lib.rs — Skeleton
+## Capsule manifest
+
+This minimal tool capsule exposes one `hello` tool:
+
+```toml
+[package]
+name = "my-capsule"
+version = "0.1.0"
+description = "A small example capsule"
+authors = ["Your Name <you@example.com>"]
+astrid-version = ">=0.7.0"
+
+[[component]]
+id = "my-capsule"
+file = "my_capsule.wasm"
+type = "executable"
+
+[capabilities]
+fs_read = ["home://data/my-capsule/"]
+fs_write = ["home://data/my-capsule/"]
+
+[publish]
+"tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+
+[subscribe]
+"tool.v1.execute.hello" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_hello" }
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
+```
+
+The published `@unicity-astrid/wit/...` strings and `astrid:*` WIT namespaces
+are stable runtime identifiers. Keep them exact even though the product CLI is
+`aos`.
+
+For a tool capsule, both publish entries are required: one returns tool results,
+and the other answers the describe fan-out that makes tools visible to agents.
+Every tool needs its own concrete execute subscription. A subscribe wildcard may
+have one trailing `*`; publish permissions should be as narrow as practical.
+
+Manifest data is untrusted input. Do not put operator authority, principal
+identity, or a secret scope in a capsule-controlled field. The kernel stamps the
+caller identity and decides operator-only policy.
+
+## Implement a tool
 
 ```rust
 #![deny(unsafe_code)]
@@ -96,218 +138,150 @@ uuid        = { version = "1", features = ["v4"] }
 
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Default)]
 pub struct MyCapsule;
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct HelloArgs {
+    /// Person to greet.
+    pub name: String,
+}
+
 #[capsule]
 impl MyCapsule {
-    /// Run on first install. Set up VFS directories, write config, etc.
-    #[astrid::install]
-    pub fn on_install(&self) -> Result<(), SysError> {
-        astrid_sdk::fs::create_dir("home://data/my-capsule")?;
-        Ok(())
-    }
-
-    /// Run when capsule is upgraded to a new version.
-    #[astrid::upgrade]
-    pub fn on_upgrade(&self) -> Result<(), SysError> {
-        Ok(())
-    }
-
-    /// Handle an IPC event. The action name must match the `action` field
-    /// in Capsule.toml. InterceptResult controls the middleware chain:
-    ///   Continue(payload) — next interceptor sees the (optionally mutated) payload
-    ///   Final(payload)    — chain stops, payload is the final result
-    ///   Deny { reason }   — chain stops, event is rejected
-    #[astrid::interceptor("on_some_event")]
-    pub fn on_some_event(&self, payload: Vec<u8>) -> Result<InterceptResult, SysError> {
-        let _msg: serde_json::Value = serde_json::from_slice(&payload)?;
-        Ok(InterceptResult::Continue(payload))
+    /// Greet a person by name.
+    #[astrid::tool("hello")]
+    pub fn hello(&self, args: HelloArgs) -> Result<String, SysError> {
+        Ok(format!("Hello, {}!", args.name))
     }
 }
 ```
 
-## SDK Macros
+The tool macro derives the input schema from `JsonSchema`, uses the method's doc
+comment as the tool description, exports `tool_execute_hello`, and contributes
+the generated `tool_describe` handler. The manifest binds those generated export
+names to their IPC topics.
 
-### `#[astrid::tool("tool_name")]`
+Use `#[astrid::interceptor("handler_name")]` only when you need a raw handler;
+bind that handler from a `[subscribe]` entry. The obsolete manifest-level
+`[[interceptor]]` table must not be used.
 
-Sugar for `#[astrid::interceptor]` with tool IPC conventions baked in. Generates:
-- `tool_execute_<tool_name>` — handles `tool.v1.execute.<tool_name>`, publishes result to `tool.v1.execute.<tool_name>.result`
-- `tool_describe` — handles `tool.v1.request.describe`, returns all tool JSON schemas
+## State and lifecycle
 
-The function receives a strongly-typed args struct and returns `Result<String, SysError>`:
+Use `#[capsule(state)]` when mutable capsule state must be persisted by the
+runtime. State is scoped to the capsule and principal; never cache per-principal
+configuration in a process-global static.
 
-```rust
-#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
-pub struct MyArgs {
-    /// The thing to process (shown to the LLM as the parameter description)
-    pub input: String,
-}
+Lifecycle hooks are explicit:
 
-#[astrid::tool("my_tool")]
-pub fn my_tool(&self, args: MyArgs) -> Result<String, SysError> {
-    Ok(format!("processed: {}", args.input))
-}
-```
+- `#[astrid::install]` runs on first install and may create initial VFS data or
+  elicit configuration.
+- `#[astrid::upgrade]` migrates state when an installed version is replaced.
+- `#[astrid::run]` owns a long-running loop and must call
+  `runtime::signal_ready()` after initialization.
 
-Add the Capsule.toml interceptors:
-```toml
-[[interceptor]]
-event = "tool.v1.execute.my_tool"
-action = "tool_execute_my_tool"
+An install hook returns `Result<(), SysError>`. An upgrade hook also receives the
+previous version. Keep migrations idempotent and fail closed before partially
+rewriting persisted state.
 
-[[interceptor]]
-event = "tool.v1.request.describe"
-action = "tool_describe"
-```
+## IPC
 
-And capabilities:
-```toml
-ipc_publish   = ["tool.v1.execute.*.result", "tool.v1.response.describe.*"]
-ipc_subscribe = ["tool.v1.execute.my_tool", "tool.v1.request.describe"]
-```
-
-### `#[astrid::interceptor("action_name")]`
-
-Raw event handler. Action name matches the `action` field in `[[interceptor]]`. Receives raw bytes, returns `InterceptResult`:
+Use typed JSON helpers when the contract is JSON:
 
 ```rust
-#[astrid::interceptor("my_handler")]
-pub fn my_handler(&self, payload: Vec<u8>) -> Result<InterceptResult, SysError> {
-    Ok(InterceptResult::Final(b"done".to_vec()))
+ipc::publish_json("my.v1.event.ready", &payload)?;
+let subscription = ipc::subscribe("my.v1.request.*")?;
+let batch = subscription.recv(500)?;
+for message in batch.messages {
+    // Parse and handle each envelope independently.
 }
 ```
 
-### `#[astrid::install]` / `#[astrid::upgrade]`
+`recv(timeout)` returns `Ok` with an empty message batch on timeout. It does not
+return a timeout error. A received batch can contain multiple publishers; for a
+sensitive operation, read the kernel-stamped principal from each envelope and
+require verified attribution. Never trust a principal copied into the payload.
 
-Lifecycle hooks. `install` runs once on `astrid capsule install`. `upgrade` runs on version update. Both have signature `fn(&self) -> Result<(), SysError>`.
+Fan-out responses must be published on their declared response topics. Returning
+a value from one interceptor does not publish it to other subscribers.
 
-## IPC Patterns
+## Runtime-mediated host access
 
-### Fire and forget
+Host access is denied unless the manifest and runtime grant it.
 
-```rust
-use astrid_sdk::ipc;
-ipc::publish("my.namespace.event", b"{\"key\":\"value\"}")?;
-```
+- `fs` accepts VFS paths such as `home://` and `cwd://`; it does not expose raw
+  host paths.
+- `kv` is automatically scoped by capsule and principal.
+- `http` performs outbound requests only when the capsule has the required HTTP
+  authority.
+- `env::var` resolves ordinary configuration or an owning capsule's secret at
+  call time. Secrets are not ordinary env JSON and must never be cached across
+  principals.
+- `log` emits structured capsule logs under
+  `~/.unicity-os/runtime/home/<principal>/.local/log/<capsule>/`.
 
-### Request / response (correlation ID)
+Ask only for the narrow paths, hosts, topics, and processes the capsule needs.
+Do not add broad authority merely to make a failing test pass.
 
-```rust
-use astrid_sdk::ipc;
-use uuid::Uuid;
+## Build, package, and install
 
-let correlation_id = Uuid::new_v4().to_string();
-let response_topic = format!("my.namespace.response.{correlation_id}");
-
-ipc::subscribe(&response_topic)?;
-ipc::publish("my.namespace.request", serde_json::to_vec(&serde_json::json!({
-    "response_topic": response_topic,
-    "data": "..."
-}))?)?;
-
-// Poll for response (500ms timeout)
-let response = ipc::recv_bytes(&response_topic, 500)?;
-ipc::unsubscribe(&response_topic)?;
-```
-
-### Trigger hook (fan-out, collect all responses)
-
-Used to broadcast to all interceptors on a topic and collect their payloads:
-
-```rust
-use astrid_sdk::hooks;
-let results: Vec<Vec<u8>> = hooks::trigger("tool.v1.request.describe", b"")?;
-```
-
-## VFS
-
-All file paths are UTF-8 strings. Scheme `home://` maps to the calling principal's home directory.
-
-```rust
-use astrid_sdk::fs;
-
-// Read
-let content = fs::read_to_string("home://data/config.json")?;
-
-// Write (requires fs_write capability)
-fs::write("home://data/output.txt", b"hello")?;
-
-// Directory
-fs::create_dir("home://data/my-dir")?;
-let entries = fs::read_dir("home://data/")?;
-for entry in entries {
-    println!("{}", entry.file_name());
-}
-
-// Check existence
-if fs::exists("home://data/file.txt")? { ... }
-```
-
-## KV Store
-
-Per-capsule, per-principal key-value store. Scoped automatically by the kernel.
-
-```rust
-use astrid_sdk::kv;
-
-kv::set("my-key", b"value")?;
-let val = kv::get("my-key")?;   // Option<Vec<u8>>
-kv::delete("my-key")?;
-let keys = kv::list_keys("prefix:")?;
-```
-
-## Logging
-
-```rust
-use astrid_sdk::log;
-
-log::info("capsule started")?;
-log::warn("something unusual")?;
-log::error("something failed")?;
-// Or with format:
-log::info(format!("processed {} items", count))?;
-```
-
-## Reading WIT Interfaces at Runtime
-
-WIT files are installed to `home://wit/` during `astrid init`. Use them to understand message schemas:
-
-```rust
-let session_wit = astrid_sdk::fs::read_to_string("home://wit/session.wit")?;
-```
-
-Available interfaces: `session.wit`, `tool.wit`, `llm.wit`, `prompt.wit`, `context.wit`, `hook.wit`, `registry.wit`, `spark.wit`, `types.wit`.
-
-## Build
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-# Output: target/wasm32-unknown-unknown/release/my_capsule.wasm
-```
-
-Requires the target:
 ```bash
 rustup target add wasm32-unknown-unknown
+aos capsule build
+aos capsule install ./dist/my-capsule.capsule
+aos capsule list
+aos status
 ```
 
-## Install
+`aos capsule build` packages the component and manifest into an installable,
+content-addressed `dist/*.capsule` artifact. Plain `cargo build --release` is a
+useful compile check, but its raw `.wasm` output is not installable. Do not copy a
+raw WASM file into the runtime home.
 
-Use the `install_capsule` system tool, or from the CLI:
+There is no hot reload. Rebuild and reinstall the `.capsule` artifact for each
+iteration. Installation replaces the previous installed version while preserving
+configuration unless removal is explicitly purged:
 
 ```bash
-astrid capsule install ./path/to/capsule
-astrid capsule install @github-org/capsule-repo
+aos capsule remove my-capsule
+aos capsule remove my-capsule --purge
 ```
 
-## Common Errors
+## Test before installation
 
-| Error | Fix |
+Keep parsing, validation, and business rules in ordinary Rust functions so they
+can run in host-target unit tests. Separately validate the guest surface:
+
+```bash
+cargo fmt --all -- --check
+cargo check
+aos capsule build
+```
+
+Then install into an isolated AOS home and test the real boundary:
+
+1. Confirm the capsule appears in `aos capsule list`.
+2. Confirm `aos status` remains healthy.
+3. Exercise every declared tool with valid and invalid input.
+4. Prove undeclared IPC topics and host operations are denied.
+5. Test a second principal so configuration and state cannot bleed across callers.
+6. Revoke access and prove the next invocation observes the revocation.
+7. Reinstall and upgrade to prove state migration and configuration retention.
+
+## Common failures
+
+| Symptom | Check |
 |---|---|
-| `capability denied: fs_write` | Add `fs_write = ["home://..."]` to `[capabilities]` |
-| `ipc: topic not subscribed` | Add topic to `ipc_subscribe` in `[capabilities]` |
-| `interceptor action not found` | Check `action` in `[[interceptor]]` matches generated arm name |
-| `wasm trap: unreachable` | Panic in guest — check for unwrap/expect on error paths |
-| `boot validation: unsatisfied import` | Install the capsule that exports the required interface |
+| Tool is absent | Declare the execute and describe subscriptions plus both result/describe publish topics. |
+| Linker fails around randomness | Restore the custom `getrandom_backend` rustflag in `.cargo/config.toml`. |
+| IPC publish or subscribe is denied | Add the exact topic to `[publish]` or `[subscribe]`; do not add an unrelated wildcard. |
+| Build produced only `.wasm` | Run `aos capsule build` and install the artifact from `dist/`. |
+| Request times out without an error | Treat an empty `recv` batch as timeout. |
+| One user's configuration appears for another | Remove static/global env caching and resolve per invocation. |
+| Capsule panics or exits | Inspect the per-principal capsule log and remove `unwrap`/`expect` from guest error paths. |
+| Upgrade corrupts state | Make the migration idempotent and write the new state only after validation succeeds. |
+
+For a generated, code-grounded starting point, prefer `aos capsule new` and the
+capsule-forge tooling over copied examples from older releases.

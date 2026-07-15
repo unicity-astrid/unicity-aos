@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Identity capsule for Astrid OS.
+//! Identity capsule for Unicity AOS.
 //!
 //! Owns the agent's identity (spark config) as persistent state. Builds
 //! the system prompt on `spark.v1.request.build` requests. On first
@@ -16,7 +16,7 @@ use astrid_sdk::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
 /// Default agent name when no spark config exists.
-const DEFAULT_CALLSIGN: &str = "Astrid";
+const DEFAULT_CALLSIGN: &str = "AOS";
 
 /// VFS path to the spark identity configuration file.
 const SPARK_CONFIG_PATH: &str = "home://.config/spark.toml";
@@ -167,7 +167,7 @@ impl IdentityBuilder {
         let mut prompt = format!(
             "# Environment\n\
              - Current working directory: {workspace_root}\n\
-             - Platform: astrid-os"
+             - Platform: Unicity AOS"
         );
 
         // Auto-detect an existing spark.toml when KV state says not yet onboarded.

@@ -36,7 +36,7 @@ TUI slash command (`cli.v1.command.execute`):
 - `/models` - emits a `SelectionRequired` payload for the TUI picker
 - `/models <model_id>` - direct model switch
 
-Scriptable verb (`astrid capsule models ...`, over `cli.v1.command.run.astrid-capsule-registry` with the reply on `cli.v1.command.result.<req_id>`):
+Scriptable verb (`aos capsule models ...`, over `cli.v1.command.run.astrid-capsule-registry` with the reply on `cli.v1.command.result.<req_id>`):
 - `models list [--json]` - list available models (canonical ids, active marked)
 - `models current [--json]` - print the active model id (or `none`)
 - `models set <id>` - switch the active model; accepts a bare model name when unambiguous, persists the canonical `"<capsule>:<model>"` form

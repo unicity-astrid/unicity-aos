@@ -218,7 +218,8 @@ impl AosHome {
         let mut command = Command::new(self.runtime_binary());
         command
             .env("ASTRID_HOME", self.runtime_home())
-            .env("ASTRID_WORKSPACE_STATE_DIR", AOS_WORKSPACE_STATE_DIR);
+            .env("ASTRID_WORKSPACE_STATE_DIR", AOS_WORKSPACE_STATE_DIR)
+            .env("ASTRID_ENFORCED_DISTRO", self.unicity_ce_manifest_path());
         command.args(args);
         command
     }
@@ -233,7 +234,8 @@ impl AosHome {
 
     /// Spawn the bundled runtime with runtime CLI arguments.
     ///
-    /// The runtime home remains scoped to this AOS installation.
+    /// This path uses the runtime's normal local operator credentials. The
+    /// runtime home remains scoped to this AOS installation.
     ///
     /// # Errors
     /// Returns an error when the bundled executable is absent or cannot start.
@@ -292,7 +294,7 @@ impl AosHome {
                 ),
             ));
         }
-        self.ensure_layout()
+        self.ensure_unicity_ce_manifest().map(drop)
     }
 }
 
@@ -429,6 +431,22 @@ mod tests {
 
         assert_eq!(env_value("ASTRID_HOME"), "/tmp/unicity-aos-test/runtime");
         assert_eq!(env_value("ASTRID_WORKSPACE_STATE_DIR"), ".unicity-os");
+    }
+
+    #[test]
+    fn runtime_command_emplaces_the_bundled_unicity_ce_distro() {
+        let home = AosHome::from_root("/tmp/unicity-aos-test");
+        let command = home.runtime_command();
+        let distro = command
+            .get_envs()
+            .find_map(|(name, value)| (name == "ASTRID_ENFORCED_DISTRO").then_some(value))
+            .flatten()
+            .expect("runtime command sets ASTRID_ENFORCED_DISTRO");
+
+        assert_eq!(
+            distro,
+            "/tmp/unicity-aos-test/distributions/unicity-ce/Distro.toml"
+        );
     }
 
     #[test]

@@ -2,10 +2,10 @@
 #![deny(clippy::all)]
 #![deny(unreachable_pub)]
 
-//! Within-principal user identity store for Astrid OS.
+//! Within-principal user identity store for Unicity AOS.
 //!
 //! Implements the `astrid:users@1.0.0` interface
-//! (`unicity-astrid/wit/interfaces/users.wit`) over IPC RPC.
+//! (`astrid-runtime/wit/interfaces/users.wit`) over IPC RPC.
 //!
 //! Two-layer model:
 //!

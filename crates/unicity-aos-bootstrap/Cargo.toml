@@ -10,6 +10,7 @@ astrid-core.workspace = true
 astrid-uplink.workspace = true
 axum.workspace = true
 blake3.workspace = true
+clap.workspace = true
 fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

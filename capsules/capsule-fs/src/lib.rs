@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![allow(missing_docs)]
 
-//! Filesystem tools capsule for Astrid OS.
+//! Filesystem tools capsule for Unicity AOS.
 //!
 //! Provides `read_file`, `write_file`, `replace_in_file`, `list_directory`,
 //! `grep_search`, `create_directory`, `delete_file`, and `move_file` tools to agents.

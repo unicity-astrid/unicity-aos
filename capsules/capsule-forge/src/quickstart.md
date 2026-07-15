@@ -1,4 +1,4 @@
-# Build Your First Astrid Capsule
+# Build Your First Unicity AOS Capsule
 
 A capsule is a small WASM module (compiled from Rust) that the kernel loads into
 a sandbox and lets expose **tools** to the LLM over an event bus. The kernel is
@@ -105,10 +105,10 @@ impl MyCapsule {
 ## The build → install → verify loop
 ```bash
 rustup target add wasm32-unknown-unknown        # one time
-astrid capsule build                            # -> ./dist/my-capsule.capsule
-astrid capsule install ./dist/my-capsule.capsule
-astrid capsule list                             # confirm it loaded
-astrid status                                   # confirm the daemon is healthy
+aos capsule build                               # -> ./dist/my-capsule.capsule
+aos capsule install ./dist/my-capsule.capsule
+aos capsule list                                # confirm it loaded
+aos status                                      # confirm the daemon is healthy
 # then ask the LLM to call `hello`
 ```
 
@@ -117,7 +117,7 @@ astrid status                                   # confirm the daemon is healthy
    fail to LINK on wasm32-unknown-unknown. #1 silent failure.
 2. **`crate-type = ["cdylib"]`** — not bin, not rlib.
 3. **No checked-in `wit/`** — the WIT is generated at build time.
-4. **Install via `astrid capsule install`**, never hand-copy the `.wasm` — install is
+4. **Install via `aos capsule install`**, never hand-copy the `.wasm` — install is
    content-addressed.
 5. **A Skill needs an `#[astrid::install]` hook** (`include_str!` + `fs::write`) to land;
    the static engine is a no-op.
@@ -127,5 +127,5 @@ astrid status                                   # confirm the daemon is healthy
    it's almost always a manifest mistake (run `capsule_doctor`), not a kernel race — the old
    describe fan-out race on first prompt is fixed in the current kernel.
 
-Use `astrid capsule new <name>`, or the `scaffold_capsule` tool, to generate all five files
+Use `aos capsule new <name>`, or the `scaffold_capsule` tool, to generate all five files
 at once, then write them out.

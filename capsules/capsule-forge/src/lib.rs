@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![allow(missing_docs)]
 
-//! Capsule-authoring forge for Astrid OS.
+//! Capsule-authoring forge for Unicity AOS.
 //!
 //! Gives a fresh LLM the tools and a Skill to build capsules from zero
 //! knowledge: scaffold a compiling skeleton, read WIT contracts, map an intent
@@ -158,7 +158,7 @@ impl ForgeTools {
 
     /// Scaffold a complete, compiling tool-capsule skeleton. Returns a JSON
     /// object mapping each relative file path to its content — write them all,
-    /// then `astrid capsule build`. Only the `tool` kind is supported in v1.
+    /// then `aos capsule build`. Only the `tool` kind is supported in v1.
     #[astrid::tool("scaffold_capsule")]
     pub fn scaffold_capsule(&self, args: ScaffoldArgs) -> Result<String, SysError> {
         let name = args.name.trim();
@@ -202,7 +202,7 @@ impl ForgeTools {
                 Ok(format!(
                     "Interface '{filename}' not found.\nAvailable interfaces:\n{}",
                     if available.is_empty() {
-                        "(none — the WIT store fills as capsules are installed; run `astrid init` to install the standard distro)".to_string()
+                        "(none — the WIT store fills as capsules are installed; run `aos init` to install Unicity CE)".to_string()
                     } else {
                         available.join("\n")
                     }

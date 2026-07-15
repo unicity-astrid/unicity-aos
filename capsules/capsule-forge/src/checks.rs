@@ -223,7 +223,7 @@ fn check_topic_shapes(pub_keys: &[String], out: &mut Vec<Finding>) {
     if out.iter().all(|f| f.level != "error") {
         out.push(Finding::info(
             "No blocking manifest errors found.",
-            "Build with `astrid capsule build`, then install with `astrid capsule install`.",
+            "Build with `aos capsule build`, then install with `aos capsule install`.",
         ));
     }
 }

@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Cross-session memory capsule for Astrid OS.
+//! Cross-session memory capsule for Unicity AOS.
 //!
 //! Hooks into the prompt builder pipeline via
 //! `prompt_builder.v1.hook.before_build` and injects memory from two sources:

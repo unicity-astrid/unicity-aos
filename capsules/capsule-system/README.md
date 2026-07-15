@@ -5,7 +5,7 @@
 
 **System management tools for [Unicity AOS](https://github.com/unicity-aos/aos-ce) agents.**
 
-This capsule gives the LLM typed tools to inspect and manage its own runtime. It's what makes Astrid self-evolving -- the agent can inspect installed capsules, read interface contracts, and understand the health of its own system.
+This capsule gives the LLM typed tools to inspect and manage its own runtime. It makes Unicity AOS self-inspecting: the agent can inspect installed capsules, read interface contracts, and understand the health of its own system.
 
 ## Tools
 

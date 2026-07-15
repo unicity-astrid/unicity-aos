@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![allow(missing_docs)]
 
-//! Shell execution tools capsule for Astrid OS.
+//! Shell execution tools capsule for Unicity AOS.
 //!
 //! Provides the `run_shell_command` tool to agents, wrapping executions
 //! securely in the host-level Escape Hatch (Seatbelt/bwrap).

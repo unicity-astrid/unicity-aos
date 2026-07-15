@@ -51,7 +51,9 @@ impl Fixture {
             .env("UNICITY_AOS_HOME", &self.home)
             .env("UNICITY_AOS_RUNTIME_BIN", &self.runtime)
             .env("AOS_TEST_ARGS", &self.args)
-            .env("AOS_TEST_HOME", self.root.join("child-home"));
+            .env("AOS_TEST_HOME", self.root.join("child-home"))
+            .env("AOS_TEST_WORKSPACE", self.root.join("child-workspace"))
+            .env("AOS_TEST_DISTRO", self.root.join("child-distro"));
         command
     }
 }
@@ -67,6 +69,8 @@ for arg in "$@"; do
     printf '<%s>\n' "$arg"
 done > "$AOS_TEST_ARGS"
 printf '%s\n' "$ASTRID_HOME" > "$AOS_TEST_HOME"
+printf '%s\n' "$ASTRID_WORKSPACE_STATE_DIR" > "$AOS_TEST_WORKSPACE"
+printf '%s\n' "$ASTRID_ENFORCED_DISTRO" > "$AOS_TEST_DISTRO"
 exit "${AOS_TEST_EXIT:-0}"
 "#;
 
@@ -91,6 +95,20 @@ fn unowned_root_passes_through_with_argv_home_and_exit_code() {
         fs::read_to_string(fixture.root.join("child-home")).expect("read runtime home"),
         format!("{}\n", fixture.home.join("runtime").display())
     );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-workspace")).expect("read workspace"),
+        ".unicity-os\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-distro")).expect("read distro"),
+        format!(
+            "{}\n",
+            fixture
+                .home
+                .join("distributions/unicity-ce/Distro.toml")
+                .display()
+        )
+    );
 }
 
 #[test]
@@ -102,7 +120,10 @@ fn product_help_version_and_usage_errors_never_delegate() {
         (vec!["--help"], true),
         (vec!["--version"], true),
         (vec!["init", "--help"], true),
+        (vec!["init", "--grant-capsules"], false),
+        (vec!["init", "--principal", "alice"], false),
         (vec!["migrate"], false),
+        (vec!["update", "unexpected"], false),
         (vec!["self-update", "unexpected"], false),
         (vec!["serve-health", "unexpected"], false),
     ] {
@@ -114,6 +135,19 @@ fn product_help_version_and_usage_errors_never_delegate() {
         assert_eq!(status.success(), expected_success);
         assert!(!fixture.args.exists());
     }
+}
+
+#[test]
+fn bare_aos_shows_product_help_instead_of_claiming_native_chat() {
+    let fixture = Fixture::new("bare-help");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    let output = fixture.command().output().expect("run bare aos");
+
+    assert!(output.status.success());
+    assert!(!fixture.args.exists());
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("Running `aos` without a command displays product help"));
 }
 
 #[test]
@@ -135,34 +169,93 @@ fn runtime_is_an_inherited_root_not_a_special_alias() {
 }
 
 #[test]
-fn product_init_pins_the_bundled_distro_and_rejects_overrides() {
-    let fixture = Fixture::new("init");
+fn product_default_init_delegates_grants_without_inventing_a_target() {
+    let fixture = Fixture::new("init-default");
     fixture.install_runtime(RECORDING_RUNTIME);
 
     let status = fixture
         .command()
-        .args(["init", "--yes", "--var", "model=gpt-5"])
+        .args(["init"])
         .status()
         .expect("run product init");
     assert!(status.success());
     let args = fs::read_to_string(&fixture.args).expect("read init args");
-    assert!(args.starts_with("<init>\n<--distro>\n"));
-    assert!(args.contains("<--yes>\n<--var>\n<model=gpt-5>\n"));
-    assert!(args.contains("/distributions/unicity-ce/Distro.toml>"));
+    assert_eq!(args, "<init>\n<--grant-capsules>\n");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-distro")).expect("read enforced distro"),
+        format!(
+            "{}\n",
+            fixture
+                .home
+                .join("distributions/unicity-ce/Distro.toml")
+                .display()
+        )
+    );
+}
 
-    fs::remove_file(&fixture.args).expect("remove first invocation marker");
+#[test]
+fn product_non_default_init_delegates_principal_and_capsule_grants() {
+    let fixture = Fixture::new("init-principal");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    let status = fixture
+        .command()
+        .args([
+            "init",
+            "--target-principal",
+            "alice",
+            "--yes",
+            "--var",
+            "model=gpt-5",
+        ])
+        .status()
+        .expect("run product init for a non-default principal");
+    assert!(status.success());
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read non-default init args"),
+        "<init>\n<--target-principal>\n<alice>\n<--yes>\n<--var>\n<model=gpt-5>\n<--grant-capsules>\n"
+    );
+}
+
+#[test]
+fn product_init_rejects_caller_distro_selection() {
+    let fixture = Fixture::new("init-distro-override");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
     let output = fixture
         .command()
         .args(["init", "--distro=other"])
         .output()
         .expect("run protected init");
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     assert!(!fixture.args.exists());
     assert!(
         String::from_utf8(output.stderr)
             .expect("utf8 stderr")
-            .contains("astrid init")
+            .contains("unexpected argument '--distro'")
     );
+}
+
+#[test]
+fn leading_runtime_globals_cannot_bypass_product_roots() {
+    let fixture = Fixture::new("leading-global");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    for root in ["init", "status"] {
+        let output = fixture
+            .command()
+            .args(["--principal", "alice", root])
+            .output()
+            .expect("run protected product root");
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!fixture.args.exists());
+        assert!(
+            String::from_utf8(output.stderr)
+                .expect("utf8 stderr")
+                .contains("cannot be preceded by runtime-global options")
+        );
+    }
 }
 
 #[test]

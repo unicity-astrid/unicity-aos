@@ -1,7 +1,8 @@
 //! `aos` — the product command surface for Unicity AOS.
 //!
-//! Unicity AOS is a distribution built on Astrid Runtime. AOS commands override
-//! the corresponding runtime roots; every other root passes through unchanged.
+//! Unicity AOS is a distribution built on Astrid Runtime. AOS-owned commands
+//! shadow matching runtime roots; every other root passes through unchanged to
+//! the bundled runtime under the product-owned home and workspace layout.
 
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
@@ -9,7 +10,6 @@ use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-#[cfg(unix)]
 use std::path::Path;
 #[cfg(any(not(unix), test))]
 use std::process::ExitStatus;
@@ -17,113 +17,100 @@ use std::process::{Command, ExitCode};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
 
-fn main() -> ExitCode {
-    run()
+// Product-owned commands are parsed here. Unknown roots bypass this parser and
+// are delegated byte-for-byte to the bundled runtime by `main`.
+#[derive(Parser)]
+#[command(name = "Unicity AOS", bin_name = "aos")]
+#[command(version)]
+#[command(about = "Unicity Agent Operating System")]
+#[command(long_about = None)]
+#[command(
+    after_help = "All other commands are inherited from the bundled runtime. Running `aos` without a command displays product help until the native AOS chat surface lands."
+)]
+struct ProductCli {
+    #[command(subcommand)]
+    command: Option<ProductCommand>,
 }
 
-fn run() -> ExitCode {
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    match RootCommand::parse(&args) {
-        RootCommand::NoArguments => offer_first_run_migration().unwrap_or_else(|| {
-            print_help();
-            ExitCode::SUCCESS
-        }),
-        RootCommand::Help => {
-            print_help();
-            ExitCode::SUCCESS
-        }
-        RootCommand::Version => {
-            println!("Unicity AOS {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        RootCommand::SelfUpdate(args) => handle_self_update(args),
-        RootCommand::Migrate(args) => handle_migrate_command(args),
-        RootCommand::ServeHealth(args) => handle_health_service(args),
-        RootCommand::Status(args) => handle_status(args),
-        RootCommand::Init(args) => handle_init(args),
-        RootCommand::Passthrough(args) => handle_runtime_passthrough(args),
-    }
+#[derive(Subcommand)]
+enum ProductCommand {
+    /// Initialize Unicity CE using the manifest bundled with this release.
+    Init(InitArgs),
+    /// Show product status from the typed local runtime operation.
+    Status(StatusArgs),
+    /// Import compatible state from a standalone runtime installation.
+    Migrate {
+        #[command(subcommand)]
+        command: MigrateCommand,
+    },
+    /// Update AOS and its coordinated runtime executable set.
+    #[command(name = "update", alias = "self-update", alias = "self_update")]
+    Update,
+    /// Serve the loopback-only product health endpoint.
+    ServeHealth,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum RootCommand<'a> {
-    NoArguments,
-    Help,
-    Version,
-    SelfUpdate(&'a [OsString]),
-    Migrate(&'a [OsString]),
-    ServeHealth(&'a [OsString]),
-    Status(&'a [OsString]),
-    Init(&'a [OsString]),
-    Passthrough(&'a [OsString]),
+#[derive(Args)]
+struct StatusArgs {
+    /// Print a machine-readable JSON status object.
+    #[arg(long)]
+    json: bool,
 }
 
-impl<'a> RootCommand<'a> {
-    fn parse(args: &'a [OsString]) -> Self {
-        let Some(command) = args.first() else {
-            return Self::NoArguments;
-        };
-        match command.to_str() {
-            Some("-h" | "--help") => Self::Help,
-            Some("-V" | "--version") => Self::Version,
-            Some("self-update" | "self_update") => Self::SelfUpdate(&args[1..]),
-            Some("migrate") => Self::Migrate(&args[1..]),
-            Some("serve-health") => Self::ServeHealth(&args[1..]),
-            Some("status") => Self::Status(&args[1..]),
-            Some("init") => Self::Init(&args[1..]),
-            _ => Self::Passthrough(args),
-        }
-    }
+#[derive(Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent CLI switches forwarded to the runtime"
+)]
+struct InitArgs {
+    /// Enable verbose runtime output.
+    #[arg(short, long)]
+    verbose: bool,
+    /// Principal whose AOS environment is provisioned.
+    #[arg(long)]
+    target_principal: Option<String>,
+    /// Accept defaults without prompting.
+    #[arg(short = 'y', long = "yes")]
+    yes: bool,
+    /// Forbid network access during initialization.
+    #[arg(long)]
+    offline: bool,
+    /// Permit an unsigned distribution artifact.
+    #[arg(long)]
+    allow_unsigned: bool,
+    /// Accept and pin a changed distribution signing key.
+    #[arg(long)]
+    accept_new_key: bool,
+    /// Supply a distribution variable as KEY=VALUE; repeat as needed.
+    #[arg(long = "var", value_name = "KEY=VALUE")]
+    vars: Vec<String>,
 }
 
-fn resolve_home() -> Result<AosHome, ExitCode> {
-    AosHome::resolve().map_err(|error| {
-        eprintln!("aos: failed to resolve product home: {error}");
-        ExitCode::FAILURE
-    })
-}
-
-fn handle_init(args: &[OsString]) -> ExitCode {
-    if has_distro_override(args) {
-        eprintln!("aos init always installs Unicity CE; use `astrid init` for another distro");
-        return ExitCode::FAILURE;
-    }
-    if has_help_flag(args) {
-        print_init_help();
-        return ExitCode::SUCCESS;
-    }
-
-    let home = match resolve_home() {
-        Ok(home) => home,
-        Err(code) => return code,
-    };
-    let args = match product_init_runtime_args(&home, args) {
-        Ok(args) => args,
-        Err(error) => {
-            eprintln!("aos: failed to prepare Unicity CE: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    run_runtime(&home, args)
-}
-
-fn handle_runtime_passthrough(args: &[OsString]) -> ExitCode {
-    let home = match resolve_home() {
-        Ok(home) => home,
-        Err(code) => return code,
-    };
-    run_runtime(&home, args.iter())
+#[derive(Subcommand)]
+enum MigrateCommand {
+    /// Copy compatible state from a standalone runtime home.
+    Runtime {
+        /// Absolute path to the standalone runtime home.
+        #[arg(long, value_name = "ABSOLUTE_LEGACY_HOME")]
+        from: std::path::PathBuf,
+    },
 }
 
 #[cfg(unix)]
-fn run_runtime<I, S>(home: &AosHome, args: I) -> ExitCode
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    match home.exec_runtime_with_args(args) {
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let Some(exit_code) = handle_product_command(&args) {
+        return exit_code;
+    }
+    let runtime_args = runtime_args_for_dispatch(args);
+    let home = match resolve_home() {
+        Ok(home) => home,
+        Err(code) => return code,
+    };
+    match home.exec_runtime_with_args(runtime_args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("aos: failed to start bundled runtime: {error}");
@@ -133,12 +120,17 @@ where
 }
 
 #[cfg(not(unix))]
-fn run_runtime<I, S>(home: &AosHome, args: I) -> ExitCode
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    match home.run_runtime_with_args(args) {
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let Some(exit_code) = handle_product_command(&args) {
+        return exit_code;
+    }
+    let runtime_args = runtime_args_for_dispatch(args);
+    let home = match resolve_home() {
+        Ok(home) => home,
+        Err(code) => return code,
+    };
+    match home.run_runtime_with_args(runtime_args) {
         Ok(status) => child_exit_code(status),
         Err(error) => {
             eprintln!("aos: failed to start bundled runtime: {error}");
@@ -156,12 +148,168 @@ fn child_exit_code(status: ExitStatus) -> ExitCode {
     }
 }
 
-fn handle_self_update(args: &[OsString]) -> ExitCode {
-    if !args.is_empty() {
-        eprintln!("Usage: aos self-update");
-        return ExitCode::FAILURE;
+fn resolve_home() -> Result<AosHome, ExitCode> {
+    AosHome::resolve().map_err(|error| {
+        eprintln!("aos: failed to resolve product home: {error}");
+        ExitCode::FAILURE
+    })
+}
+
+fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
+    if args.is_empty() {
+        return offer_first_run_migration().or_else(|| Some(print_product_help()));
+    }
+    if let Some(root) = leading_owned_root(args) {
+        eprintln!(
+            "aos: AOS-owned command '{root}' cannot be preceded by runtime-global options; place supported product options after the command or use `astrid {root}` for the raw runtime form"
+        );
+        return Some(ExitCode::from(2));
     }
 
+    let first = args.first()?.to_str()?;
+    if !matches!(
+        first,
+        "-h" | "--help"
+            | "-V"
+            | "--version"
+            | "help"
+            | "init"
+            | "status"
+            | "migrate"
+            | "update"
+            | "self-update"
+            | "self_update"
+            | "serve-health"
+    ) {
+        return None;
+    }
+
+    let cli = match ProductCli::try_parse_from(
+        std::iter::once(OsString::from("aos")).chain(args.iter().cloned()),
+    ) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = if error.use_stderr() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            };
+            if let Err(print_error) = error.print() {
+                eprintln!("aos: failed to print command help: {print_error}");
+                return Some(ExitCode::FAILURE);
+            }
+            return Some(exit_code);
+        }
+    };
+
+    match cli.command {
+        Some(ProductCommand::Init(_)) => None,
+        Some(ProductCommand::Status(args)) => Some(handle_status(args.json)),
+        Some(ProductCommand::Migrate {
+            command: MigrateCommand::Runtime { from },
+        }) => Some(handle_migrate_runtime(&from)),
+        Some(ProductCommand::Update) => Some(handle_self_update()),
+        Some(ProductCommand::ServeHealth) => Some(handle_health_service()),
+        None => Some(print_product_help()),
+    }
+}
+
+fn runtime_args_for_dispatch(mut args: Vec<OsString>) -> Vec<OsString> {
+    if args.first().is_some_and(|arg| arg == "init") {
+        args.push(OsString::from("--grant-capsules"));
+    }
+    args
+}
+
+fn is_owned_root(value: &str) -> bool {
+    matches!(
+        value,
+        "init" | "status" | "migrate" | "update" | "self-update" | "self_update" | "serve-health"
+    )
+}
+
+fn leading_owned_root(args: &[OsString]) -> Option<&str> {
+    let first = args.first()?.to_str()?;
+    if !first.starts_with('-') || matches!(first, "-h" | "--help" | "-V" | "--version") {
+        return None;
+    }
+
+    match leading_runtime_root_index(args) {
+        Ok(Some(index)) => args
+            .get(index)
+            .and_then(|arg| arg.to_str())
+            .filter(|root| is_owned_root(root)),
+        Ok(None) => None,
+        Err(()) => args
+            .iter()
+            .skip(1)
+            .filter_map(|arg| arg.to_str())
+            .find(|candidate| is_owned_root(candidate)),
+    }
+}
+
+fn leading_runtime_root_index(args: &[OsString]) -> Result<Option<usize>, ()> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_str().ok_or(())?;
+        if !arg.starts_with('-') {
+            return Ok(Some(index));
+        }
+        if arg == "--" {
+            return Ok((index + 1 < args.len()).then_some(index + 1));
+        }
+        if matches!(
+            arg,
+            "-v" | "--verbose"
+                | "-y"
+                | "--yes"
+                | "--yolo"
+                | "--autonomous"
+                | "--print-session"
+                | "--snapshot-tui"
+                | "--emit-path"
+        ) {
+            index += 1;
+            continue;
+        }
+        if matches!(
+            arg,
+            "--format"
+                | "--principal"
+                | "-p"
+                | "--prompt"
+                | "--session"
+                | "--tui-width"
+                | "--tui-height"
+                | "--workspace-state-dir"
+        ) {
+            if index + 1 >= args.len() {
+                return Err(());
+            }
+            index += 2;
+            continue;
+        }
+        if [
+            "--format=",
+            "--principal=",
+            "--prompt=",
+            "--session=",
+            "--tui-width=",
+            "--tui-height=",
+            "--workspace-state-dir=",
+        ]
+        .iter()
+        .any(|prefix| arg.starts_with(prefix))
+        {
+            index += 1;
+            continue;
+        }
+        return Err(());
+    }
+    Ok(None)
+}
+
+fn handle_self_update() -> ExitCode {
     if std::env::var_os("UNICITY_AOS_INSTALL_METHOD").as_deref() == Some(OsStr::new("homebrew")) {
         return command_exit_code(
             Command::new("brew")
@@ -242,12 +390,7 @@ fn command_exit_code(status: io::Result<std::process::ExitStatus>, operation: &s
     }
 }
 
-fn handle_health_service(args: &[OsString]) -> ExitCode {
-    if !args.is_empty() {
-        eprintln!("Usage: aos serve-health");
-        return ExitCode::FAILURE;
-    }
-
+fn handle_health_service() -> ExitCode {
     let home = match resolve_home() {
         Ok(home) => home,
         Err(code) => return code,
@@ -274,16 +417,7 @@ fn handle_health_service(args: &[OsString]) -> ExitCode {
     }
 }
 
-fn handle_status(args: &[OsString]) -> ExitCode {
-    if has_help_flag(args) {
-        println!("Unicity AOS\n\nUsage:\n  aos status [--json]");
-        return ExitCode::SUCCESS;
-    }
-    if !args.is_empty() && (args.len() != 1 || args[0] != OsStr::new("--json")) {
-        eprintln!("Usage: aos status [--json]");
-        return ExitCode::FAILURE;
-    }
-
+fn handle_status(json: bool) -> ExitCode {
     let home = match resolve_home() {
         Ok(home) => home,
         Err(code) => return code,
@@ -307,7 +441,7 @@ fn handle_status(args: &[OsString]) -> ExitCode {
         }
     };
 
-    if args.first().is_some_and(|arg| arg == "--json") {
+    if json {
         match serde_json::to_string(&status) {
             Ok(json) => println!("{json}"),
             Err(error) => {
@@ -335,29 +469,6 @@ fn set_runtime_environment(home: &AosHome) {
         std::env::set_var("ASTRID_WORKSPACE_STATE_DIR", AOS_WORKSPACE_STATE_DIR);
     }
 }
-
-fn product_init_runtime_args(home: &AosHome, args: &[OsString]) -> io::Result<Vec<OsString>> {
-    let mut runtime_args = vec![
-        OsString::from("init"),
-        OsString::from("--distro"),
-        home.ensure_unicity_ce_manifest()?.into_os_string(),
-    ];
-    runtime_args.extend(args.iter().cloned());
-    Ok(runtime_args)
-}
-
-fn has_distro_override(args: &[OsString]) -> bool {
-    args.iter().any(|arg| {
-        arg.as_os_str() == OsStr::new("--distro")
-            || arg.to_str().is_some_and(|arg| arg.starts_with("--distro="))
-    })
-}
-
-fn has_help_flag(args: &[OsString]) -> bool {
-    args.iter()
-        .any(|arg| matches!(arg.to_str(), Some("-h" | "--help")))
-}
-
 fn offer_first_run_migration() -> Option<ExitCode> {
     if !io::stdin().is_terminal() {
         return None;
@@ -404,16 +515,7 @@ fn offer_first_run_migration() -> Option<ExitCode> {
     }
 }
 
-fn handle_migrate_command(args: &[OsString]) -> ExitCode {
-    let [subcommand, flag, source] = args else {
-        eprintln!("Usage: aos migrate runtime --from <absolute-legacy-home>");
-        return ExitCode::FAILURE;
-    };
-    if subcommand.as_os_str() != OsStr::new("runtime") || flag.as_os_str() != OsStr::new("--from") {
-        eprintln!("Usage: aos migrate runtime --from <absolute-legacy-home>");
-        return ExitCode::FAILURE;
-    }
-
+fn handle_migrate_runtime(source: &Path) -> ExitCode {
     let home = match AosHome::resolve() {
         Ok(home) => home,
         Err(error) => {
@@ -421,7 +523,7 @@ fn handle_migrate_command(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match home.migrate_runtime_from(std::path::Path::new(source)) {
+    match home.migrate_runtime_from(source) {
         Ok(unicity_aos_bootstrap::MigrationOutcome::Migrated) => {
             println!(
                 "Unicity AOS: imported the standalone runtime; the source was left unchanged."
@@ -455,16 +557,13 @@ fn print_legacy_distro_handoff(home: &AosHome) {
     }
 }
 
-fn print_help() {
-    println!(
-        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n  aos status [--json]\n  aos migrate runtime --from <absolute-legacy-home>\n  aos self-update\n  aos serve-health\n  aos <runtime command> [arguments...]\n\n`aos init` installs the Unicity CE manifest bundled with this product release. `aos status` reads the typed local runtime status operation. `aos self-update` updates AOS and its pinned runtime. `aos serve-health` binds only 127.0.0.1:8765 and exposes GET /v1/runtime/health. Commands not owned by AOS pass through unchanged to the bundled Astrid Runtime. AOS roots intentionally shadow runtime roots; use `astrid <command>` when the raw runtime command is required. Runtime state is scoped to ~/.unicity-os/runtime (or UNICITY_AOS_HOME)."
-    );
-}
-
-fn print_init_help() {
-    println!(
-        "Unicity AOS\n\nUsage:\n  aos init [--yes] [--offline] [--allow-unsigned] [--accept-new-key] [--var KEY=VALUE]\n\nInstalls Unicity CE from the manifest bundled with this product release. For a different distro, use `astrid init`."
-    );
+fn print_product_help() -> ExitCode {
+    if let Err(error) = ProductCli::command().print_help() {
+        eprintln!("aos: failed to print command help: {error}");
+        return ExitCode::FAILURE;
+    }
+    println!();
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
@@ -477,8 +576,12 @@ mod tests {
 
     #[cfg(unix)]
     use super::create_private_update_file;
-    use super::{RootCommand, child_exit_code, has_distro_override, product_init_runtime_args};
-    use unicity_aos_bootstrap::AosHome;
+    use clap::Parser;
+
+    use super::{
+        ProductCli, ProductCommand, child_exit_code, handle_product_command, leading_owned_root,
+        runtime_args_for_dispatch,
+    };
 
     fn temporary_home() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -492,95 +595,173 @@ mod tests {
     }
 
     #[test]
-    fn product_init_pins_unicity_ce_and_preserves_flags() {
-        let root = temporary_home();
-        let home = AosHome::from_root(&root);
-        let init_args = vec![
-            OsString::from("--yes"),
-            OsString::from("--var"),
-            OsString::from("model=gpt-5"),
-        ];
-        let args =
-            product_init_runtime_args(&home, &init_args).expect("materialize product manifest");
-        assert_eq!(
-            [&args[0], &args[1], &args[3], &args[4], &args[5]],
-            ["init", "--distro", "--yes", "--var", "model=gpt-5"]
-        );
-        assert_eq!(
-            args[2],
-            root.join("distributions/unicity-ce/Distro.toml")
-                .into_os_string()
-        );
-        fs::remove_dir_all(root).expect("remove temporary product home");
+    fn product_cli_parses_owned_init_surface() {
+        let cli = ProductCli::try_parse_from([
+            "aos",
+            "init",
+            "--target-principal",
+            "alice",
+            "--verbose",
+            "--yes",
+            "--offline",
+            "--allow-unsigned",
+            "--accept-new-key",
+            "--var",
+            "model=gpt-5",
+        ])
+        .expect("parse product init");
+        let Some(ProductCommand::Init(init)) = cli.command else {
+            panic!("expected product init command");
+        };
+        assert_eq!(init.target_principal.as_deref(), Some("alice"));
+        assert!(init.verbose);
+        assert!(init.yes);
+        assert!(init.offline);
+        assert!(init.allow_unsigned);
+        assert!(init.accept_new_key);
+        assert_eq!(init.vars, ["model=gpt-5"]);
     }
 
     #[test]
-    fn product_init_rejects_distro_overrides() {
-        assert!(has_distro_override(&[
-            OsString::from("--distro"),
-            OsString::from("other")
-        ]));
-        assert!(has_distro_override(&[OsString::from("--distro=other")]));
-        assert!(!has_distro_override(&[OsString::from("--yes")]));
+    fn product_version_preserves_the_installer_contract() {
+        let Err(version) = ProductCli::try_parse_from(["aos", "--version"]) else {
+            panic!("--version exits through Clap");
+        };
+
+        assert_eq!(
+            version.to_string(),
+            format!("Unicity AOS {}\n", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
-    fn parser_recognizes_product_roots() {
-        assert_eq!(RootCommand::parse(&[]), RootCommand::NoArguments);
-
-        let help = [OsString::from("--help")];
-        assert_eq!(RootCommand::parse(&help), RootCommand::Help);
-        let version = [OsString::from("--version")];
-        assert_eq!(RootCommand::parse(&version), RootCommand::Version);
-
-        let self_update = [OsString::from("self_update"), OsString::from("unexpected")];
-        assert_eq!(
-            RootCommand::parse(&self_update),
-            RootCommand::SelfUpdate(&self_update[1..])
+    fn product_init_rejects_distro_overrides_before_runtime_dispatch() {
+        assert!(
+            handle_product_command(&[
+                OsString::from("init"),
+                OsString::from("--distro"),
+                OsString::from("other"),
+            ])
+            .is_some()
         );
-        let migrate = [OsString::from("migrate"), OsString::from("runtime")];
-        assert_eq!(
-            RootCommand::parse(&migrate),
-            RootCommand::Migrate(&migrate[1..])
+        assert!(
+            handle_product_command(&[OsString::from("init"), OsString::from("--distro=other"),])
+                .is_some()
         );
-        let serve_health = [OsString::from("serve-health"), OsString::from("preserved")];
-        assert_eq!(
-            RootCommand::parse(&serve_health),
-            RootCommand::ServeHealth(&serve_health[1..])
-        );
-        let status = [OsString::from("status"), OsString::from("--json")];
-        assert_eq!(
-            RootCommand::parse(&status),
-            RootCommand::Status(&status[1..])
-        );
-        let init = [OsString::from("init"), OsString::from("--yes")];
-        assert_eq!(RootCommand::parse(&init), RootCommand::Init(&init[1..]));
+        assert!(ProductCli::try_parse_from(["aos", "init", "--grant-capsules"]).is_err());
+        assert!(ProductCli::try_parse_from(["aos", "init", "--principal", "alice"]).is_err());
     }
 
     #[test]
-    fn parser_passes_every_unowned_root_through_unchanged() {
-        let inherited = [OsString::from("capsule"), OsString::from("build")];
+    fn product_init_delegates_capsule_grants_to_the_runtime() {
         assert_eq!(
-            RootCommand::parse(&inherited),
-            RootCommand::Passthrough(&inherited)
+            runtime_args_for_dispatch(vec![OsString::from("init")]),
+            [OsString::from("init"), OsString::from("--grant-capsules")]
         );
-        let runtime = [OsString::from("runtime"), OsString::from("status")];
         assert_eq!(
-            RootCommand::parse(&runtime),
-            RootCommand::Passthrough(&runtime)
+            runtime_args_for_dispatch(vec![
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("alice"),
+            ]),
+            [
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("alice"),
+                OsString::from("--grant-capsules"),
+            ]
+        );
+        assert_eq!(
+            runtime_args_for_dispatch(vec![
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("default"),
+            ]),
+            [
+                OsString::from("init"),
+                OsString::from("--target-principal"),
+                OsString::from("default"),
+                OsString::from("--grant-capsules"),
+            ]
+        );
+        assert_eq!(
+            runtime_args_for_dispatch(vec![OsString::from("doctor")]),
+            [OsString::from("doctor")]
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn parser_preserves_non_utf8_runtime_roots() {
-        use std::os::unix::ffi::OsStringExt;
+    fn unowned_command_is_left_for_runtime_parser() {
+        assert!(handle_product_command(&[OsString::from("doctor")]).is_none());
+    }
 
-        let inherited = [OsString::from_vec(vec![0xff, b'x'])];
+    #[test]
+    fn leading_runtime_globals_cannot_bypass_owned_roots() {
         assert_eq!(
-            RootCommand::parse(&inherited),
-            RootCommand::Passthrough(&inherited)
+            leading_owned_root(&[
+                OsString::from("--principal"),
+                OsString::from("alice"),
+                OsString::from("status"),
+            ]),
+            Some("status")
         );
+        assert!(
+            handle_product_command(&[
+                OsString::from("--principal"),
+                OsString::from("alice"),
+                OsString::from("status"),
+            ])
+            .is_some()
+        );
+        assert!(
+            handle_product_command(&[
+                OsString::from("--principal"),
+                OsString::from("alice"),
+                OsString::from("init"),
+            ])
+            .is_some()
+        );
+        assert!(
+            handle_product_command(&[
+                OsString::from("--principal"),
+                OsString::from("init"),
+                OsString::from("status"),
+            ])
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn unknown_runtime_command_with_distro_flag_is_exact_passthrough() {
+        assert!(
+            handle_product_command(&[
+                OsString::from("frobnicate"),
+                OsString::from("--distro"),
+                OsString::from("other"),
+            ])
+            .is_none()
+        );
+        assert!(handle_product_command(&[OsString::from("capsule")]).is_none());
+    }
+
+    #[test]
+    fn clap_rejects_extra_product_arguments() {
+        assert!(ProductCli::try_parse_from(["aos", "self-update", "extra"]).is_err());
+        assert!(ProductCli::try_parse_from(["aos", "migrate", "runtime"]).is_err());
+    }
+
+    #[test]
+    fn update_aliases_and_status_are_product_owned() {
+        for command in ["update", "self-update", "self_update"] {
+            let cli = ProductCli::try_parse_from(["aos", command]).expect("parse update alias");
+            assert!(matches!(cli.command, Some(ProductCommand::Update)));
+        }
+        let cli =
+            ProductCli::try_parse_from(["aos", "status", "--json"]).expect("parse product status");
+        let Some(ProductCommand::Status(status)) = cli.command else {
+            panic!("expected product status command");
+        };
+        assert!(status.json);
     }
 
     #[cfg(unix)]

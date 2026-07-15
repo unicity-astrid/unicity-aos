@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! ReAct loop capsule for Astrid OS.
+//! ReAct loop capsule for Unicity AOS.
 //!
 //! Stateless coordinator that drives the reasoning-and-action loop:
 //! fetch history from session, run it through identity + prompt builder,
@@ -1209,7 +1209,7 @@ impl ReactLoop {
     /// Caches context window limits from the provider metadata.
     ///
     /// A bare JSON `null` payload is the registry's *cleared* signal (emitted
-    /// on `astrid models unset` or a reconcile that genuinely clears). It must
+    /// on `aos models unset` or a reconcile that genuinely clears). It must
     /// drop BOTH cache keys so the next `active_llm` is a miss that re-asks the
     /// registry — otherwise a warm-cache react keeps serving the unset model.
     #[astrid::interceptor("handle_model_changed")]
@@ -1327,7 +1327,7 @@ pub(crate) struct ActiveLlm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BroadcastAction {
     /// A bare JSON `null` payload — the registry's *cleared* signal
-    /// (`astrid models unset` or a reconcile that genuinely clears). Both the
+    /// (`aos models unset` or a reconcile that genuinely clears). Both the
     /// topic and model cache keys must be dropped so a warm-cache react stops
     /// serving the unset model and re-asks the registry on its next request.
     ClearAll,
@@ -1344,7 +1344,7 @@ enum BroadcastAction {
 }
 
 /// The full set of provider-specific KV cache keys that a `ClearAll`
-/// (`astrid models unset`) must drop. Pure so the deletion list is testable
+/// (`aos models unset`) must drop. Pure so the deletion list is testable
 /// without a live bus — the SDK `astrid:kv` imports trap off-wasm, so the
 /// interceptor's actual `kv::delete` calls can't run in a host test.
 ///
@@ -1665,7 +1665,7 @@ impl ReactLoop {
     }
 
     /// Actionable message shown to the user when no LLM model is selected.
-    const NO_MODEL_MESSAGE: &'static str = "No LLM model is selected. Run `astrid models` to choose one, or install/configure an LLM provider.";
+    const NO_MODEL_MESSAGE: &'static str = "No LLM model is selected. Run `aos models` to choose one, or install/configure an LLM provider.";
 
     /// Terminally fail the turn because no LLM model is selected.
     ///
@@ -2225,9 +2225,9 @@ mod tests {
         assert!(resolve_request_model(Some("override-model"), &no_model).is_some());
 
         // The terminal outcome the gate emits is the actionable no-model
-        // message — it points the user at `astrid models` / provider setup,
+        // message — it points the user at `aos models` / provider setup,
         // never a fabricated model name.
-        assert!(ReactLoop::NO_MODEL_MESSAGE.contains("astrid models"));
+        assert!(ReactLoop::NO_MODEL_MESSAGE.contains("aos models"));
         assert!(!ReactLoop::NO_MODEL_MESSAGE.contains("claude"));
     }
 
@@ -2451,7 +2451,7 @@ mod tests {
     #[test]
     fn cleared_broadcast_clears_both_cache_keys() {
         // The registry sends a bare JSON `null` on `active_model_changed` when
-        // the selection is cleared (`astrid models unset`). Before the fix this
+        // the selection is cleared (`aos models unset`). Before the fix this
         // fell into the "missing request_topic" ignore path, so a warm-cache
         // react kept serving the unset model. The fix routes it to `ClearAll`,
         // which drops BOTH the topic and model cache keys — the next
@@ -2477,7 +2477,7 @@ mod tests {
 
     #[test]
     fn cleared_broadcast_drops_context_window_keys() {
-        // Regression: `ClearAll` (`astrid models unset`) must drop the
+        // Regression: `ClearAll` (`aos models unset`) must drop the
         // provider-specific context-window limits, not just the topic and model
         // keys. The limits are only ever overwritten by a later select/fetch
         // when the *new* provider supplies them, so if they survived an unset a

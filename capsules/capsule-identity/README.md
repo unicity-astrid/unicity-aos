@@ -18,7 +18,7 @@ On a `spark.v1.request.build` event:
 
 If no identity exists yet, the prompt includes onboarding instructions. After onboarding, the LLM calls `save_identity`, which saves the chosen callsign, class, aura, signal, and core directives to capsule state and writes `home://.config/spark.toml` as a recovery copy.
 
-State is scoped by Astrid's capsule KV isolation for the calling principal. Session ID is echoed back for react loop correlation.
+State is scoped by the runtime's capsule KV isolation for the calling principal. Session ID is echoed back for react loop correlation.
 
 ## IPC protocol
 

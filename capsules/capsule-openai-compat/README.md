@@ -5,7 +5,7 @@
 
 **The OpenAI-compatible LLM provider for [Unicity AOS](https://github.com/unicity-aos/aos-ce).**
 
-In the OS model, this capsule is a device driver. It translates between Astrid's standardized LLM
+In the OS model, this capsule is a device driver. It translates between the runtime's standardized LLM
 event protocol and any OpenAI-compatible Chat Completions API -- the same way a device driver
 translates between an OS and hardware.
 
@@ -29,7 +29,7 @@ generation and `/v1/models` for discovery. Do not include a `/v1` suffix.
 ## How it works
 
 1. Subscribes to `llm.v1.request.generate.openai-compat` IPC events
-2. Converts Astrid's `Message` format to the OpenAI Chat Completions JSON format (text, tool calls,
+2. Converts the runtime's `Message` format to the OpenAI Chat Completions JSON format (text, tool calls,
    tool results, multipart)
 3. Opens a streaming HTTP connection to `{base_url}/v1/chat/completions` via the HTTP streaming
    airlock
@@ -62,8 +62,8 @@ preserved in the id and is selectable as-is.
 
 ## Configuration
 
-These fields are prompted during `astrid init` or when the capsule is selected during
-`astrid distro install`. Every field except `api_key` has a default or can be left blank.
+These fields are prompted during `aos init` or when the capsule is selected during
+`aos distro apply <source>`. Every field except `api_key` has a default or can be left blank.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -76,7 +76,7 @@ These fields are prompted during `astrid init` or when the capsule is selected d
 
 ### The `model` field is a live select
 
-During `astrid init`, the installer fetches `{base_url}/v1/models` (using the entered `api_key`)
+During `aos init`, the installer fetches `{base_url}/v1/models` (using the entered `api_key`)
 and presents a numbered menu of available models. The configured `model` default is pre-selected.
 If the endpoint cannot be reached the installer falls back to free-text entry.
 
@@ -118,7 +118,7 @@ are unaffected.
 **A subtlety worth knowing:** onboarding can look like it succeeded even when a local endpoint will
 fail at runtime. The installer's live model picker fetches `/v1/models` natively -- it runs outside
 the sandboxed capsule and does not go through the airlock. So the model select menu populates
-correctly during `astrid init`, but every prompt fails once the capsule is live. The fix is an
+correctly during `aos init`, but every prompt fails once the capsule is live. The fix is an
 operator-level exemption (see below), not a retry.
 
 **Granting a local-egress exemption (operator only)**
@@ -145,27 +145,27 @@ active model at any time without touching the capsule configuration.
 
 ```sh
 # List all models available across all configured providers
-astrid models list
+aos models list
 
 # List with machine-readable output
-astrid models list --json
+aos models list --json
 
 # Show the currently active model for your principal
-astrid models current
-astrid models current --json
+aos models current
+aos models current --json
 
 # Select a model by bare id (when unambiguous across providers)
-astrid models set gpt-5.4
-astrid models set llama3.3:70b
+aos models set gpt-5.4
+aos models set llama3.3:70b
 
 # Disambiguate when two providers serve the same model name
-astrid models set openai-compat:gpt-5.4
+aos models set openai-compat:gpt-5.4
 
 # Clear the active selection (falls back to the auto-selected default)
-astrid models unset
+aos models unset
 ```
 
-`astrid models` is a shorthand for `astrid capsule models` -- both reach the same registry
+`aos models` is a shorthand for `aos capsule models` -- both reach the same registry
 capsule verb.
 
 **HTTP API (gateway):**
@@ -191,15 +191,15 @@ All three endpoints are scoped to the authenticated bearer principal.
 If no model is selected and no provider is configured, prompts fail with a clear error:
 
 ```
-No LLM model is selected. Run `astrid models` to choose one, or install/configure an LLM provider.
+No LLM model is selected. Run `aos models` to choose one, or install/configure an LLM provider.
 ```
 
 The react capsule never fabricates a default model -- a missing selection always surfaces as an
 error, not a silent fallback to an arbitrary model.
 
-## Onboarding during `astrid init`
+## Onboarding during `aos init`
 
-When running `astrid init` or installing a distro that includes this capsule, the installer
+When running `aos init` or installing a distro that includes this capsule, the installer
 presents all `group = "llm"` capsules as a multi-select ("which provider(s) do you want to set
 up?"). For each chosen provider it then runs the onboarding sequence in order:
 

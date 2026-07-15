@@ -5,13 +5,13 @@
 
 **The native OpenAI LLM provider for [Unicity AOS](https://github.com/unicity-aos/aos-ce).**
 
-In the OS model, this capsule is a device driver. It translates between Astrid's standardized LLM
+In the OS model, this capsule is a device driver. It translates between the runtime's standardized LLM
 event protocol and OpenAI's Responses API -- with full support for OpenAI-specific features that
 generic compatible providers do not offer.
 
 For generic OpenAI-compatible providers (Groq, Together, Mistral, DeepSeek, Fireworks, LM Studio,
 vLLM, llama.cpp, etc.), use
-[`astrid-capsule-openai-compat`](https://github.com/unicity-astrid/capsule-openai-compat) instead.
+[`astrid-capsule-openai-compat`](https://github.com/unicity-aos/aos-ce/tree/main/capsules/capsule-openai-compat) instead.
 
 ## OpenAI-specific features
 
@@ -28,7 +28,7 @@ vLLM, llama.cpp, etc.), use
 ## How it works
 
 1. Subscribes to `llm.v1.request.generate.openai` IPC events
-2. Converts Astrid's `Message` format to the Responses API `input` format (text, tool calls, tool
+2. Converts the runtime's `Message` format to the Responses API `input` format (text, tool calls, tool
    results, multipart/vision)
 3. Opens a streaming HTTP connection to `https://api.openai.com/v1/responses` via the HTTP
    streaming airlock
@@ -95,8 +95,8 @@ Unknown live ids not covered by the catalog fall back to conservative defaults (
 
 ## Configuration
 
-These fields are prompted during `astrid init` or when the capsule is selected during
-`astrid distro install`. The `model` field is populated live from OpenAI's `/v1/models` once
+These fields are prompted during `aos init` or when the capsule is selected during
+`aos distro apply <source>`. The `model` field is populated live from OpenAI's `/v1/models` once
 `base_url` and `api_key` are entered.
 
 | Variable | Type | Default | Description |
@@ -114,7 +114,7 @@ specific models.
 
 ### The `model` field is a live select
 
-During `astrid init`, the installer fetches `{base_url}/v1/models` (using the entered `api_key`)
+During `aos init`, the installer fetches `{base_url}/v1/models` (using the entered `api_key`)
 and presents a numbered menu of available models. The configured default (`gpt-5.5`) is
 pre-selected. If the endpoint cannot be reached the installer falls back to free-text entry.
 
@@ -140,27 +140,27 @@ active model at any time without touching the capsule configuration.
 
 ```sh
 # List all models available across all configured providers
-astrid models list
+aos models list
 
 # List with machine-readable output
-astrid models list --json
+aos models list --json
 
 # Show the currently active model for your principal
-astrid models current
-astrid models current --json
+aos models current
+aos models current --json
 
 # Select a model by bare id (when unambiguous across providers)
-astrid models set gpt-5.5
-astrid models set o3
+aos models set gpt-5.5
+aos models set o3
 
 # Disambiguate when two providers serve the same model name
-astrid models set openai:gpt-5.5
+aos models set openai:gpt-5.5
 
 # Clear the active selection (falls back to the auto-selected default)
-astrid models unset
+aos models unset
 ```
 
-`astrid models` is a shorthand for `astrid capsule models` -- both reach the same registry
+`aos models` is a shorthand for `aos capsule models` -- both reach the same registry
 capsule verb.
 
 **HTTP API (gateway):**
@@ -186,15 +186,15 @@ All three endpoints are scoped to the authenticated bearer principal.
 If no model is selected and no provider is configured, prompts fail with a clear error:
 
 ```
-No LLM model is selected. Run `astrid models` to choose one, or install/configure an LLM provider.
+No LLM model is selected. Run `aos models` to choose one, or install/configure an LLM provider.
 ```
 
 The react capsule never fabricates a default model -- a missing selection always surfaces as an
 error, not a silent fallback to an arbitrary model.
 
-## Onboarding during `astrid init`
+## Onboarding during `aos init`
 
-When running `astrid init` or installing a distro that includes this capsule, the installer
+When running `aos init` or installing a distro that includes this capsule, the installer
 presents all `group = "llm"` capsules as a multi-select ("which provider(s) do you want to set
 up?"). For each chosen provider it then runs the onboarding sequence in order:
 

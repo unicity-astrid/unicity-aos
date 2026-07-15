@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Tool router capsule for Astrid OS.
+//! Tool router capsule for Unicity AOS.
 //!
 //! Receives `tool.request.execute` events from the react loop, validates
 //! the tool name, forwards the request to the appropriate tool capsule's

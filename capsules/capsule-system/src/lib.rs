@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![allow(missing_docs)]
 
-//! System management tools capsule for Astrid OS.
+//! System management tools capsule for Unicity AOS.
 //!
 //! Gives the LLM typed tools to inspect and manage its own runtime.
 //! All operations go through the kernel's VFS and capability system —
@@ -218,14 +218,13 @@ impl SystemTools {
         match list_entries(WIT_DIR) {
             Ok(files) => {
                 if files.is_empty() {
-                    Ok("No WIT interfaces installed. Run `astrid init` to set up the standard interfaces.".into())
+                    Ok("No WIT interfaces installed. Run `aos init` to set up the standard interfaces.".into())
                 } else {
                     Ok(files.join("\n"))
                 }
             }
             Err(_) => Ok(
-                "WIT directory not found. Run `astrid init` to set up the standard interfaces."
-                    .into(),
+                "WIT directory not found. Run `aos init` to set up the standard interfaces.".into(),
             ),
         }
     }

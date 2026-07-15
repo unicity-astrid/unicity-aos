@@ -75,7 +75,7 @@ fn capsule_toml(name: &str, wasm: &str) -> String {
         "[package]\n\
 name = \"{name}\"\n\
 version = \"0.1.0\"\n\
-description = \"A new Astrid tool capsule\"\n\
+description = \"A new Unicity AOS tool capsule\"\n\
 authors = [\"Your Name <you@example.com>\"]\n\
 astrid-version = \">=0.7.0\"\n\
 \n\
@@ -101,7 +101,7 @@ fn lib_rs() -> String {
     "#![deny(unsafe_code)]\n\
 #![deny(clippy::all)]\n\
 \n\
-//! A new Astrid tool capsule. Replace `hello` with your own tools.\n\
+//! A new Unicity AOS tool capsule. Replace `hello` with your own tools.\n\
 \n\
 use astrid_sdk::prelude::*;\n\
 use astrid_sdk::schemars;\n\

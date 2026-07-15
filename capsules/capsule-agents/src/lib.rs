@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Project instructions capsule for Astrid OS.
+//! Project instructions capsule for Unicity AOS.
 //!
 //! Hooks into the prompt builder pipeline via
 //! `prompt_builder.v1.hook.before_build` and injects the contents of

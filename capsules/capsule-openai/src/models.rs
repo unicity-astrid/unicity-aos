@@ -273,7 +273,7 @@ pub(crate) fn lookup(model_id: &str) -> &'static ModelInfo {
 }
 
 /// One selectable model, shaped to the `provider-entry` WIT record
-/// (`unicity-astrid/wit` `interfaces/registry.wit`). Serialized to JSON and
+/// (`astrid-runtime/wit` `interfaces/registry.wit`). Serialized to JSON and
 /// carried in the `describe-response.providers` array. Field names match the
 /// WIT record exactly so the registry deserializes it directly.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

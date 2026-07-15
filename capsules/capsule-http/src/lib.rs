@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![allow(missing_docs)]
 
-//! HTTP fetch tool capsule for Astrid agents.
+//! HTTP fetch tool capsule for Unicity AOS agents.
 //!
 //! Provides the `fetch_url` tool, giving agents native HTTP access without
 //! shelling out to `curl`. Uses the host's HTTP implementation which includes

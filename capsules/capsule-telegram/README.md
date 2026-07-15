@@ -13,46 +13,49 @@ Telegram Bot uplink capsule for [Unicity AOS](https://github.com/unicity-aos/aos
 - **Message chunking** — HTML-aware splitting for messages exceeding Telegram's 4096-byte limit
 - **Bot commands** — `/start`, `/help`, `/reset`, `/cancel`
 
-## Quick Start
+## Packaging Status
 
-### 1. Create a Telegram Bot
+This capsule is not packaged or shipped in the current Unicity CE distribution.
+Its `wasm32-wasip1` target is not yet supported by the capsule packager, so the
+CLI cannot currently produce an installable `.capsule` artifact from this
+directory. Do not pass the raw WASM output to `aos capsule install`.
+
+For development, compile it directly from an `aos-ce` checkout:
+
+```bash
+cd capsules/capsule-telegram
+cargo build --release
+```
+
+This produces a raw development WASM artifact only. Packaging support must land
+before this capsule can be distributed or installed through AOS.
+
+If an older development copy is already installed, remove it explicitly with:
+
+```bash
+aos capsule remove astrid-capsule-telegram --purge
+```
+
+## Bot Setup
+
+### Create a Telegram Bot
 
 1. Open [@BotFather](https://t.me/BotFather) in Telegram
 2. Send `/newbot` and follow the prompts
 3. Copy the bot token
 
-### 2. Install the Capsule
-
-```bash
-astrid capsule install @unicity-astrid/capsule-telegram
-```
-
-Or from a local checkout:
-
-```bash
-astrid capsule install ~/path/to/capsule-telegram
-```
-
-During installation, you'll be prompted for:
+When packaging support lands, configuration will request:
 - **Bot Token** — the token from BotFather
 - **Allowed User IDs** — comma-separated Telegram user IDs (leave empty to allow all users)
 
-Configuration is preserved across reinstalls (use `astrid capsule remove --purge` to clear it).
+Configuration is preserved across reinstalls.
 
 > **Tip:** To find your Telegram user ID, message [@userinfobot](https://t.me/userinfobot).
-
-### 3. Start the Daemon and Use It
-
-```bash
-astrid start
-```
-
-Open your bot in Telegram and send a message. The agent will respond in the chat.
 
 ## Architecture
 
 ```
-Telegram Bot API                Astrid Kernel IPC Bus
+Telegram Bot API                Runtime Kernel IPC Bus
   │                                │
   │  getUpdates (HTTP long poll)   │
   │◄───────────────────────────────│

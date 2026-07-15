@@ -10,7 +10,7 @@ struct CliProxy;
 ///
 /// A connection binds on its first ingress message and stays bound to that
 /// single principal for its whole lifetime (one connection = one principal,
-/// per `unicity-astrid/astrid#852`):
+/// per `astrid-runtime/astrid#852`):
 ///
 /// * First message carrying a valid `principal` binds to it.
 /// * First message with no `principal` binds to `"default"` (auto-attribution
@@ -339,7 +339,7 @@ impl CliProxy {
             "registry.v1.active_model_changed",
             "registry.v1.selection.*",
             "session.v1.response.*",
-            // Forwards capsule CLI verb results (`astrid capsule <verb>`) back to
+            // Forwards capsule CLI verb results (`aos capsule <verb>`) back to
             // the requesting socket client (astrid#891).
             "cli.v1.command.result.*",
         ];

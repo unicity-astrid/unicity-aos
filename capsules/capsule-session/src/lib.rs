@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Session capsule for Astrid OS.
+//! Session capsule for Unicity AOS.
 //!
 //! Dumb, trustworthy store for conversation history. Holds clean messages:
 //! what the user said, what the assistant replied, what tools returned.
