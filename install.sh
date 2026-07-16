@@ -741,13 +741,14 @@ done
 if ! awk '
   !/^astrid-capsule-[a-z0-9-]+\.capsule$/ { invalid = 1 }
   seen[$0]++ { duplicate = 1 }
-  END { exit invalid || duplicate || NR != 18 }
+  END { exit invalid || duplicate || NR == 0 }
 ' "$bundle/capsule-assets.txt"; then
   echo "release archive has an invalid capsule asset manifest" >&2
   exit 1
 fi
+expected_capsule_count=$(wc -l < "$bundle/capsule-assets.txt" | tr -d ' ')
 capsule_count=$(find "$bundle/capsules" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')
-[ "$capsule_count" -eq 18 ] || { echo "release archive capsule set is incomplete" >&2; exit 1; }
+[ "$capsule_count" -eq "$expected_capsule_count" ] || { echo "release archive capsule set is incomplete" >&2; exit 1; }
 while IFS= read -r capsule; do
   capsule_path="$bundle/capsules/$capsule"
   [ -f "$capsule_path" ] && [ ! -L "$capsule_path" ] || {

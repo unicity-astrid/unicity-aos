@@ -192,7 +192,7 @@ fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
 
 #[cfg(not(unix))]
 fn same_file(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
-    true
+    false
 }
 
 impl MigrationLock {

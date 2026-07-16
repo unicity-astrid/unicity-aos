@@ -86,7 +86,7 @@ impl AosHome {
                 format!("{variable} must be an absolute path"),
             ));
         }
-        validate_path_entry(&root.join("runtime/bin"), variable)?;
+        validate_path_entry(&root, variable)?;
         Ok(root)
     }
 
