@@ -67,8 +67,10 @@ commit, and BLAKE3 digest.
 `.github/workflows/promote-channel.yml` is manual-only and must run from `main`.
 It authenticates an already-published immutable AOS release, requires both
 readiness gates, verifies that the tag resolves to the recorded source commit,
-and requires a generation greater than the authenticated current pointer. The
-workflow signs the new pointer before its publication job.
+and requires every new promotion to advance the authenticated transaction
+floor. An exact same-generation rerun is accepted only when it reuses the exact
+signed transaction bytes left by an interrupted attempt. The workflow signs a
+new pointer before its publication job.
 
 Create these GitHub environments with Joshua as the required reviewer and
 prevent administrator bypass:
@@ -78,15 +80,61 @@ prevent administrator bypass:
 - `aos-channel-dev`
 - `aos-channel-nightly`
 
+Add an `AOS_RELEASE_ADMIN_TOKEN` secret to the protected `release` environment.
+It needs repository Administration write permission for the one-time immutable
+release bootstrap and Administration read permission for release preflight.
+The bootstrap uses its scoped `GITHUB_TOKEN` with Contents write permission to
+create the three channel releases; the administrator token is never used to
+publish release assets.
+
 The YAML environment name alone is not an approval policy; repository
 environment settings and tag rules are part of the release boundary. Protect
-calendar-version tags from force updates and deletion. The channel publication
-job retains immutable generation-named assets before replacing the signed
-current pointer. Publishing its bundle first makes readers racing the two asset
-updates fail closed.
+calendar-version tags from force updates and deletion. Before the first product
+release, run `.github/workflows/bootstrap-channels.yml` once from `main`. Through
+the protected `release` environment it creates all three empty, published,
+mutable channel prereleases while repository release immutability is disabled,
+then enables repository immutable releases and verifies that the three earlier
+channel containers remain mutable. GitHub applies the setting only to future
+releases. Promotion refuses a missing, draft, non-prerelease, or immutable
+channel container; it never creates one on demand.
 
-No channel is created by merging this foundation. The current false readiness
-flags continue to block release and promotion workflows.
+The release workflow requires repository immutable releases to be enabled,
+refuses every conflicting release record for its tag, assembles the complete
+signed asset set as a write-once draft, and publishes only after that upload
+succeeds. It then verifies that GitHub marked the product release immutable.
+The channel publication job retains an immutable transaction and its exact
+generation-named pointer and bundle before replacing the signed current pointer.
+Publishing the current bundle first makes readers racing the two asset updates
+fail closed.
+
+### Interrupted publication recovery
+
+A failed immutable release upload may leave a draft release. Rerunning the tag
+workflow through the protected `release` environment publishes that draft only
+when it has never been published and the existing draft independently passes
+the complete asset contract: exact inventory, tagged source commit and
+compatibility, release metadata, checksums, capsule contents, and every Sigstore
+signature. Fresh keyless signatures are not expected to reproduce prior bundle
+bytes. The workflow never changes an existing asset. If the draft is incomplete,
+delete only the never-published draft after confirming the signed tag still
+resolves to the intended commit, then rerun the release workflow. A release that
+was ever published, downloaded, or made non-draft again must keep its tag and
+bytes; issue a new product version instead of deleting, retagging, or replacing
+it.
+
+Channel promotion is transaction-first. A completed transaction asset is the
+recovery boundary for its generation. Rerunning the same generation unpacks and
+authenticates those exact bytes, repairs either missing immutable history asset,
+then replaces the mutable current pair. Assets left by an interrupted GitHub
+upload in `starter` or `open` state are removed automatically before retry.
+Uploaded assets must be nonempty and unique. An uploaded transaction or history
+asset with conflicting bytes fails closed and requires incident review; it is
+never clobbered. A malformed or mismatched mutable current pair is recovered
+only when its pointer exactly matches an authenticated transaction.
+
+Merging this foundation creates no channel container or pointer. The protected
+bootstrap is an explicit one-time operation, and the current false readiness
+flags continue to block product release and promotion workflows.
 
 The three signed channel identities are complete, but automated dev-candidate
 and nightly build trains are not enabled by this change. Until those immutable

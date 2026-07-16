@@ -47,6 +47,8 @@ jobs:
       - run: python3 scripts/test_validate_release_contract.py
       - run: python3 scripts/test_release_metadata.py
       - run: python3 scripts/test_channel_transaction.py
+      - run: python3 scripts/test_channel_publication.py
+      - run: python3 scripts/test_release_publication.py
       - run: bash scripts/test-channel-workflow-contract.sh
       - run: python3 scripts/test_create_astrid_094_fixture.py
       - run: bash scripts/test-package-release.sh

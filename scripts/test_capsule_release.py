@@ -58,6 +58,8 @@ def write_fixture(path: Path, spec: CapsuleSpec, *, mutation: Optional[str] = No
             device = tarfile.TarInfo("device")
             device.type = tarfile.CHRTYPE
             archive.addfile(device)
+        if mutation == "unexpected-member":
+            add_bytes(archive, "unexpected.txt", b"not allowed")
         if mutation == "wrong-manifest":
             manifest = manifest.replace(
                 f'name = "{spec.package}"'.encode(),
@@ -127,6 +129,9 @@ class CapsuleReleaseTests(unittest.TestCase):
 
     def test_rejects_device(self) -> None:
         self.assert_mutation_rejected("device")
+
+    def test_rejects_unexpected_member(self) -> None:
+        self.assert_mutation_rejected("unexpected-member")
 
     def test_rejects_wrong_embedded_identity(self) -> None:
         self.assert_mutation_rejected("wrong-manifest")

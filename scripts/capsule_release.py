@@ -215,6 +215,14 @@ def validate_archive(asset: Path, spec: CapsuleSpec) -> None:
             names[canonical_name] = member
             portability_names[portability_name] = canonical_name
 
+        expected_members = {"Capsule.toml", *spec.components}
+        if set(names) != expected_members:
+            raise ContractError(
+                f"{asset}: archive member set differs; "
+                f"missing={sorted(expected_members - set(names))}, "
+                f"unexpected={sorted(set(names) - expected_members)}"
+            )
+
         manifest_member = names.get("Capsule.toml")
         if manifest_member is None or not manifest_member.isfile():
             raise ContractError(f"{asset}: Capsule.toml is missing")

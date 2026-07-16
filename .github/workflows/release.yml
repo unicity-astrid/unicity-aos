@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: aos-release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   B3SUM_VERSION: 1.8.5
@@ -212,6 +216,13 @@ jobs:
         with:
           egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Require repository immutable releases
+        env:
+          GH_TOKEN: ${{ secrets.AOS_RELEASE_ADMIN_TOKEN }}
+        run: |
+          [[ -n "$GH_TOKEN" ]]
+          gh api "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            --jq 'select(.enabled == true) | true' | grep -Fx true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -263,7 +274,30 @@ jobs:
           python3 scripts/release_metadata.py validate-release \
             --require-ready "$RELEASE_METADATA"
           echo "RELEASE_METADATA=$RELEASE_METADATA" >> "$GITHUB_ENV"
+      - name: Detect an interrupted never-published draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASES="$RUNNER_TEMP/releases-preflight.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --paginate --slurp > "$RELEASES"
+          MATCH_COUNT=$(jq -er --arg tag "$GITHUB_REF_NAME" \
+            '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES")
+          [[ "$MATCH_COUNT" -le 1 ]]
+          if [[ "$MATCH_COUNT" == 0 ]]; then
+            echo "EXISTING_RELEASE=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          jq -e --arg tag "$GITHUB_REF_NAME" \
+            '.[][] | select(.tag_name == $tag) | select(.draft == true and .prerelease == false and .published_at == null)' \
+            "$RELEASES" >/dev/null || {
+            echo "release $GITHUB_REF_NAME already exists and is not a never-published draft" >&2
+            exit 1
+          }
+          echo "EXISTING_RELEASE=1" >> "$GITHUB_ENV"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        if: env.EXISTING_RELEASE != '1'
         with:
           subject-path: |
             artifacts/*.tar.gz
@@ -272,8 +306,8 @@ jobs:
             artifacts/SHA256SUMS.txt
             artifacts/runtime-compatibility.toml
             artifacts/unicity-aos-*-release.toml
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign release assets
+        if: env.EXISTING_RELEASE != '1'
         env:
           COSIGN_YES: 'true'
         run: |
@@ -282,6 +316,7 @@ jobs:
             cosign sign-blob --yes --bundle "${asset}.sigstore.json" "$asset"
           done
       - name: Verify release signatures use the exact tag identity
+        if: env.EXISTING_RELEASE != '1'
         run: |
           cd artifacts
           IDENTITY="https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
@@ -308,8 +343,70 @@ jobs:
           curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh
           \`\`\`
           EOF
-      - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Refuse conflicting releases or authenticate a complete draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASES="$RUNNER_TEMP/releases.json"
+          MATCHING_RELEASE="$RUNNER_TEMP/matching-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --paginate \
+            --slurp > "$RELEASES"
+          jq --arg tag "$GITHUB_REF_NAME" \
+            '[.[][] | select(.tag_name == $tag)]' "$RELEASES" > "$MATCHING_RELEASE"
+          MATCH_COUNT=$(jq -er length "$MATCHING_RELEASE")
+          [[ "$MATCH_COUNT" -le 1 ]]
+          if [[ "$MATCH_COUNT" == 0 ]]; then
+            echo "RECOVER_DRAFT=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          jq -e '.[0] | .draft == true and .prerelease == false and .published_at == null' \
+            "$MATCHING_RELEASE" >/dev/null || {
+            echo "release $GITHUB_REF_NAME already exists and is not a never-published draft" >&2
+            echo "release assets are write-once; never clobber, delete, or retag a published version" >&2
+            exit 1
+          }
+          RELEASE_ID=$(jq -er '.[0].id' "$MATCHING_RELEASE")
+          ASSETS="$RUNNER_TEMP/release-assets.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --paginate --slurp > "$ASSETS"
+          jq -e '[.[][]] | all(.state == "uploaded" and .size > 0)' "$ASSETS" >/dev/null
+          jq -e '[.[][]] as $assets | ([$assets[].name] | unique | length) == ($assets | length)' \
+            "$ASSETS" >/dev/null
+
+          EXISTING_ASSETS="$RUNNER_TEMP/existing-release-assets"
+          mkdir "$EXISTING_ASSETS"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$EXISTING_ASSETS"
+          PAYLOADS="$RUNNER_TEMP/existing-release-payloads.txt"
+          python3 scripts/release_publication.py \
+            --artifacts "$EXISTING_ASSETS" \
+            --version "$GITHUB_REF_NAME" \
+            --source-commit "$GITHUB_SHA" > "$PAYLOADS"
+          (
+            cd "$EXISTING_ASSETS"
+            b3sum --check BLAKE3SUMS.txt
+            sha256sum --check SHA256SUMS.txt
+          )
+          IDENTITY="https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          while IFS= read -r asset; do
+            cosign verify-blob \
+              --bundle "$EXISTING_ASSETS/${asset}.sigstore.json" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$IDENTITY" \
+              --use-signed-timestamps \
+              "$EXISTING_ASSETS/$asset"
+          done < "$PAYLOADS"
+          echo "RECOVER_DRAFT=1" >> "$GITHUB_ENV"
+      - name: Create draft release with write-once assets
+        if: env.RECOVER_DRAFT != '1'
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
+          draft: true
+          overwrite_files: false
+          fail_on_unmatched_files: true
           files: |
             artifacts/*.tar.gz
             artifacts/*.capsule
@@ -319,3 +416,16 @@ jobs:
             artifacts/unicity-aos-*-release.toml
             artifacts/*.sigstore.json
           body_path: release-notes.md
+      - name: Publish completed immutable release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          draft: false
+          overwrite_files: false
+          body_path: release-notes.md
+      - name: Verify published release is immutable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+            --jq 'select(.draft == false and .immutable == true) | true' \
+            | grep -Fx true
