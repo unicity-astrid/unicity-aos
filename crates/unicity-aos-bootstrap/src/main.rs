@@ -348,6 +348,11 @@ fn leading_owned_root(args: &[OsString]) -> Option<&str> {
     }
 }
 
+// Enumerate the global flags and their arities from the bundled Astrid Runtime
+// CLI surface (pinned to astrid-core/astrid-uplink 0.9.4 in Cargo.toml). If the
+// runtime adds a new global flag that accepts an argument this allowlist must be
+// updated; until then the function degrades to `Err(())` and `leading_owned_root`
+// scans the full arg list for any AOS-owned root, which is a safe fallback.
 fn leading_runtime_root_index(args: &[OsString]) -> Result<Option<usize>, ()> {
     let mut index = 0;
     while index < args.len() {

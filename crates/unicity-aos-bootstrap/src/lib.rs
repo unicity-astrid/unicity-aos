@@ -140,7 +140,7 @@ impl AosHome {
     {
         let configured = get("UNICITY_AOS_CAPSULE_DIR");
         let path = match configured {
-            Some(path) => Self::validated_environment_root(path, "UNICITY_AOS_CAPSULE_DIR")?,
+            Some(path) => Self::validated_capsule_dir_override(path)?,
             None => self
                 .root
                 .join("releases")
@@ -148,6 +148,27 @@ impl AosHome {
                 .join("capsules"),
         };
         validate_capsule_dir(&path, &capsule_assets_from_manifest()?)
+    }
+
+    fn validated_capsule_dir_override(root: OsString) -> io::Result<PathBuf> {
+        const VARIABLE: &str = "UNICITY_AOS_CAPSULE_DIR";
+        if root.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{VARIABLE} must not be empty"),
+            ));
+        }
+        let root = PathBuf::from(root);
+        if !root.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{VARIABLE} must be an absolute path"),
+            ));
+        }
+        // Validate the capsule directory root directly; unlike AOS_HOME this
+        // path does not own a `runtime/bin` subdirectory.
+        validate_path_entry(&root, VARIABLE)?;
+        Ok(root)
     }
 
     /// Materialize the Unicity CE manifest embedded in this product binary.

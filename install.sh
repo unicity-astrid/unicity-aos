@@ -738,6 +738,8 @@ for file in bin/aos libexec/install.sh runtime/bin/astrid runtime/bin/astrid-dae
   [ -f "$bundle/$file" ] || { echo "release archive is missing $file" >&2; exit 1; }
 done
 [ -d "$bundle/capsules" ] || { echo "release archive has no capsule directory" >&2; exit 1; }
+# 18 = capsule count from distros/community/unicity-ce/Distro.toml; update here
+# whenever the embedded CE manifest gains or loses capsule entries.
 if ! awk '
   !/^astrid-capsule-[a-z0-9-]+\.capsule$/ { invalid = 1 }
   seen[$0]++ { duplicate = 1 }
