@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-registry"
+name = "aos-registry"
 version = "0.2.0"
 edition = "2024"
 description = "LLM provider registry capsule for Unicity AOS"

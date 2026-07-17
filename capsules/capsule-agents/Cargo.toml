@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-agents"
+name = "aos-agents"
 version = "0.2.0"
 edition = "2024"
 description = "Injects project instructions from AGENTS.md into the system prompt"

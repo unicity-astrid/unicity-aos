@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-identity"
+name = "aos-identity"
 version = "0.2.0"
 description = "Agent identity capsule — owns spark config, builds system prompt"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "identity-builder"
-file = "astrid_capsule_identity.wasm"
+file = "aos_identity.wasm"
 type = "executable"
 capabilities = { fs_read = ["home://"], fs_write = ["home://"] }
 

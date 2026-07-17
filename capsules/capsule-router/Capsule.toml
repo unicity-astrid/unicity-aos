@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-router"
+name = "aos-router"
 version = "0.2.0"
 description = "Tool execution routing middleware for Unicity AOS"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "router"
-file = "astrid_capsule_router.wasm"
+file = "aos_router.wasm"
 type = "executable"
 
 [exports]

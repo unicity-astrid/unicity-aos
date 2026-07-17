@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-skills"
+name = "aos-skills"
 version = "0.2.0"
 description = "Skills Loader - Reads and loads Agent Skills via VFS"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "skills-loader"
-file = "astrid_capsule_skills.wasm"
+file = "aos_skills.wasm"
 type = "executable"
 # Broad home:// read needed — callers pass arbitrary dir_path (e.g. ".gemini/skills")
 # and the capsule scans both CWD and home trees under that path.

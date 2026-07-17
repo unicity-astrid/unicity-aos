@@ -1,4 +1,4 @@
-# astrid-capsule-openai
+# aos-openai
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -11,7 +11,7 @@ generic compatible providers do not offer.
 
 For generic OpenAI-compatible providers (Groq, Together, Mistral, DeepSeek, Fireworks, LM Studio,
 vLLM, llama.cpp, etc.), use
-[`astrid-capsule-openai-compat`](https://github.com/unicity-aos/aos-ce/tree/main/capsules/capsule-openai-compat) instead.
+[`aos-openai-compat`](https://github.com/unicity-aos/aos-ce/tree/main/capsules/capsule-openai-compat) instead.
 
 ## OpenAI-specific features
 

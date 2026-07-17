@@ -17,7 +17,7 @@
 //! - **`max_output_tokens`** at the top level
 //!
 //! For generic OpenAI-compatible providers that still use `/v1/chat/completions`
-//! (Groq, Together, Mistral, etc.), use `astrid-capsule-openai-compat` instead.
+//! (Groq, Together, Mistral, etc.), use `aos-openai-compat` instead.
 
 mod models;
 mod schemas;

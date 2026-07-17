@@ -455,7 +455,7 @@ it before touching a byte of WASM. Every section below is optional except
 
 ```toml
 [package]
-name = "astrid-capsule-http"   # required; lowercase ASCII alphanumeric + hyphens
+name = "aos-http"   # required; lowercase ASCII alphanumeric + hyphens
 version = "0.1.0"             # required; three-part numeric
 description = "HTTP fetch tool"
 authors = ["Name <e@mail>"]
@@ -474,7 +474,7 @@ One per WASM binary (a capsule usually has exactly one).
 ```toml
 [[component]]
 id = "http-tools"
-file = "astrid_capsule_http.wasm"  # path relative to Capsule.toml; crate name, hyphens->underscores
+file = "aos_http.wasm"  # path relative to Capsule.toml; crate name, hyphens->underscores
 type = "executable"               # "executable" (default) or "library"
 ```
 

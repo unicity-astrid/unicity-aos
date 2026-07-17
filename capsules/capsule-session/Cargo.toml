@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-session"
+name = "aos-session"
 version = "0.2.0"
 edition = "2024"
 description = "Persistent conversation session store for Unicity AOS"

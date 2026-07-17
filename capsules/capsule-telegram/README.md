@@ -33,7 +33,7 @@ before this capsule can be distributed or installed through AOS.
 If an older development copy is already installed, remove it explicitly with:
 
 ```bash
-aos capsule remove astrid-capsule-telegram --purge
+aos capsule remove aos-telegram --purge
 ```
 
 ## Bot Setup

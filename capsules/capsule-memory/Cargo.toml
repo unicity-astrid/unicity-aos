@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-memory"
+name = "aos-memory"
 version = "0.2.0"
 edition = "2024"
 description = "Cross-session memory capsule for Unicity AOS"

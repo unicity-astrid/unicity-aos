@@ -463,8 +463,8 @@ mod tests {
             Some("openai-compat")
         );
         assert_eq!(
-            request_topic_qualifier("llm.v1.request.generate.astrid-capsule-openai-compat"),
-            Some("astrid-capsule-openai-compat")
+            request_topic_qualifier("llm.v1.request.generate.aos-openai-compat"),
+            Some("aos-openai-compat")
         );
         assert_eq!(request_topic_qualifier("llm.v1.request.generate."), None);
         assert_eq!(request_topic_qualifier("llm.v1.request.generate.*"), None);

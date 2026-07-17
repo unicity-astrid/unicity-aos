@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-memory"
+name = "aos-memory"
 version = "0.2.0"
 description = "Injects cross-session memory into the system prompt via prompt builder hooks"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "memory"
-file = "astrid_capsule_memory.wasm"
+file = "aos_memory.wasm"
 type = "executable"
 capabilities = { fs_read = ["cwd://", "home://"] }
 

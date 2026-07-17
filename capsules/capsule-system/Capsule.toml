@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-system"
+name = "aos-system"
 version = "0.2.0"
 description = "System management tools — lets the LLM inspect and manage its own runtime"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "system-tools"
-file = "astrid_capsule_system.wasm"
+file = "aos_system.wasm"
 type = "executable"
 
 [capabilities]

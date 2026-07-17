@@ -106,12 +106,12 @@ def source_contract() -> list[CapsuleSpec]:
                 f"{member}: Cargo package {cargo_name} {cargo_version} does not match "
                 f"Capsule package {manifest_name} {manifest_version}"
             )
-        if not cargo_name.startswith("astrid-capsule-"):
-            raise ContractError(f"{member}: published package identity must remain astrid-capsule-*")
-        expected_name = f"astrid-{directory}"
+        if not cargo_name.startswith("aos-"):
+            raise ContractError(f"{member}: published package identity must use aos-*")
+        expected_name = f"aos-{directory.removeprefix('capsule-')}"
         if cargo_name != expected_name:
             raise ContractError(
-                f"{member}: published package identity must remain {expected_name}, got {cargo_name}"
+                f"{member}: published package identity must be {expected_name}, got {cargo_name}"
             )
 
         component_entries = manifest.get("component")

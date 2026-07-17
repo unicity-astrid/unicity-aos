@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-shell"
+name = "aos-shell"
 version = "0.2.0"
 edition = "2024"
 description = "Core shell execution tools for Unicity AOS"

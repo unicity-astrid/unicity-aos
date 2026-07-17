@@ -553,7 +553,7 @@ impl ReactLoop {
         // drops the subscription on every return path (Drop on
         // `Subscription`). Session publishes `{correlation_id, new_session_id,
         // old_session_id}` at the root of the reply payload (see
-        // `astrid-capsule-session::handle_clear`) — no envelope wrapper.
+        // `aos-session::handle_clear`) — no envelope wrapper.
         let response: serde_json::Value = ipc::request_response(
             "session.v1.request.clear",
             "session.v1.response.clear",
@@ -1767,7 +1767,7 @@ impl ReactLoop {
     /// # IPC envelope format
     ///
     /// Session publishes `{correlation_id, messages}` at the root of the
-    /// reply payload (see `astrid-capsule-session::handle_get_messages`).
+    /// reply payload (see `aos-session::handle_get_messages`).
     /// `ipc::request_response` deserialises the raw JSON without an envelope
     /// wrapper, so `messages` lives at the root of `response`.
     fn fetch_messages_inner(
@@ -1794,7 +1794,7 @@ impl ReactLoop {
 
         // Session publishes `{correlation_id, messages}` at the top
         // level of the response payload (see
-        // `astrid-capsule-session::handle_get_messages`). No envelope
+        // `aos-session::handle_get_messages`). No envelope
         // wrapper — the SDK's `request_response` already deserialised
         // the raw JSON payload; `messages` lives at the root.
         let messages: Vec<Message> = response

@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-hook-bridge"
+name = "aos-hook-bridge"
 version = "0.2.0"
 description = "Hook bridge capsule — maps lifecycle events to semantic hooks with merge strategies"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "hook-bridge"
-file = "astrid_capsule_hook_bridge.wasm"
+file = "aos_hook_bridge.wasm"
 type = "executable"
 
 [exports]

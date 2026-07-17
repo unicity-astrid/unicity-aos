@@ -1,7 +1,7 @@
 # Community Edition capsule release allowlist.
 #
 # Keep this in distro order. Published artifact identities come from each
-# capsule's Cargo.toml/Capsule.toml and remain astrid-capsule-*.
+# capsule's Cargo.toml/Capsule.toml and remain aos-*.
 capsule-cli
 capsule-registry
 capsule-openai-compat

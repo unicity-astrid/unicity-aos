@@ -58,7 +58,7 @@ const LLM_DESCRIBE_RESPONSE_TOPIC: &str = "llm.v1.response.describe";
 /// CLI run/result protocol topics (the scriptable `models` verb). The run
 /// topic is the providing capsule id; results are keyed by request id. See
 /// `astrid` `crates/astrid-cli/src/commands/capsule_verb.rs`.
-const CLI_RUN_TOPIC: &str = "cli.v1.command.run.astrid-capsule-registry";
+const CLI_RUN_TOPIC: &str = "cli.v1.command.run.aos-registry";
 const CLI_RESULT_TOPIC_PREFIX: &str = "cli.v1.command.result.";
 
 /// Maximum accepted length of an incoming `req_id`. The CLI sends a 32-char

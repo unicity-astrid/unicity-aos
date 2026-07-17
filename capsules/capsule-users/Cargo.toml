@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-users"
+name = "aos-users"
 version = "0.1.0"
 edition = "2024"
 description = "Within-principal user identity store for Unicity AOS"

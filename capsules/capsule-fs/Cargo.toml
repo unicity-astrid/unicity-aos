@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-fs"
+name = "aos-fs"
 version = "0.2.0"
 edition = "2024"
 description = "Core filesystem tools for Unicity AOS"

@@ -1,4 +1,4 @@
-# astrid-capsule-registry
+# aos-registry
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -27,7 +27,7 @@ On capsule reload events, the registry re-discovers providers, reconciles a stal
 | Subscribe | `registry.v1.set_active_model` | Sets active model by ID |
 | Publish | `registry.v1.active_model_changed` | Emitted on model switch |
 | Publish | `registry.v1.response.*` | Per-request responses |
-| Subscribe | `cli.v1.command.run.astrid-capsule-registry` | Scriptable `models` verb runs |
+| Subscribe | `cli.v1.command.run.aos-registry` | Scriptable `models` verb runs |
 | Publish | `cli.v1.command.result.*` | Scriptable verb results, keyed by request id |
 
 ## CLI integration
@@ -36,7 +36,7 @@ TUI slash command (`cli.v1.command.execute`):
 - `/models` - emits a `SelectionRequired` payload for the TUI picker
 - `/models <model_id>` - direct model switch
 
-Scriptable verb (`aos capsule models ...`, over `cli.v1.command.run.astrid-capsule-registry` with the reply on `cli.v1.command.result.<req_id>`):
+Scriptable verb (`aos capsule models ...`, over `cli.v1.command.run.aos-registry` with the reply on `cli.v1.command.result.<req_id>`):
 - `models list [--json]` - list available models (canonical ids, active marked)
 - `models current [--json]` - print the active model id (or `none`)
 - `models set <id>` - switch the active model; accepts a bare model name when unambiguous, persists the canonical `"<capsule>:<model>"` form

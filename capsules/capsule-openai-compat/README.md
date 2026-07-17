@@ -1,4 +1,4 @@
-# astrid-capsule-openai-compat
+# aos-openai-compat
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -130,7 +130,7 @@ it. The default is no exemptions.
 ```toml
 [security.capsule_local_egress]
 # host:port (or host:*) endpoints this capsule may reach even though they resolve to a local address
-"astrid-capsule-openai-compat" = ["127.0.0.1:1234", "192.168.1.50:11434"]
+"aos-openai-compat" = ["127.0.0.1:1234", "192.168.1.50:11434"]
 ```
 
 The exemption only lifts the airlock for those specific `host:port` pairs. It does not change the

@@ -67,7 +67,7 @@ pub struct EmptyArgs {}
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct ScaffoldArgs {
-    /// Capsule name, e.g. `astrid-capsule-weather`. Becomes the crate name.
+    /// Capsule name, e.g. `aos-weather`. Becomes the crate name.
     pub name: String,
     /// Capsule kind. Only `"tool"` is supported in v1 (the default).
     #[serde(default)]
@@ -94,7 +94,7 @@ pub struct ManifestArgs {
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct DoctorArgs {
-    /// Installed capsule name, e.g. `astrid-capsule-system`.
+    /// Installed capsule name, e.g. `aos-system`.
     pub name: String,
 }
 
@@ -421,14 +421,14 @@ fn suggest_llm(intent: &str, out: &mut Vec<Value>) {
         out.push(cap(
             "be an LLM provider",
             "[exports]\n\"astrid:llm\" = \"1.0.0\"\n\n[capabilities]\nnet = [\"*\"]\n\n[publish]\n\"llm.v1.stream.<provider>\" = { wit = \"@unicity-astrid/wit/llm/stream-event\" }\n\"llm.v1.response.describe\" = { wit = \"@unicity-astrid/wit/llm/describe-response\" }\n\n[subscribe]\n\"llm.v1.request.describe\" = { wit = \"@unicity-astrid/wit/llm/describe-request\", handler = \"llm_describe\" }\n\"llm.v1.request.generate.<provider>\" = { wit = \"@unicity-astrid/wit/llm/generate-request\", handler = \"handle_llm_request\" }",
-            "Export astrid:llm, subscribe generate.<provider> + request.describe, publish a stream + describe-response. The registry fans out to the unsuffixed describe topic. Mirrors astrid-capsule-openai-compat.",
+            "Export astrid:llm, subscribe generate.<provider> + request.describe, publish a stream + describe-response. The registry fans out to the unsuffixed describe topic. Mirrors aos-openai-compat.",
         ));
     }
     if consumer {
         out.push(cap(
             "call an LLM (consumer)",
             "[imports]\n\"astrid:llm\" = \"^1.0\"\n\n[publish]\n\"llm.v1.request.generate.*\" = { wit = \"@unicity-astrid/wit/llm/generate-request\" }\n\n[subscribe]\n\"llm.v1.stream.*\" = { wit = \"@unicity-astrid/wit/llm/stream-event\", handler = \"handle_llm_stream\" }",
-            "Import astrid:llm, publish a generate request to the active provider's topic, subscribe its stream. Mirrors how astrid-capsule-react drives a provider.",
+            "Import astrid:llm, publish a generate request to the active provider's topic, subscribe its stream. Mirrors how aos-react drives a provider.",
         ));
     }
 }

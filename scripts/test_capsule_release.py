@@ -87,7 +87,7 @@ class CapsuleReleaseTests(unittest.TestCase):
     def test_source_contract_has_exact_community_set(self) -> None:
         self.assertEqual(len(self.specs), 18)
         self.assertEqual(len({spec.asset for spec in self.specs}), 18)
-        self.assertNotIn("astrid-capsule-telegram.capsule", {spec.asset for spec in self.specs})
+        self.assertNotIn("aos-telegram.capsule", {spec.asset for spec in self.specs})
         distro = Path(__file__).resolve().parent.parent / "distros/community/unicity-ce/Distro.toml"
         text = distro.read_text(encoding="utf-8")
         self.assertNotIn("@unicity-aos/", text)

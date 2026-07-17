@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-prompt-builder"
+name = "aos-prompt-builder"
 version = "0.2.0"
 description = "Assembles LLM prompts with plugin interceptor hooks for context injection and override"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "prompt-builder"
-file = "astrid_capsule_prompt_builder.wasm"
+file = "aos_prompt_builder.wasm"
 type = "executable"
 
 [publish]

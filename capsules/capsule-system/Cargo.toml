@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-system"
+name = "aos-system"
 version = "0.2.0"
 edition = "2024"
 description = "System management tools for Unicity AOS"

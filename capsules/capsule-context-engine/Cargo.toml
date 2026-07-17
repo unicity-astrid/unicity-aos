@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-context-engine"
+name = "aos-context-engine"
 version = "0.2.0"
 edition = "2024"
 description = "Context Engine capsule — pluggable compaction with interceptor hook support"

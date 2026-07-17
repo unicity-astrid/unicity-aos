@@ -1,4 +1,4 @@
-# astrid-capsule-system
+# aos-system
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -25,7 +25,7 @@ The LLM uses these tools to understand its own runtime before making changes. A 
 
 1. `list_capsules` -- see what's installed
 2. `read_interface session` -- understand the session interface contract
-3. `inspect_capsule astrid-capsule-session` -- read the current implementation
+3. `inspect_capsule aos-session` -- read the current implementation
 4. Build and install a replacement (via shell or future system tools)
 
 ## Security

@@ -42,7 +42,7 @@ pub struct EmptyArgs {}
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct InspectCapsuleArgs {
-    /// Capsule name (e.g. `astrid-capsule-session`).
+    /// Capsule name (e.g. `aos-session`).
     pub name: String,
 }
 

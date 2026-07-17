@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-openai"
+name = "aos-openai"
 version = "0.2.0"
 description = "Native OpenAI LLM Provider"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.5.0"
 
 [[component]]
 id = "openai"
-file = "astrid_capsule_openai.wasm"
+file = "aos_openai.wasm"
 type = "executable"
 capabilities = { net = ["api.openai.com"] }
 

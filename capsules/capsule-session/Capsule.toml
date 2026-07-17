@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-session"
+name = "aos-session"
 version = "0.2.0"
 description = "Persistent conversation session store"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "session"
-file = "astrid_capsule_session.wasm"
+file = "aos_session.wasm"
 type = "executable"
 
 [exports]

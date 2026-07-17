@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-react"
+name = "aos-react"
 version = "0.2.2"
 edition = "2024"
 description = "ReAct loop capsule: stateless coordinator for LLM reasoning and tool execution"

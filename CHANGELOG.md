@@ -5,7 +5,7 @@
 ### Added
 
 - The `aos` product command and product-owned `~/.aos` state boundary.
-- A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.0, emplaced
+- A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.1, emplaced
   as the bundled runtime's operator-enforced distro.
 - Reproducible macOS and Linux release bundles with primary BLAKE3 and
   Homebrew-compatible SHA-256 checksum manifests, Sigstore bundles, GitHub
@@ -19,7 +19,7 @@
 - Runtime import holds the standalone daemon's existing singleton lock without
   changing the source, and interrupted unreceipted cutovers always roll back
   before recopying the current locked source.
-- A signed release path for the 18 installable `astrid-capsule-*` artifacts
+- A signed release path for the 18 installable `aos-*` artifacts
   built from this source tree and selected locally by Community Edition, with
   exact source/manifest identity checks, product-archive inclusion, offline
   provisioning, archive safety validation, BLAKE3 checksums, SHA-256

@@ -782,7 +782,7 @@ for file in bin/aos libexec/install.sh runtime/bin/astrid runtime/bin/astrid-dae
 done
 [ -d "$bundle/capsules" ] || { echo "release archive has no capsule directory" >&2; exit 1; }
 if ! awk '
-  !/^astrid-capsule-[a-z0-9-]+\.capsule$/ { invalid = 1 }
+  !/^aos-[a-z0-9-]+\.capsule$/ { invalid = 1 }
   seen[$0]++ { duplicate = 1 }
   END { exit invalid || duplicate || NR == 0 }
 ' "$bundle/capsule-assets.txt"; then

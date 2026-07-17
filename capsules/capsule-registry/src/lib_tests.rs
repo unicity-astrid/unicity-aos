@@ -62,7 +62,7 @@ fn req_id_validation_accepts_cli_shape_rejects_topic_injection() {
 fn cli_run_topic_uses_provider_capsule_package_id() {
     // The CLI publishes to cli.v1.command.run.<provider_capsule>, where
     // provider_capsule comes from GetCommands and is the package id.
-    assert_eq!(CLI_RUN_TOPIC, "cli.v1.command.run.astrid-capsule-registry");
+    assert_eq!(CLI_RUN_TOPIC, "cli.v1.command.run.aos-registry");
 
     // Ensure Capsule.toml subscription matches CLI_RUN_TOPIC to prevent drift.
     let capsule_toml = include_str!("../Capsule.toml");

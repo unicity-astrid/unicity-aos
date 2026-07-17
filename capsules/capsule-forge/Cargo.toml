@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-forge"
+name = "aos-forge"
 version = "0.1.0"
 edition = "2024"
 description = "Capsule-authoring forge for Unicity AOS components"

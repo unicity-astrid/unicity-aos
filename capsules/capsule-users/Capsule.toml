@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-users"
+name = "aos-users"
 version = "0.1.0"
 description = "Within-principal user identity store — platform-to-user-ID mapping over IPC"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "users-store"
-file = "astrid_capsule_users.wasm"
+file = "aos_users.wasm"
 type = "executable"
 # No host capabilities. The capsule's entire surface is IPC pub/sub and
 # the per-capsule KV scope (granted by default).

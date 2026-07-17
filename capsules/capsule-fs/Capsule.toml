@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-fs"
+name = "aos-fs"
 version = "0.2.0"
 description = "Core filesystem tools for Unicity AOS"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "fs-tools"
-file = "astrid_capsule_fs.wasm"
+file = "aos_fs.wasm"
 type = "executable"
 # Note: home:// write is intentionally omitted — fs-tools should not write
 # to ~/.astrid/ (which contains keys, audit DBs, etc.). Read is permitted for

@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-agents"
+name = "aos-agents"
 version = "0.2.0"
 description = "Injects project instructions from AGENTS.md into the system prompt"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "agents"
-file = "astrid_capsule_agents.wasm"
+file = "aos_agents.wasm"
 type = "executable"
 capabilities = { fs_read = ["cwd://"] }
 

@@ -1,4 +1,4 @@
-# astrid-capsule-memory
+# aos-memory
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
@@ -23,7 +23,7 @@ Agent-written content can grow without limit (unlike human-authored `AGENTS.md`)
 
 ## Read-only
 
-This capsule handles the read/inject side only. The agent writes to `.aos/memory.md` using existing filesystem tools (`write_file`, `replace_in_file`) from `astrid-capsule-fs`. No new tools needed.
+This capsule handles the read/inject side only. The agent writes to `.aos/memory.md` using existing filesystem tools (`write_file`, `replace_in_file`) from `aos-fs`. No new tools needed.
 
 ## Development
 

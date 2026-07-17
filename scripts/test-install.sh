@@ -447,10 +447,10 @@ if PATH="$fake_bin:$PATH" HOME="$work/mutually-exclusive-home" AOS_TEST_FIXTURE=
 fi
 test ! -e "$work/mutually-exclusive-home/.aos"
 
-printf 'tampered capsule\n' > "$release_dir/capsules/astrid-capsule-cli.capsule"
+printf 'tampered capsule\n' > "$release_dir/capsules/aos-cli.capsule"
 PATH="$fake_bin:$PATH" HOME="$work/home" AOS_TEST_FIXTURE="$fixture" AOS_VERSION=2026.1.0 \
   sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null
-cmp "$work/capsules/astrid-capsule-cli.capsule" "$release_dir/capsules/astrid-capsule-cli.capsule"
+cmp "$work/capsules/aos-cli.capsule" "$release_dir/capsules/aos-cli.capsule"
 
 cat > "$work/home/.aos/bin/aos" <<'EOF'
 #!/bin/sh

@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-react"
+name = "aos-react"
 version = "0.2.2"
 description = "ReAct loop: stateless coordinator for LLM reasoning and tool execution"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "react"
-file = "astrid_capsule_react.wasm"
+file = "aos_react.wasm"
 type = "executable"
 
 [imports]

@@ -77,6 +77,206 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "aos-agents"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-cli"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-context-engine"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-forge"
+version = "0.1.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "aos-fs"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-hook-bridge"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-http"
+version = "0.1.1"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-identity"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "aos-memory"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-openai"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-openai-compat"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-prompt-builder"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-react"
+version = "0.2.2"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-registry"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-router"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-session"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "aos-shell"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-skills"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-system"
+version = "0.2.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-telegram"
+version = "0.1.0"
+dependencies = [
+ "astrid-sdk 0.5.3",
+ "extism-pdk",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-users"
+version = "0.1.0"
+dependencies = [
+ "astrid-sdk 0.7.1",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,210 +289,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
-name = "astrid-capsule-agents"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-cli"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-context-engine"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-forge"
-version = "0.1.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "astrid-capsule-fs"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-hook-bridge"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-http"
-version = "0.1.1"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-identity"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "astrid-capsule-memory"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-openai"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-openai-compat"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-prompt-builder"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-react"
-version = "0.2.2"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-registry"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-router"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-session"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "astrid-capsule-shell"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-skills"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-system"
-version = "0.2.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-telegram"
-version = "0.1.0"
-dependencies = [
- "astrid-sdk 0.5.3",
- "extism-pdk",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "astrid-capsule-users"
-version = "0.1.0"
-dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "astrid-core"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed4eefc7fc4dff338168d9dc433770ff648fa1763d2af5a8a12c0ecf939e7db9"
+checksum = "6e11d4d21ef028d130734c376381b316356eed2efc8b8f446e14a66512fd7e6b"
 dependencies = [
  "async-trait",
  "base64",
@@ -312,9 +312,9 @@ dependencies = [
 
 [[package]]
 name = "astrid-crypto"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3f9404c141ff8a8c2a1490b0614f5c00e463bf5213bd566a02d566e2923ee8e"
+checksum = "760e3ca8cb194e7a86695ae3a1fb42e566ade25c0b5aa26420204f1b4a2acab5"
 dependencies = [
  "base64",
  "blake3",
@@ -433,9 +433,9 @@ dependencies = [
 
 [[package]]
 name = "astrid-types"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "636764865299db0cd870cdb49167e28e646a4ed34ac2bc0ee5ec01483b16cc9c"
+checksum = "ed52e6105b784c67e5f44f9cca962890fef29503a7e86a3e31de917847d68c9b"
 dependencies = [
  "chrono",
  "getrandom",
@@ -447,14 +447,14 @@ dependencies = [
 
 [[package]]
 name = "astrid-uplink"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa268c7778228194c98d47b690cdc81556a6b20e500094ade8a29e177849fb77"
+checksum = "4fa2826ffebc7b6ef6db5f16d64b63f807fb19ff43f8fe85ccb4529eec9b2e18"
 dependencies = [
  "anyhow",
  "astrid-core",
  "astrid-crypto",
- "astrid-types 0.10.0",
+ "astrid-types 0.10.1",
  "serde",
  "serde_json",
  "thiserror",

@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-http"
+name = "aos-http"
 version = "0.1.1"
 description = "HTTP fetch tool for Unicity AOS agents"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "http-tools"
-file = "astrid_capsule_http.wasm"
+file = "aos_http.wasm"
 type = "executable"
 
 [capabilities]

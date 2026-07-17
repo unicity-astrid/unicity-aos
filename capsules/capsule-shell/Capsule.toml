@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-shell"
+name = "aos-shell"
 version = "0.2.0"
 description = "Core shell execution tools for Unicity AOS"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "shell-tools"
-file = "astrid_capsule_shell.wasm"
+file = "aos_shell.wasm"
 type = "executable"
 
 [capabilities]

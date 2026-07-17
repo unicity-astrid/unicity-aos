@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-openai-compat"
+name = "aos-openai-compat"
 version = "0.2.0"
 description = "OpenAI-compatible LLM Provider"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "openai-compat"
-file = "astrid_capsule_openai_compat.wasm"
+file = "aos_openai_compat.wasm"
 type = "executable"
 capabilities = { net = ["*"] }
 

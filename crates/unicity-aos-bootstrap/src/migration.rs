@@ -1496,9 +1496,9 @@ mod tests {
         );
         assert!(
             runtime
-                .join("home/default/.local/capsules/astrid-capsule-cli/Capsule.toml")
+                .join("imported/astrid-home-v1/home/default/.local/capsules/astrid-capsule-cli/Capsule.toml")
                 .is_file(),
-            "a canonical capsule selected by Community Edition remains active for default"
+            "a legacy package identity is preserved but cannot masquerade as the renamed AOS capsule"
         );
         assert!(
             runtime

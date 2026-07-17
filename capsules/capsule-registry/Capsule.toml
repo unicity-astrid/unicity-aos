@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-registry"
+name = "aos-registry"
 version = "0.2.0"
 description = "LLM provider registry — discovers and manages available models"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.1.0"
 
 [[component]]
 id = "registry"
-file = "astrid_capsule_registry.wasm"
+file = "aos_registry.wasm"
 
 [exports]
 "astrid:registry" = "1.0.0"
@@ -37,7 +37,7 @@ file = "astrid_capsule_registry.wasm"
 "cli.v1.command.execute" = { wit = "@unicity-astrid/wit/system/command-execute" }
 # Scriptable `models` verb runs — `aos capsule models ...` dispatches the
 # run body here (see astrid capsule_verb.rs run topic = cli.v1.command.run.<provider_capsule>).
-"cli.v1.command.run.astrid-capsule-registry" = { wit = "opaque" }
+"cli.v1.command.run.aos-registry" = { wit = "opaque" }
 # 4-segment exact (topic_matches requires equal segment count, so registry.v1.* does NOT cover this)
 "registry.v1.selection.callback" = { wit = "@unicity-astrid/wit/registry/selection-callback" }
 "astrid.v1.capsules_loaded" = { wit = "@unicity-astrid/wit/system/capsules-loaded" }

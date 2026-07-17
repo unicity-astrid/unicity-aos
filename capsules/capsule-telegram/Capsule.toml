@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-telegram"
+name = "aos-telegram"
 version = "0.1.0"
 description = "Telegram Bot frontend for Unicity AOS — bridges the Telegram Bot API to the kernel IPC bus."
 authors = ["Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.5.0"
 
 [[component]]
 id = "telegram"
-file = "astrid_capsule_telegram.wasm"
+file = "aos_telegram.wasm"
 type = "executable"
 capabilities = { net = ["*"] }
 

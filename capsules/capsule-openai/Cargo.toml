@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-openai"
+name = "aos-openai"
 version = "0.2.0"
 edition = "2024"
 description = "Native OpenAI LLM provider capsule for Unicity AOS"

@@ -1,5 +1,5 @@
 [package]
-name = "astrid-capsule-forge"
+name = "aos-forge"
 version = "0.1.0"
 description = "Capsule-authoring forge for Unicity AOS components"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
@@ -7,7 +7,7 @@ astrid-version = ">=0.7.0"
 
 [[component]]
 id = "forge-tools"
-file = "astrid_capsule_forge.wasm"
+file = "aos_forge.wasm"
 type = "executable"
 
 [capabilities]

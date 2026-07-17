@@ -95,7 +95,7 @@ done
 
 python3 "$repo_root/scripts/capsule_release.py" --print-assets > "$work/$root/capsule-assets.txt"
 while IFS= read -r capsule; do
-  [[ "$capsule" =~ ^astrid-capsule-[a-z0-9-]+\.capsule$ ]]
+  [[ "$capsule" =~ ^aos-[a-z0-9-]+\.capsule$ ]]
   install -m 0644 "$capsule_artifacts/$capsule" "$work/$root/capsules/$capsule"
 done < "$work/$root/capsule-assets.txt"
 python3 "$repo_root/scripts/capsule_release.py" --artifacts "$work/$root/capsules"

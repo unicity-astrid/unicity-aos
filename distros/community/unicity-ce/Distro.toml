@@ -15,7 +15,7 @@ support = "https://github.com/unicity-aos/aos-ce/discussions"
 bug-tracker = "https://github.com/unicity-aos/aos-ce/issues"
 repository = "https://github.com/unicity-aos/aos-ce"
 license = "MIT OR Apache-2.0"
-astrid-version = "=0.10.0"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
+astrid-version = "=0.10.1"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
 
 [distro.requires.astrid]
 llm = "^1.0"
@@ -35,14 +35,14 @@ openai_max_tokens = { description = "Max output tokens", default = "128000" }
 # ---------------------------------------------------------------------------
 
 [[capsule]]
-name = "astrid-capsule-cli"
-source = "capsules/astrid-capsule-cli.capsule"
+name = "aos-cli"
+source = "capsules/aos-cli.capsule"
 version = "0.2.0"
 role = "uplink"
 
 [[capsule]]
-name = "astrid-capsule-registry"
-source = "capsules/astrid-capsule-registry.capsule"
+name = "aos-registry"
+source = "capsules/aos-registry.capsule"
 version = "0.2.0"
 role = "uplink"
 
@@ -51,8 +51,8 @@ role = "uplink"
 # ---------------------------------------------------------------------------
 
 [[capsule]]
-name = "astrid-capsule-openai-compat"
-source = "capsules/astrid-capsule-openai-compat.capsule"
+name = "aos-openai-compat"
+source = "capsules/aos-openai-compat.capsule"
 version = "0.2.0"
 group = "llm"
 env = { api_key = "{{ openai_api_key }}", base_url = "{{ openai_base_url }}", model = "{{ openai_model }}", temperature = "{{ openai_temperature }}", max_output_tokens = "{{ openai_max_tokens }}" }
@@ -62,43 +62,43 @@ env = { api_key = "{{ openai_api_key }}", base_url = "{{ openai_base_url }}", mo
 # ---------------------------------------------------------------------------
 
 [[capsule]]
-name = "astrid-capsule-react"
-source = "capsules/astrid-capsule-react.capsule"
+name = "aos-react"
+source = "capsules/aos-react.capsule"
 version = "0.2.2"
 
 [[capsule]]
-name = "astrid-capsule-session"
-source = "capsules/astrid-capsule-session.capsule"
+name = "aos-session"
+source = "capsules/aos-session.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-identity"
-source = "capsules/astrid-capsule-identity.capsule"
+name = "aos-identity"
+source = "capsules/aos-identity.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-users"
-source = "capsules/astrid-capsule-users.capsule"
+name = "aos-users"
+source = "capsules/aos-users.capsule"
 version = "0.1.0"
 
 [[capsule]]
-name = "astrid-capsule-router"
-source = "capsules/astrid-capsule-router.capsule"
+name = "aos-router"
+source = "capsules/aos-router.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-prompt-builder"
-source = "capsules/astrid-capsule-prompt-builder.capsule"
+name = "aos-prompt-builder"
+source = "capsules/aos-prompt-builder.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-context-engine"
-source = "capsules/astrid-capsule-context-engine.capsule"
+name = "aos-context-engine"
+source = "capsules/aos-context-engine.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-hook-bridge"
-source = "capsules/astrid-capsule-hook-bridge.capsule"
+name = "aos-hook-bridge"
+source = "capsules/aos-hook-bridge.capsule"
 version = "0.2.0"
 
 # ---------------------------------------------------------------------------
@@ -106,23 +106,23 @@ version = "0.2.0"
 # ---------------------------------------------------------------------------
 
 [[capsule]]
-name = "astrid-capsule-shell"
-source = "capsules/astrid-capsule-shell.capsule"
+name = "aos-shell"
+source = "capsules/aos-shell.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-http"
-source = "capsules/astrid-capsule-http.capsule"
+name = "aos-http"
+source = "capsules/aos-http.capsule"
 version = "0.1.1"
 
 [[capsule]]
-name = "astrid-capsule-fs"
-source = "capsules/astrid-capsule-fs.capsule"
+name = "aos-fs"
+source = "capsules/aos-fs.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-system"
-source = "capsules/astrid-capsule-system.capsule"
+name = "aos-system"
+source = "capsules/aos-system.capsule"
 version = "0.2.0"
 
 # ---------------------------------------------------------------------------
@@ -130,18 +130,18 @@ version = "0.2.0"
 # ---------------------------------------------------------------------------
 
 [[capsule]]
-name = "astrid-capsule-skills"
-source = "capsules/astrid-capsule-skills.capsule"
+name = "aos-skills"
+source = "capsules/aos-skills.capsule"
 version = "0.2.0"
 
 [[capsule]]
-name = "astrid-capsule-agents"
-source = "capsules/astrid-capsule-agents.capsule"
+name = "aos-agents"
+source = "capsules/aos-agents.capsule"
 version = "0.2.0"
 env = { cwd_dir = ".aos" }
 
 [[capsule]]
-name = "astrid-capsule-memory"
-source = "capsules/astrid-capsule-memory.capsule"
+name = "aos-memory"
+source = "capsules/aos-memory.capsule"
 version = "0.2.0"
 env = { cwd_dir = ".aos" }

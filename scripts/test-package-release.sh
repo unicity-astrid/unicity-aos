@@ -69,7 +69,7 @@ tar -tzf "$archive" > "$work/files"
 grep -q '/bin/aos$' "$work/files"
 grep -q '/libexec/install.sh$' "$work/files"
 grep -q '/runtime/bin/astrid-daemon$' "$work/files"
-test "$(grep -c '/capsules/astrid-capsule-.*\.capsule$' "$work/files")" -eq 18
+test "$(grep -c '/capsules/aos-.*\.capsule$' "$work/files")" -eq 18
 grep -q '/capsule-assets.txt$' "$work/files"
 grep -q '/Distro.toml$' "$work/files"
 grep -q '/release-manifest.json$' "$work/files"
@@ -77,7 +77,7 @@ grep -q '/release-manifest.json$' "$work/files"
 tar -xzf "$archive" -C "$work"
 manifest=$(find "$work" -path '*/release-manifest.json' -print -quit)
 bundle_root=$(dirname "$manifest")
-test "$(grep -c '^source = "capsules/astrid-capsule-.*\.capsule"$' "$bundle_root/Distro.toml")" -eq 18
+test "$(grep -c '^source = "capsules/aos-.*\.capsule"$' "$bundle_root/Distro.toml")" -eq 18
 if grep -F '@unicity-aos/capsule-' "$bundle_root/Distro.toml" >/dev/null; then
   echo "release archive retained a legacy capsule repository source" >&2
   exit 1
@@ -158,7 +158,7 @@ if bash "$repo_root/scripts/package-release.sh" \
   exit 1
 fi
 
-rm "$work/capsules/astrid-capsule-cli.capsule"
+rm "$work/capsules/aos-cli.capsule"
 if bash "$repo_root/scripts/package-release.sh" \
   "$target" \
   "$work/aos" \

@@ -116,7 +116,7 @@ run_aos doctor
 cp "$lock" "$work/distro.lock.before"
 cp "$profile" "$work/default.toml.before"
 pid_file="$aos_home/runtime/run/system.pid"
-cli_meta="$aos_home/runtime/home/default/.local/capsules/astrid-capsule-cli/meta.json"
+cli_meta="$aos_home/runtime/home/default/.local/capsules/aos-cli/meta.json"
 [[ -f "$pid_file" && ! -L "$pid_file" ]]
 [[ -f "$cli_meta" && ! -L "$cli_meta" ]]
 cp "$pid_file" "$work/system.pid.before"
