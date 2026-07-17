@@ -12,7 +12,12 @@ An exact release is a separate, mutually exclusive operation:
 
 ```sh
 sh install.sh --version 2026.1.0
+sh install.sh --version 2026.1.0-nightly.20260717.g<40-character-source-commit>
 ```
+
+An exact nightly pin is deliberate and bypasses the moving channel pointer. It
+still authenticates the exact tag-bound release metadata and archive, but it
+does not update or consult the locally accepted nightly channel generation.
 
 There is no GitHub `releases/latest` fallback. If a selected channel has not
 been published, is expired, has an invalid signature, or conflicts with locally
@@ -46,6 +51,13 @@ https://github.com/unicity-aos/aos-ce/.github/workflows/promote-channel.yml@refs
 Product versions use `YYYY.MINOR.PATCH`: the year is calendar-based, while
 minor and patch are canonical SemVer numbers rather than months.
 
+Stable and dev point only to canonical `YYYY.MINOR.PATCH` releases. Nightly is
+a deterministic prerelease of the reviewed product version:
+
+```text
+YYYY.MINOR.PATCH-nightly.YYYYMMDD.g<40-character-source-commit>
+```
+
 The installer authenticates the channel first, authenticates and hashes the
 referenced immutable release metadata second, then authenticates and hashes the
 selected target archive. It stores each accepted pointer and bundle together in
@@ -54,7 +66,8 @@ atomically activates that generation. An installation lock serializes product
 replacement and channel acceptance. Inactive generation directories are safe
 after an interrupted install. A lower generation, or different bytes at the
 same generation, is rejected. A rollback is therefore a new, higher generation
-that points to an older immutable release; channel history is never replaced.
+that points to an older immutable release; retained channel history is
+append-only and never replaced.
 
 Astrid Runtime 0.9.4 predates Astrid's immutable signed release metadata. Its
 compatibility entry consequently records `release-metadata-available = false`
@@ -132,17 +145,45 @@ asset with conflicting bytes fails closed and requires incident review; it is
 never clobbered. A malformed or mismatched mutable current pair is recovered
 only when its pointer exactly matches an authenticated transaction.
 
-Merging this foundation creates no channel container or pointer. The protected
-bootstrap is an explicit one-time operation, and the current false readiness
-flags continue to block product release and promotion workflows.
+Merging this foundation creates no channel container, release, or pointer. The
+protected bootstrap is an explicit one-time operation, and the current false
+readiness flags continue to block product release and promotion workflows.
 
-The three signed channel identities are complete, but automated dev-candidate
-and nightly build trains are not enabled by this change. Until those immutable
-build contracts exist, all three channels advance only through the protected
-promotion workflow.
+The scheduled nightly orchestrator is inert unless the repository variable
+`AOS_NIGHTLY_RELEASES_ENABLED` is exactly `true`. When enabled, it tags the exact
+`main` commit with the deterministic nightly version and explicitly dispatches
+the tag-bound release workflow. The release still waits at the protected
+`release` environment, and a successful release only requests promotion through
+the protected `aos-channel-nightly` environment. Its ephemeral product-version
+overlay is never committed to `main`.
+
+Every AOS release, including nightly, uses the exact Astrid release metadata and
+source commit pinned by `release/runtime-compatibility.toml`. AOS never follows
+Astrid nightly implicitly. Changing the runtime is a reviewed product input, not
+a consequence of either project's schedule.
+
+Stable promotion is allowed only when the currently authenticated dev pointer
+already identifies the exact same immutable product release and archives. It
+does not rebuild or reinterpret dev bytes.
 
 Homebrew remains stable-only. Its formula updater should consume the signed
 `stable` pointer, never `dev`, `nightly`, or an arbitrary published version. A
 channel rollback protects new direct installs; an already-upgraded Homebrew
 installation normally needs a forward patch release rather than a version
 downgrade.
+
+## Branch and retention policy
+
+`main` is the product development trunk. There is no permanent `develop`,
+`stable`, or channel branch. After a stable yearly minor release, create
+`release/YYYY.MINOR` only when that supported line needs a patch. Patch fixes
+land there and are forward-ported to `main`; a release still requires a
+deliberate signed tag and protected approval.
+
+Stable and dev releases and their channel history are retained permanently.
+Nightly releases and nightly transaction/history assets are retained for 90
+days, except that the release, transaction, and history pair referenced by the
+current nightly pointer are never deleted. Cleanup is a separate reviewed
+maintenance operation and must be installed before the channel approaches
+GitHub's per-release asset limit; the release train has no destructive
+garbage-collection permission. GitHub release tags are never reused.

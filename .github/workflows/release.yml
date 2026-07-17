@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - '20[0-9][0-9].*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,8 +18,65 @@ env:
   B3SUM_VERSION: 1.8.5
 
 jobs:
+  classify:
+    name: Classify release lane
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      nightly: ${{ steps.release.outputs.nightly }}
+      version: ${{ steps.release.outputs.version }}
+      source-commit: ${{ steps.release.outputs.source-commit }}
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Bind event, tag, and source commit
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/* ]]
+          VERSION="$GITHUB_REF_NAME"
+          SOURCE_COMMIT=$(git rev-parse 'HEAD^{commit}')
+          if [[ "$EVENT_NAME" == push ]]; then
+            [[ "$VERSION" =~ ^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            NIGHTLY=false
+          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            NIGHTLY_DATE="${VERSION#*-nightly.}"
+            NIGHTLY_DATE="${NIGHTLY_DATE%%.g*}"
+            RUN_CREATED_AT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
+            python3 scripts/nightly_version.py validate-dispatch \
+              --date "$NIGHTLY_DATE" \
+              --created-at "$RUN_CREATED_AT"
+            EXPECTED=$(python3 scripts/nightly_version.py derive \
+              --date "$NIGHTLY_DATE" \
+              --source-commit "$SOURCE_COMMIT")
+            [[ "$VERSION" == "$EXPECTED" ]]
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+            NIGHTLY=true
+          else
+            echo "unsupported release event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          {
+            echo "nightly=$NIGHTLY"
+            echo "version=$VERSION"
+            echo "source-commit=$SOURCE_COMMIT"
+          } >> "$GITHUB_OUTPUT"
+
   validate-release:
     name: Validate release identity
+    needs: classify
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -28,11 +86,34 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Refuse a nightly after its canonical base is tagged
+        if: needs.classify.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BASE_VERSION=$(python3 - <<'PY'
+          import tomllib
+          with open("crates/unicity-aos-bootstrap/Cargo.toml", "rb") as file:
+              print(tomllib.load(file)["package"]["version"])
+          PY
+          )
+          BASE_REFS="$RUNNER_TEMP/canonical-base-refs.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$BASE_VERSION" > "$BASE_REFS"
+          if ! jq -e --arg ref "refs/tags/$BASE_VERSION" 'all(.ref != $ref)' "$BASE_REFS" >/dev/null; then
+            echo "canonical $BASE_VERSION was tagged while this nightly waited for approval" >&2
+            exit 1
+          fi
+      - name: Stage deterministic nightly version
+        if: needs.classify.outputs.nightly == 'true'
+        run: python3 scripts/nightly_version.py stage --version "$GITHUB_REF_NAME"
       - name: Match product, distro, and tag versions
         run: |
-          python3 scripts/validate-release-contract.py --require-release-ready
+          EXTRA=()
+          if [[ "${{ needs.classify.outputs.nightly }}" == true ]]; then
+            EXTRA+=(--allow-nightly)
+          fi
+          python3 scripts/validate-release-contract.py --require-release-ready "${EXTRA[@]}"
           PRODUCT=$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/unicity-aos-bootstrap/Cargo.toml | head -n1)
-          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^20[0-9]{2}\.[0-9]+\.[0-9]+$'
           test "$PRODUCT" = "$GITHUB_REF_NAME"
       - run: bash scripts/test-package-release.sh
       - run: bash scripts/test-install.sh
@@ -45,7 +126,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.target }})
-    needs: [validate-release, capsules]
+    needs: [classify, validate-release, capsules]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -67,6 +148,9 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Stage deterministic nightly version
+        if: needs.classify.outputs.nightly == 'true'
+        run: python3 scripts/nightly_version.py stage --version "$GITHUB_REF_NAME"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: '1.95.0'
@@ -144,7 +228,7 @@ jobs:
 
   capsules:
     name: Build Community capsules
-    needs: validate-release
+    needs: [classify, validate-release]
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -154,6 +238,9 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Stage deterministic nightly version
+        if: needs.classify.outputs.nightly == 'true'
+        run: python3 scripts/nightly_version.py stage --version "$GITHUB_REF_NAME"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: '1.95.0'
@@ -211,7 +298,7 @@ jobs:
 
   github-release:
     name: Publish signed release
-    needs: [build, capsules]
+    needs: [classify, build, capsules]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -233,6 +320,9 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Stage deterministic nightly version
+        if: needs.classify.outputs.nightly == 'true'
+        run: python3 scripts/nightly_version.py stage --version "$GITHUB_REF_NAME"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: '1.95.0'
@@ -266,13 +356,15 @@ jobs:
           sha256sum -- ./*.tar.gz ./*.capsule | sed 's#  \./#  #' > SHA256SUMS.txt
           cp ../release/runtime-compatibility.toml .
       - name: Generate immutable release metadata
+        env:
+          SOURCE_COMMIT: ${{ needs.classify.outputs.source-commit }}
         run: |
           PUBLISHED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           RELEASE_METADATA="artifacts/unicity-aos-${GITHUB_REF_NAME}-release.toml"
           python3 scripts/release_metadata.py render-release \
             --version "$GITHUB_REF_NAME" \
             --tag "$GITHUB_REF_NAME" \
-            --source-commit "$GITHUB_SHA" \
+            --source-commit "$SOURCE_COMMIT" \
             --published-at "$PUBLISHED_AT" \
             --artifacts artifacts \
             --sha256 artifacts/SHA256SUMS.txt \
@@ -281,9 +373,36 @@ jobs:
           python3 scripts/release_metadata.py validate-release \
             --require-ready "$RELEASE_METADATA"
           echo "RELEASE_METADATA=$RELEASE_METADATA" >> "$GITHUB_ENV"
+      - name: Authenticate the remote tag before candidate publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE: ${{ needs.classify.outputs.source-commit }}
+          NIGHTLY: ${{ needs.classify.outputs.nightly }}
+        run: |
+          TAG_OBJECT=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          TAG_TYPE=$(jq -er .object.type <<< "$TAG_OBJECT")
+          TAG_COMMIT=$(jq -er .object.sha <<< "$TAG_OBJECT")
+          for _ in {1..8}; do
+            [[ "$TAG_TYPE" == tag ]] || break
+            TAG_OBJECT=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_COMMIT")
+            TAG_TYPE=$(jq -er .object.type <<< "$TAG_OBJECT")
+            TAG_COMMIT=$(jq -er .object.sha <<< "$TAG_OBJECT")
+          done
+          [[ "$TAG_TYPE" == commit ]]
+          [[ "$TAG_COMMIT" == "$EXPECTED_SOURCE" ]]
+          if [[ "$NIGHTLY" == true ]]; then
+            BASE_VERSION="${GITHUB_REF_NAME%%-nightly.*}"
+            BASE_REFS="$RUNNER_TEMP/canonical-base-refs.json"
+            gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$BASE_VERSION" > "$BASE_REFS"
+            if ! jq -e --arg ref "refs/tags/$BASE_VERSION" 'all(.ref != $ref)' "$BASE_REFS" >/dev/null; then
+              echo "canonical $BASE_VERSION was tagged while this nightly waited for approval" >&2
+              exit 1
+            fi
+          fi
       - name: Detect an interrupted never-published draft
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_PRERELEASE: ${{ needs.classify.outputs.nightly }}
         run: |
           RELEASES="$RUNNER_TEMP/releases-preflight.json"
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
@@ -295,8 +414,8 @@ jobs:
             echo "EXISTING_RELEASE=0" >> "$GITHUB_ENV"
             exit 0
           fi
-          jq -e --arg tag "$GITHUB_REF_NAME" \
-            '.[][] | select(.tag_name == $tag) | select(.draft == true and .prerelease == false and .published_at == null)' \
+          jq -e --arg tag "$GITHUB_REF_NAME" --argjson prerelease "$EXPECTED_PRERELEASE" \
+            '.[][] | select(.tag_name == $tag) | select(.draft == true and .prerelease == $prerelease and .published_at == null)' \
             "$RELEASES" >/dev/null || {
             echo "release $GITHUB_REF_NAME already exists and is not a never-published draft" >&2
             exit 1
@@ -344,15 +463,19 @@ jobs:
 
           The release also contains the 18 signed, installable capsule artifacts selected by Community Edition. Published \`astrid-capsule-*\` identities remain unchanged.
 
-          Install or upgrade:
+          Install this exact release:
 
           \`\`\`sh
-          curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh
+          curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh -s -- --version ${GITHUB_REF_NAME}
           \`\`\`
+
+          Moving channel installs change only after a separate protected promotion.
           EOF
       - name: Refuse conflicting releases or authenticate a complete draft
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_PRERELEASE: ${{ needs.classify.outputs.nightly }}
+          EXPECTED_SOURCE: ${{ needs.classify.outputs.source-commit }}
         run: |
           RELEASES="$RUNNER_TEMP/releases.json"
           MATCHING_RELEASE="$RUNNER_TEMP/matching-release.json"
@@ -365,16 +488,19 @@ jobs:
           [[ "$MATCH_COUNT" -le 1 ]]
           if [[ "$MATCH_COUNT" == 0 ]]; then
             echo "RECOVER_DRAFT=0" >> "$GITHUB_ENV"
+            echo "CANDIDATE=$GITHUB_WORKSPACE/artifacts" >> "$GITHUB_ENV"
             exit 0
           fi
 
-          jq -e '.[0] | .draft == true and .prerelease == false and .published_at == null' \
+          jq -e --argjson prerelease "$EXPECTED_PRERELEASE" \
+            '.[0] | .draft == true and .prerelease == $prerelease and .published_at == null' \
             "$MATCHING_RELEASE" >/dev/null || {
             echo "release $GITHUB_REF_NAME already exists and is not a never-published draft" >&2
             echo "release assets are write-once; never clobber, delete, or retag a published version" >&2
             exit 1
           }
           RELEASE_ID=$(jq -er '.[0].id' "$MATCHING_RELEASE")
+          echo "SELECTED_RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
           ASSETS="$RUNNER_TEMP/release-assets.json"
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
             --paginate --slurp > "$ASSETS"
@@ -391,7 +517,7 @@ jobs:
           python3 scripts/release_publication.py \
             --artifacts "$EXISTING_ASSETS" \
             --version "$GITHUB_REF_NAME" \
-            --source-commit "$GITHUB_SHA" > "$PAYLOADS"
+            --source-commit "$EXPECTED_SOURCE" > "$PAYLOADS"
           (
             cd "$EXISTING_ASSETS"
             b3sum --check BLAKE3SUMS.txt
@@ -406,12 +532,17 @@ jobs:
               --use-signed-timestamps \
               "$EXISTING_ASSETS/$asset"
           done < "$PAYLOADS"
-          echo "RECOVER_DRAFT=1" >> "$GITHUB_ENV"
+          {
+            echo "RECOVER_DRAFT=1"
+            echo "CANDIDATE=$EXISTING_ASSETS"
+          } >> "$GITHUB_ENV"
       - name: Create draft release with write-once assets
         if: env.RECOVER_DRAFT != '1'
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           draft: true
+          prerelease: ${{ needs.classify.outputs.nightly == 'true' }}
+          make_latest: false
           overwrite_files: false
           fail_on_unmatched_files: true
           files: |
@@ -423,16 +554,103 @@ jobs:
             artifacts/unicity-aos-*-release.toml
             artifacts/*.sigstore.json
           body_path: release-notes.md
-      - name: Publish completed immutable release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
-        with:
-          draft: false
-          overwrite_files: false
-          body_path: release-notes.md
-      - name: Verify published release is immutable
+      - name: Bind newly created draft identity
+        if: env.RECOVER_DRAFT != '1'
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_PRERELEASE: ${{ needs.classify.outputs.nightly }}
         run: |
+          RELEASES="$RUNNER_TEMP/releases-after-create.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --paginate --slurp > "$RELEASES"
+          RELEASE_ID=$(jq -er --arg tag "$GITHUB_REF_NAME" --argjson prerelease "$EXPECTED_PRERELEASE" \
+            '[.[][] | select(.tag_name == $tag) | select(.draft == true and .prerelease == $prerelease and .published_at == null)] | select(length == 1) | .[0].id' \
+            "$RELEASES")
+          echo "SELECTED_RELEASE_ID=$RELEASE_ID" >> "$GITHUB_ENV"
+      - name: Reauthenticate and publish the exact immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PRERELEASE: ${{ needs.classify.outputs.nightly }}
+          EXPECTED_SOURCE: ${{ needs.classify.outputs.source-commit }}
+        run: |
+          EXPECTED_LATEST=true
+          if [[ "$EXPECTED_PRERELEASE" == true ]]; then
+            EXPECTED_LATEST=false
+          fi
+          TAG_OBJECT=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          TAG_TYPE=$(jq -er .object.type <<< "$TAG_OBJECT")
+          TAG_COMMIT=$(jq -er .object.sha <<< "$TAG_OBJECT")
+          for _ in {1..8}; do
+            [[ "$TAG_TYPE" == tag ]] || break
+            TAG_OBJECT=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$TAG_COMMIT")
+            TAG_TYPE=$(jq -er .object.type <<< "$TAG_OBJECT")
+            TAG_COMMIT=$(jq -er .object.sha <<< "$TAG_OBJECT")
+          done
+          [[ "$TAG_TYPE" == commit ]]
+          [[ "$TAG_COMMIT" == "$EXPECTED_SOURCE" ]]
+          if [[ "$EXPECTED_PRERELEASE" == true ]]; then
+            BASE_VERSION="${GITHUB_REF_NAME%%-nightly.*}"
+            BASE_REFS="$RUNNER_TEMP/canonical-base-refs.json"
+            gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$BASE_VERSION" > "$BASE_REFS"
+            if ! jq -e --arg ref "refs/tags/$BASE_VERSION" 'all(.ref != $ref)' "$BASE_REFS" >/dev/null; then
+              echo "canonical $BASE_VERSION was tagged before nightly publication" >&2
+              exit 1
+            fi
+          fi
+
+          RELEASES="$RUNNER_TEMP/releases-before-publish.json"
+          MATCHING_RELEASE="$RUNNER_TEMP/matching-release-before-publish.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --paginate --slurp > "$RELEASES"
+          jq --arg tag "$GITHUB_REF_NAME" \
+            '[.[][] | select(.tag_name == $tag)]' "$RELEASES" > "$MATCHING_RELEASE"
+          jq -e --argjson prerelease "$EXPECTED_PRERELEASE" \
+            'length == 1 and .[0].draft == true and .[0].prerelease == $prerelease and .[0].published_at == null' \
+            "$MATCHING_RELEASE" >/dev/null
+          RELEASE_ID=$(jq -er '.[0].id' "$MATCHING_RELEASE")
+          [[ "$RELEASE_ID" == "$SELECTED_RELEASE_ID" ]]
+          ASSETS="$RUNNER_TEMP/release-assets-before-publish.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --paginate --slurp > "$ASSETS"
+          jq -e '[.[][]] | all(.state == "uploaded" and .size > 0)' "$ASSETS" >/dev/null
+          jq -e '[.[][]] as $assets | ([$assets[].name] | unique | length) == ($assets | length)' \
+            "$ASSETS" >/dev/null
+
+          FINAL="$RUNNER_TEMP/final-release-assets"
+          mkdir "$FINAL"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$FINAL"
+          PAYLOADS="$RUNNER_TEMP/final-release-payloads.txt"
+          python3 scripts/release_publication.py \
+            --artifacts "$FINAL" \
+            --version "$GITHUB_REF_NAME" \
+            --source-commit "$EXPECTED_SOURCE" > "$PAYLOADS"
+          (
+            cd "$FINAL"
+            b3sum --check BLAKE3SUMS.txt
+            sha256sum --check SHA256SUMS.txt
+          )
+          IDENTITY="https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          while IFS= read -r asset; do
+            cmp "$CANDIDATE/$asset" "$FINAL/$asset"
+            cmp "$CANDIDATE/${asset}.sigstore.json" "$FINAL/${asset}.sigstore.json"
+            cosign verify-blob \
+              --bundle "$FINAL/${asset}.sigstore.json" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$IDENTITY" \
+              --use-signed-timestamps \
+              "$FINAL/$asset"
+          done < "$PAYLOADS"
+
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false \
+            -f make_latest="$EXPECTED_LATEST" \
+            | jq -e --argjson prerelease "$EXPECTED_PRERELEASE" \
+              'select(.draft == false and .immutable == true and .prerelease == $prerelease and .published_at != null) | true' \
+            | grep -Fx true
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
-            --jq 'select(.draft == false and .immutable == true) | true' \
+            | jq -e --arg id "$RELEASE_ID" --argjson prerelease "$EXPECTED_PRERELEASE" \
+              'select((.id | tostring) == $id and .draft == false and .immutable == true and .prerelease == $prerelease and .published_at != null) | true' \
             | grep -Fx true

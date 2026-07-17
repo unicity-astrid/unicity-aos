@@ -33,6 +33,10 @@
 - A native release gate that initializes a clean AOS home, verifies the exact
   18-capsule CE lock, grants, and ready set, repeats initialization without
   changing runtime state, and proves clean daemon shutdown before publication.
+- An opt-in daily nightly train with deterministic run-dated versions, exact
+  Astrid compatibility pins, protected publication and promotion, and
+  idempotent recovery after interrupted release or pointer updates. It is
+  disabled by default; merging `main` never publishes a release.
 
 ### Changed
 

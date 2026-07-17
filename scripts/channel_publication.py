@@ -86,9 +86,7 @@ def publication_plan(channel: str, generation: int, value: Any) -> dict[str, Any
             generation == transaction_floor,
             "an existing requested transaction must be the authenticated floor",
         )
-    elif transaction_floor == 0:
-        require(generation == 1, "the first channel generation must be 1")
-    else:
+    elif transaction_floor != 0:
         require(
             generation > transaction_floor,
             f"new generation must be greater than transaction floor {transaction_floor}",

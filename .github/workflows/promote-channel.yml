@@ -9,7 +9,7 @@ on:
         type: choice
         options: [stable, dev, nightly]
       release_tag:
-        description: Existing immutable AOS calendar-semver release tag
+        description: Existing immutable canonical or nightly AOS release tag
         required: true
         type: string
       generation:
@@ -30,6 +30,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -48,8 +49,23 @@ jobs:
           GENERATION: ${{ inputs.generation }}
         run: |
           [[ "$CHANNEL" =~ ^(stable|dev|nightly)$ ]]
-          [[ "$RELEASE_TAG" =~ ^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          [[ "$GENERATION" =~ ^[1-9][0-9]{0,17}$ ]]
+          python3 - "$RELEASE_TAG" "$CHANNEL" "$GENERATION" <<'PY'
+          import sys
+
+          sys.path.insert(0, "scripts")
+          import release_metadata
+
+          version, channel, generation = sys.argv[1:]
+          if release_metadata.VERSION.fullmatch(version) is None:
+              raise SystemExit("release tag is not a supported AOS release version")
+          nightly = release_metadata.is_nightly_version(version)
+          if (channel == "nightly") != nightly:
+              raise SystemExit("nightly and canonical releases cannot cross channel classes")
+          if not generation.isascii() or not generation.isdecimal() or generation.startswith("0"):
+              raise SystemExit("generation must be a canonical positive decimal integer")
+          if not 1 <= int(generation) <= release_metadata.MAX_GENERATION:
+              raise SystemExit("generation is outside the supported range")
+          PY
       - name: Download and authenticate immutable release metadata
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,14 +108,48 @@ jobs:
             exit 1
           }
           [[ "$SOURCE_COMMIT" == "$TAG_COMMIT" ]]
-          if [[ "$CHANNEL" == stable ]]; then
-            gh release view "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --json isDraft,isPrerelease \
-              --jq 'select(.isDraft == false and .isPrerelease == false) | true' \
-              | grep -Fx true
+          EXPECTED_PRERELEASE=false
+          EXPECTED_EVENT=push
+          if [[ "$CHANNEL" == nightly ]]; then
+            EXPECTED_PRERELEASE=true
+            EXPECTED_EVENT=workflow_dispatch
+            [[ "${RELEASE_TAG##*.g}" == "$SOURCE_COMMIT" ]]
           fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            | jq -e --argjson expected "$EXPECTED_PRERELEASE" \
+              'select(.draft == false and .immutable == true and .prerelease == $expected) | true' \
+            | grep -Fx true
+          RELEASE_RUNS="$RUNNER_TEMP/release-workflow-runs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=completed&per_page=100" \
+            --paginate --slurp > "$RELEASE_RUNS"
+          jq -e --arg tag "$RELEASE_TAG" --arg commit "$TAG_COMMIT" --arg event "$EXPECTED_EVENT" \
+            '[.[].workflow_runs[] | select(.event == $event and .head_branch == $tag and .head_sha == $commit and .conclusion == "success")] | length >= 1' \
+            "$RELEASE_RUNS" >/dev/null
           echo "RELEASE_METADATA=$RELEASE_METADATA" >> "$GITHUB_ENV"
+      - name: Require stable to match the authenticated dev candidate
+        if: inputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dev-candidate
+          gh release download channel-dev \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir dev-candidate \
+            --pattern channel.toml \
+            --pattern channel.toml.sigstore.json
+          IDENTITY="https://github.com/unicity-aos/aos-ce/.github/workflows/promote-channel.yml@refs/heads/main"
+          cosign verify-blob \
+            --bundle dev-candidate/channel.toml.sigstore.json \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$IDENTITY" \
+            --use-signed-timestamps \
+            dev-candidate/channel.toml
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          python3 scripts/release_metadata.py validate-channel-release \
+            --channel dev \
+            --now "$NOW" \
+            --require-ready \
+            dev-candidate/channel.toml "$RELEASE_METADATA"
       - name: Recover immutable transaction or authenticate generation floor
         env:
           GH_TOKEN: ${{ github.token }}

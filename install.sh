@@ -75,7 +75,38 @@ case "$AOS_CHANNEL" in
   stable|dev|nightly) ;;
   *) echo "invalid AOS channel: $AOS_CHANNEL" >&2; exit 2 ;;
 esac
-if [ -n "$AOS_VERSION" ] && ! printf '%s\n' "$AOS_VERSION" | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+is_aos_nightly_version() {
+  printf '%s\n' "$1" | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.[0-9]{8}\.g[0-9a-f]{40}$' || return 1
+  nightly_date=${1#*-nightly.}
+  nightly_date=${nightly_date%%.g*}
+  year=$(printf '%.4s' "$nightly_date")
+  month_day=${nightly_date#????}
+  month_text=$(printf '%.2s' "$month_day")
+  day_text=${month_day#??}
+  month=${month_text#0}
+  day=${day_text#0}
+  [ -n "$month" ] || month=0
+  [ -n "$day" ] || day=0
+  [ "$month" -ge 1 ] && [ "$month" -le 12 ] && [ "$day" -ge 1 ] || return 1
+  case "$month" in
+    1|3|5|7|8|10|12) max_day=31 ;;
+    4|6|9|11) max_day=30 ;;
+    2)
+      max_day=28
+      if { [ $((year % 4)) -eq 0 ] && [ $((year % 100)) -ne 0 ]; } || [ $((year % 400)) -eq 0 ]; then
+        max_day=29
+      fi
+      ;;
+  esac
+  [ "$day" -le "$max_day" ]
+}
+
+is_aos_release_version() {
+  printf '%s\n' "$1" | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || is_aos_nightly_version "$1"
+}
+
+if [ -n "$AOS_VERSION" ] && ! is_aos_release_version "$AOS_VERSION"; then
   echo "invalid AOS version: $AOS_VERSION" >&2
   exit 2
 fi
@@ -302,9 +333,17 @@ validate_channel_metadata() {
   release_metadata_sha_value=$(toml_value "$metadata" "[release]" metadata-sha256)
   release_workflow_identity=$(toml_value "$metadata" "[release]" release-workflow-identity)
   [ "$release_repository" = "$AOS_TRUSTED_RELEASE_REPO" ] || return 1
-  printf '%s\n' "$release_version" | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || return 1
+  is_aos_release_version "$release_version" || return 1
+  if [ "$expected_channel" = nightly ]; then
+    is_aos_nightly_version "$release_version" || return 1
+  else
+    ! is_aos_nightly_version "$release_version" || return 1
+  fi
   [ "$release_tag_value" = "$release_version" ] || return 1
   printf '%s\n' "$release_source_commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  if is_aos_nightly_version "$release_version"; then
+    [ "${release_version##*.g}" = "$release_source_commit" ] || return 1
+  fi
   [ "$release_metadata_asset_value" = "unicity-aos-${release_version}-release.toml" ] || return 1
   printf '%s\n' "$release_metadata_sha_value" | grep -Eq '^[0-9a-f]{64}$' || return 1
   [ "$release_workflow_identity" = "https://github.com/${AOS_TRUSTED_RELEASE_REPO}/.github/workflows/release.yml@refs/tags/${release_version}" ] || return 1
@@ -408,7 +447,11 @@ validate_release_metadata() {
     echo "signed release metadata does not name the exact tag workflow identity" >&2
     return 1
   }
-  printf '%s\n' "$(toml_value "$metadata" "" source-commit)" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  metadata_source_commit=$(toml_value "$metadata" "" source-commit)
+  printf '%s\n' "$metadata_source_commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  if is_aos_nightly_version "$expected_version"; then
+    [ "${expected_version##*.g}" = "$metadata_source_commit" ] || return 1
+  fi
   printf '%s\n' "$(toml_value "$metadata" "" published-at)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || return 1
 
   runtime_repository=$(toml_value "$metadata" "[runtime]" repository)
@@ -758,7 +801,7 @@ while IFS= read -r capsule; do
 done < "$bundle/capsule-assets.txt"
 
 staged_version=$("$bundle/bin/aos" --version | awk '{print $NF}')
-if ! printf '%s\n' "$staged_version" | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+if ! is_aos_release_version "$staged_version"; then
   echo "staged AOS binary reported an invalid product version" >&2
   exit 1
 fi
