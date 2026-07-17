@@ -91,6 +91,28 @@ if transaction_upload >= history_upload:
     raise SystemExit("channel transaction must be uploaded before history assets")
 PY
 
+python3 - "$release_workflow" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+jobs = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\n", text))
+validate_job = next(
+    (index for index, match in enumerate(jobs) if match.group(1) == "validate-release"),
+    None,
+)
+if validate_job is None:
+    raise SystemExit("release workflow is missing the validate-release job")
+start = jobs[validate_job].start()
+end = jobs[validate_job + 1].start() if validate_job + 1 < len(jobs) else len(text)
+validate = text[start:end]
+install = validate.index('cargo install b3sum --locked --version "$B3SUM_VERSION"')
+exercise = validate.index("bash scripts/test-install.sh")
+if install >= exercise:
+    raise SystemExit("release identity must install b3sum before exercising the installer")
+PY
+
 if grep -Fq "repos/\$GITHUB_REPOSITORY/commits/\$RELEASE_TAG" "$workflow"; then
   echo "channel promotion resolves an ambiguous branch-or-tag revision" >&2
   exit 1
