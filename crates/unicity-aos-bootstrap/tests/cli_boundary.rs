@@ -680,7 +680,7 @@ exit 23
     for args in [
         vec!["update", "--version", "2026.01.0"],
         vec!["update", "--version", "2025.9.0"],
-        vec!["update", "--channel", "dev", "--version", "2026.1.0"],
+        vec!["update", "--channel", "dev", "--version", "2026.1.1"],
     ] {
         assert!(
             !fixture

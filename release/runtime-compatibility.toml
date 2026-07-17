@@ -2,7 +2,7 @@ schema-version = 1
 
 [product]
 name = "Unicity AOS Community Edition"
-version = "2026.1.0"
+version = "2026.1.1"
 
 [runtime]
 repository = "astrid-runtime/astrid"

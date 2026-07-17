@@ -1827,7 +1827,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unicity-aos-bootstrap"
-version = "2026.1.0"
+version = "2026.1.1"
 dependencies = [
  "astrid-core",
  "astrid-uplink",

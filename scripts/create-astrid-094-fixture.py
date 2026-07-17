@@ -52,8 +52,8 @@ def create(root: Path) -> None:
 
     distro_locks = {
         "alice": ("astralis", "0.2.2"),
-        "bob": ("aos-ce", "2026.1.0"),
-        "carol": ("unicity-ce", "2026.1.0"),
+        "bob": ("aos-ce", "2026.1.1"),
+        "carol": ("unicity-ce", "2026.1.1"),
         "dan": ("other", "1.0.0"),
     }
     for principal, (identifier, version) in distro_locks.items():

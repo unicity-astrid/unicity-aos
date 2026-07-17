@@ -21,7 +21,7 @@ SPEC.loader.exec_module(METADATA)
 
 
 def release_fixture() -> dict[str, object]:
-    version = "2026.1.0"
+    version = "2026.1.1"
     targets = {}
     for index, target in enumerate(METADATA.TARGETS, 1):
         asset = f"unicity-aos-{version}-{target}.tar.gz"
@@ -42,7 +42,7 @@ def release_fixture() -> dict[str, object]:
         "published-at": "2026-07-16T10:00:00Z",
         "release-workflow-identity": (
             "https://github.com/unicity-aos/aos-ce/.github/workflows/"
-            "release.yml@refs/tags/2026.1.0"
+            "release.yml@refs/tags/2026.1.1"
         ),
         "runtime": {
             "repository": "astrid-runtime/astrid",
@@ -74,7 +74,7 @@ def release_fixture() -> dict[str, object]:
 def nightly_release_fixture() -> dict[str, object]:
     fixture = release_fixture()
     old = fixture["version"]
-    version = f"2026.1.0-nightly.20260717.g{'a' * 40}"
+    version = f"2026.1.1-nightly.20260717.g{'a' * 40}"
     fixture["version"] = version
     fixture["tag"] = version
     fixture["release-workflow-identity"] = (
@@ -118,10 +118,10 @@ def channel_fixture() -> dict[str, object]:
         "expires-at": "2026-08-15T10:00:00Z",
         "release": {
             "repository": "unicity-aos/aos-ce",
-            "version": "2026.1.0",
-            "tag": "2026.1.0",
+            "version": "2026.1.1",
+            "tag": "2026.1.1",
             "source-commit": "a" * 40,
-            "metadata-asset": "unicity-aos-2026.1.0-release.toml",
+            "metadata-asset": "unicity-aos-2026.1.1-release.toml",
             "metadata-sha256": "d" * 64,
             "release-workflow-identity": release["release-workflow-identity"],
         },
@@ -142,7 +142,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIsNone(METADATA.VERSION.fullmatch("2026.13.0-rc.1"))
 
     def test_release_accepts_false_staged_gates(self) -> None:
-        self.assertEqual(METADATA.validate_release(release_fixture())["version"], "2026.1.0")
+        self.assertEqual(METADATA.validate_release(release_fixture())["version"], "2026.1.1")
 
     def test_release_accepts_strict_nightly_main_identity(self) -> None:
         result = METADATA.validate_release(nightly_release_fixture())
@@ -198,7 +198,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         fixture["targets"]["aarch64-apple-darwin"]["asset"] = (
             "unicity-aos-aarch64-apple-darwin.tar.gz"
         )
-        with self.assertRaisesRegex(ValueError, "must be unicity-aos-2026.1.0"):
+        with self.assertRaisesRegex(ValueError, "must be unicity-aos-2026.1.1"):
             METADATA.validate_release(fixture)
 
     def test_release_rejects_unapproved_runtime_repository(self) -> None:
@@ -368,8 +368,8 @@ class RenderTests(unittest.TestCase):
             "schema-version = 1",
             'kind = "aos-release"',
             'product = "unicity-aos-ce"',
-            'version = "2026.1.0"',
-            'tag = "2026.1.0"',
+            'version = "2026.1.1"',
+            'tag = "2026.1.1"',
             f'source-commit = "{release["source-commit"]}"',
             'published-at = "2026-07-16T10:00:00Z"',
             f'release-workflow-identity = "{release["release-workflow-identity"]}"',
@@ -424,7 +424,7 @@ class RenderTests(unittest.TestCase):
         import hashlib
 
         for target in METADATA.TARGETS:
-            asset = f"unicity-aos-2026.1.0-{target}.tar.gz"
+            asset = f"unicity-aos-2026.1.1-{target}.tar.gz"
             payload = f"fixture-{target}".encode()
             (artifacts / asset).write_bytes(payload)
             sha_lines.append(f"{hashlib.sha256(payload).hexdigest()}  {asset}")
@@ -438,8 +438,8 @@ class RenderTests(unittest.TestCase):
             "Args",
             (),
             {
-                "version": "2026.1.0",
-                "tag": "2026.1.0",
+                "version": "2026.1.1",
+                "tag": "2026.1.1",
                 "source_commit": "a" * 40,
                 "published_at": "2026-07-16T10:00:00Z",
                 "artifacts": artifacts,
