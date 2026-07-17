@@ -93,11 +93,19 @@ PY
 
 python3 - "$release_workflow" <<'PY'
 import pathlib
+import re
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-start = text.index("  validate-release:\n")
-end = text.index("\n  build:\n", start)
+jobs = list(re.finditer(r"(?m)^  ([A-Za-z0-9_-]+):\n", text))
+validate_job = next(
+    (index for index, match in enumerate(jobs) if match.group(1) == "validate-release"),
+    None,
+)
+if validate_job is None:
+    raise SystemExit("release workflow is missing the validate-release job")
+start = jobs[validate_job].start()
+end = jobs[validate_job + 1].start() if validate_job + 1 < len(jobs) else len(text)
 validate = text[start:end]
 install = validate.index('cargo install b3sum --locked --version "$B3SUM_VERSION"')
 exercise = validate.index("bash scripts/test-install.sh")
