@@ -130,6 +130,13 @@ jobs:
             "$RUNTIME_BLAKE3" \
             capsule-artifacts \
             artifacts
+      - name: Test a clean Community Edition home
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir "$RUNNER_TEMP/clean-home-bundle"
+          tar -xzf "artifacts/unicity-aos-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/clean-home-bundle" --strip-components=1
+          scripts/test-clean-home-init.sh "$RUNNER_TEMP/clean-home-bundle"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aos-${{ matrix.target }}

@@ -194,6 +194,41 @@ impl AosHome {
         Ok(path)
     }
 
+    /// Initialize the trusted CE system fleet before the runtime performs its
+    /// daemon-backed grant preflight.
+    ///
+    /// A completely fresh Astrid home has no capsule capable of accepting CLI
+    /// connections. The first pass uses Astrid's normal distro initializer to
+    /// install the release-pinned CE fleet under `default` without starting the
+    /// daemon. The requested init can then boot Astrid, authorize its operator,
+    /// and apply grants through the normal kernel path.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled runtime or exact CE capsule set is
+    /// unavailable or the runtime initializer exits unsuccessfully.
+    pub fn prepare_unicity_ce_init<I, S>(&self, args: I) -> io::Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.ensure_runtime_available()?;
+        let status = self
+            .runtime_command_with_args(args)?
+            .status()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("failed to initialize the bundled CE system fleet: {error}"),
+                )
+            })?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "bundled CE system-fleet initializer exited with {status}"
+            )));
+        }
+        Ok(())
+    }
+
     /// The conventional standalone Astrid Runtime home that first-run AOS can offer
     /// to import. This does not inspect `ASTRID_HOME`: an override may name another
     /// product or service installation and must be supplied explicitly by the user.

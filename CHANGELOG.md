@@ -30,6 +30,9 @@
 - Strict, signed stable/dev/nightly channel and immutable release metadata
   contracts with exact workflow identities, expiry, replay-resistant generation
   state, and fail-closed direct installer resolution.
+- A native release gate that initializes a clean AOS home, verifies the exact
+  18-capsule CE lock, grants, and ready set, repeats initialization without
+  changing runtime state, and proves clean daemon shutdown before publication.
 
 ### Changed
 
@@ -39,6 +42,9 @@
 - Initialize against the operator-enforced Community Edition manifest and ask
   the runtime to grant its installed capsule set to the resolved target
   principal.
+- Bootstrap the default CE system fleet through Astrid's canonical distro
+  installer before the daemon-backed authorization pass, allowing a completely
+  fresh AOS home and non-default targets to use the same runtime trust path.
 - Keep the authenticated init operator separate from its target principal,
   prevent AOS distribution replacement, and fail closed while signed direct
   update channels remain unpublished.

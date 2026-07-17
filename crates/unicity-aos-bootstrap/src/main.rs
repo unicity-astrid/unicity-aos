@@ -170,6 +170,11 @@ fn main() -> ExitCode {
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
     }
+    if product_init_requested(&args)
+        && let Err(code) = prepare_product_init(&args)
+    {
+        return code;
+    }
     let runtime_args = runtime_args_for_dispatch(args);
     let home = match resolve_home() {
         Ok(home) => home,
@@ -189,6 +194,11 @@ fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
+    }
+    if product_init_requested(&args)
+        && let Err(code) = prepare_product_init(&args)
+    {
+        return code;
     }
     let runtime_args = runtime_args_for_dispatch(args);
     let home = match resolve_home() {
@@ -281,6 +291,61 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
         Some(ProductCommand::ServeHealth) => Some(handle_health_service()),
         None => Some(print_product_help()),
     }
+}
+
+fn product_init_requested(args: &[OsString]) -> bool {
+    leading_runtime_root_index(args)
+        .ok()
+        .flatten()
+        .and_then(|index| args.get(index))
+        .is_some_and(|root| root == "init")
+}
+
+fn prepare_product_init(args: &[OsString]) -> Result<(), ExitCode> {
+    let cli = ProductCli::try_parse_from(
+        std::iter::once(OsString::from("aos")).chain(args.iter().cloned()),
+    )
+    .map_err(|error| {
+        eprintln!("aos: failed to reconstruct validated CE init arguments: {error}");
+        ExitCode::FAILURE
+    })?;
+    let Some(ProductCommand::Init(init)) = cli.command else {
+        eprintln!("aos: internal error: CE init preparation received another command");
+        return Err(ExitCode::FAILURE);
+    };
+
+    let mut runtime_args = vec![
+        OsString::from("--principal"),
+        OsString::from("default"),
+        OsString::from("init"),
+        OsString::from("--target-principal"),
+        OsString::from("default"),
+    ];
+    if init.verbose {
+        runtime_args.push(OsString::from("--verbose"));
+    }
+    if init.yes {
+        runtime_args.push(OsString::from("--yes"));
+    }
+    if init.offline {
+        runtime_args.push(OsString::from("--offline"));
+    }
+    if init.allow_unsigned {
+        runtime_args.push(OsString::from("--allow-unsigned"));
+    }
+    if init.accept_new_key {
+        runtime_args.push(OsString::from("--accept-new-key"));
+    }
+    for value in init.vars {
+        runtime_args.push(OsString::from("--var"));
+        runtime_args.push(OsString::from(value));
+    }
+
+    let home = resolve_home()?;
+    home.prepare_unicity_ce_init(runtime_args).map_err(|error| {
+        eprintln!("aos: failed to prepare the bundled runtime for CE init: {error}");
+        ExitCode::FAILURE
+    })
 }
 
 fn help_targets_product(args: &[OsString]) -> bool {

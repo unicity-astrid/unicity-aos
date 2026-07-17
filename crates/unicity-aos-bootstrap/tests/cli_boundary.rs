@@ -12,6 +12,7 @@ struct Fixture {
     root: PathBuf,
     runtime: PathBuf,
     args: PathBuf,
+    bootstrap_args: PathBuf,
     home: PathBuf,
     child_path: PathBuf,
 }
@@ -29,12 +30,14 @@ impl Fixture {
         fs::create_dir_all(&root).expect("create fixture");
         let runtime = root.join("fake-runtime");
         let args = root.join("args");
+        let bootstrap_args = root.join("bootstrap-args");
         let home = root.join("runtime-home");
         let child_path = root.join("child-path");
         let fixture = Self {
             root,
             runtime,
             args,
+            bootstrap_args,
             home,
             child_path,
         };
@@ -81,6 +84,7 @@ impl Fixture {
             .env("AOS_HOME", &self.home)
             .env("UNICITY_AOS_RUNTIME_BIN", &self.runtime)
             .env("AOS_TEST_ARGS", &self.args)
+            .env("AOS_TEST_BOOTSTRAP_ARGS", &self.bootstrap_args)
             .env("AOS_TEST_HOME", self.root.join("child-home"))
             .env("AOS_TEST_WORKSPACE", self.root.join("child-workspace"))
             .env("AOS_TEST_DISTRO", self.root.join("child-distro"))
@@ -96,9 +100,14 @@ impl Drop for Fixture {
 }
 
 const RECORDING_RUNTIME: &str = r#"#!/bin/sh
+if [ "$1" = "--principal" ] && [ "$2" = "default" ] && [ "$3" = "init" ]; then
+    output="$AOS_TEST_BOOTSTRAP_ARGS"
+else
+    output="$AOS_TEST_ARGS"
+fi
 for arg in "$@"; do
     printf '<%s>\n' "$arg"
-done > "$AOS_TEST_ARGS"
+done > "$output"
 printf '%s\n' "$ASTRID_HOME" > "$AOS_TEST_HOME"
 printf '%s\n' "$ASTRID_WORKSPACE_STATE_DIR" > "$AOS_TEST_WORKSPACE"
 printf '%s\n' "$ASTRID_ENFORCED_DISTRO" > "$AOS_TEST_DISTRO"
@@ -275,6 +284,10 @@ fn product_default_init_delegates_grants_without_inventing_a_target() {
     let args = fs::read_to_string(&fixture.args).expect("read init args");
     assert_eq!(args, "<init>\n<--grant-capsules>\n");
     assert_eq!(
+        fs::read_to_string(&fixture.bootstrap_args).expect("read bootstrap args"),
+        "<--principal>\n<default>\n<init>\n<--target-principal>\n<default>\n"
+    );
+    assert_eq!(
         fs::read_to_string(fixture.root.join("child-distro")).expect("read enforced distro"),
         format!(
             "{}\n",
@@ -283,6 +296,28 @@ fn product_default_init_delegates_grants_without_inventing_a_target() {
                 .join("distributions/unicity-ce/Distro.toml")
                 .display()
         )
+    );
+}
+
+#[test]
+fn product_init_stops_before_runtime_dispatch_when_system_fleet_init_fails() {
+    let fixture = Fixture::new("init-bootstrap-failure");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    let output = fixture
+        .command()
+        .env("AOS_TEST_EXIT", "42")
+        .arg("init")
+        .output()
+        .expect("run product init with a failing bootstrap installer");
+
+    assert!(!output.status.success());
+    assert!(fixture.bootstrap_args.exists());
+    assert!(!fixture.args.exists());
+    assert!(
+        String::from_utf8(output.stderr)
+            .expect("utf8 stderr")
+            .contains("bundled CE system-fleet initializer exited")
     );
 }
 
@@ -308,6 +343,10 @@ fn product_non_default_init_delegates_principal_and_capsule_grants() {
         fs::read_to_string(&fixture.args).expect("read non-default init args"),
         "<init>\n<--target-principal>\n<alice>\n<--yes>\n<--var>\n<model=gpt-5>\n<--grant-capsules>\n"
     );
+    assert_eq!(
+        fs::read_to_string(&fixture.bootstrap_args).expect("read bootstrap args"),
+        "<--principal>\n<default>\n<init>\n<--target-principal>\n<default>\n<--yes>\n<--var>\n<model=gpt-5>\n"
+    );
 }
 
 #[test]
@@ -324,6 +363,10 @@ fn offline_init_keeps_the_runtime_offline_flag_and_uses_only_local_capsules() {
     assert_eq!(
         fs::read_to_string(&fixture.args).expect("read offline args"),
         "<init>\n<--offline>\n<--grant-capsules>\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.bootstrap_args).expect("read bootstrap args"),
+        "<--principal>\n<default>\n<init>\n<--target-principal>\n<default>\n<--offline>\n"
     );
     let manifest_path = fixture.home.join("distributions/unicity-ce/Distro.toml");
     let manifest: toml::Value = fs::read_to_string(manifest_path)
