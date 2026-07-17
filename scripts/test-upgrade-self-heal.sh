@@ -203,6 +203,16 @@ print(
 )
 PY
 )
+if [[ -z "$runtime_version" || -z "$runtime_tag" || -z "$runtime_identity" || \
+      -z "$runtime_source_commit" || -z "$runtime_metadata_asset" || \
+      -z "$runtime_metadata_blake3" ]]; then
+  echo "runtime compatibility fixture provenance is incomplete" >&2
+  exit 1
+fi
+if [[ "$runtime_metadata_available" != true ]]; then
+  echo "upgrade/self-heal fixture must exercise available runtime release metadata" >&2
+  exit 1
+fi
 runtime_root=$work/astrid-$runtime_version-$target
 mkdir "$runtime_root"
 for name in astrid astrid-daemon astrid-build astrid-emit; do
