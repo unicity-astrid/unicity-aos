@@ -7,6 +7,7 @@ release_workflow="$repo_root/.github/workflows/release.yml"
 bootstrap_workflow="$repo_root/.github/workflows/bootstrap-channels.yml"
 nightly_workflow="$repo_root/.github/workflows/nightly.yml"
 nightly_promotion_workflow="$repo_root/.github/workflows/promote-nightly.yml"
+clean_home_gate="$repo_root/scripts/test-clean-home-init.sh"
 
 grep -Fq "if: github.ref == 'refs/heads/main'" "$workflow"
 grep -Fq "repos/\$GITHUB_REPOSITORY/git/ref/tags/\$RELEASE_TAG" "$workflow"
@@ -73,6 +74,8 @@ grep -Fq 'prerelease: ${{ needs.classify.outputs.nightly == '\''true'\'' }}' "$r
 grep -Fq 'workflow_run:' "$nightly_promotion_workflow"
 grep -Fq "github.event.workflow_run.conclusion == 'success'" "$nightly_promotion_workflow"
 grep -Fq 'gh workflow run promote-channel.yml' "$nightly_promotion_workflow"
+grep -Fq 'if ! rm -rf "$work"; then' "$clean_home_gate"
+grep -Fq 'exit "$status"' "$clean_home_gate"
 
 python3 - "$workflow" <<'PY'
 import pathlib

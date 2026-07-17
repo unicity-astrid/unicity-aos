@@ -65,7 +65,9 @@ cleanup() {
   status=$?
   trap - EXIT
   run_aos stop >/dev/null 2>&1 || true
-  rm -rf "$work"
+  if ! rm -rf "$work"; then
+    echo "warning: clean-home fixture cleanup left runtime mounts for runner teardown" >&2
+  fi
   exit "$status"
 }
 trap cleanup EXIT
