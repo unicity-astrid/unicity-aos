@@ -128,6 +128,17 @@ class ReleaseReadinessTests(unittest.TestCase):
                 metadata, require_release_ready=True
             )
 
+    def test_nightly_product_version_requires_a_real_date(self) -> None:
+        valid = "2026.1.0-nightly.20260717.g" + "a" * 40
+        VALIDATOR.validate_product_version(valid, allow_nightly=True)
+        with self.assertRaisesRegex(ValueError, "invalid date"):
+            VALIDATOR.validate_product_version(
+                "2026.1.0-nightly.20260230.g" + "a" * 40,
+                allow_nightly=True,
+            )
+        with self.assertRaisesRegex(ValueError, "allowed calendar"):
+            VALIDATOR.validate_product_version(valid, allow_nightly=False)
+
     def test_main_passes_staged_and_refuses_strict_validation(self) -> None:
         self.assertEqual(VALIDATOR.main([]), 0)
         with self.assertRaisesRegex(ValueError, "refusing to publish"):

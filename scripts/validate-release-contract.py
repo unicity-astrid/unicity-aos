@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import re
 import sys
 from pathlib import Path
@@ -66,6 +67,23 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def validate_product_version(value: str, *, allow_nightly: bool) -> None:
+    canonical = r"(?:202[6-9]|20[3-9][0-9])\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    accepted = canonical
+    if allow_nightly:
+        accepted = rf"(?:{canonical}|{canonical}-nightly\.[0-9]{{8}}\.g[0-9a-f]{{40}})"
+    require(
+        re.fullmatch(accepted, value) is not None,
+        "product version must be an allowed calendar SemVer release identity",
+    )
+    if "-nightly." in value:
+        nightly_date = value.rsplit("-nightly.", 1)[1].split(".g", 1)[0]
+        try:
+            dt.datetime.strptime(nightly_date, "%Y%m%d")
+        except ValueError as error:
+            raise ValueError("product nightly version contains an invalid date") from error
+
+
 def validate_release_readiness(
     metadata: dict[str, Any], *, require_release_ready: bool
 ) -> bool:
@@ -107,6 +125,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="fail unless the pinned runtime has been explicitly approved for publication",
     )
+    parser.add_argument(
+        "--allow-nightly",
+        action="store_true",
+        help="accept the strict deterministic nightly suffix on the product version",
+    )
     return parser.parse_args(argv)
 
 
@@ -126,14 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     sdk_version = compatibility[("contracts", "sdk-rust-version")]
     canonical_semver = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
-    require(
-        re.fullmatch(
-            r"(?:202[6-9]|20[3-9][0-9])\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
-            product_version,
-        )
-        is not None,
-        "product version must be calendar semver (YYYY.MINOR.PATCH)",
-    )
+    validate_product_version(product_version, allow_nightly=args.allow_nightly)
     require(
         compatibility[("product", "version")] == product_version,
         "runtime-compatibility product version does not match the AOS crate",

@@ -71,6 +71,41 @@ def release_fixture() -> dict[str, object]:
     }
 
 
+def nightly_release_fixture() -> dict[str, object]:
+    fixture = release_fixture()
+    old = fixture["version"]
+    version = f"2026.1.0-nightly.20260717.g{'a' * 40}"
+    fixture["version"] = version
+    fixture["tag"] = version
+    fixture["release-workflow-identity"] = (
+        "https://github.com/unicity-aos/aos-ce/.github/workflows/"
+        f"release.yml@refs/tags/{version}"
+    )
+    targets = fixture["targets"]
+    for target in targets.values():
+        target["asset"] = target["asset"].replace(old, version)
+        target["sigstore-bundle"] = f"{target['asset']}.sigstore.json"
+    return fixture
+
+
+def nightly_channel_fixture() -> dict[str, object]:
+    release = nightly_release_fixture()
+    fixture = channel_fixture()
+    fixture["channel"] = "nightly"
+    fixture["expires-at"] = "2026-07-18T10:00:00Z"
+    fixture["release"] = {
+        "repository": "unicity-aos/aos-ce",
+        "version": release["version"],
+        "tag": release["tag"],
+        "source-commit": release["source-commit"],
+        "metadata-asset": f"unicity-aos-{release['version']}-release.toml",
+        "metadata-sha256": "d" * 64,
+        "release-workflow-identity": release["release-workflow-identity"],
+    }
+    fixture["targets"] = release["targets"]
+    return fixture
+
+
 def channel_fixture() -> dict[str, object]:
     release = release_fixture()
     return {
@@ -99,9 +134,39 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIsNotNone(METADATA.VERSION.fullmatch("2026.13.0"))
         self.assertIsNone(METADATA.VERSION.fullmatch("2026.01.0"))
         self.assertIsNone(METADATA.VERSION.fullmatch("2025.9.0"))
+        self.assertIsNotNone(
+            METADATA.VERSION.fullmatch(
+                f"2026.13.0-nightly.20260717.g{'0' * 40}"
+            )
+        )
+        self.assertIsNone(METADATA.VERSION.fullmatch("2026.13.0-rc.1"))
 
     def test_release_accepts_false_staged_gates(self) -> None:
         self.assertEqual(METADATA.validate_release(release_fixture())["version"], "2026.1.0")
+
+    def test_release_accepts_strict_nightly_main_identity(self) -> None:
+        result = METADATA.validate_release(nightly_release_fixture())
+        self.assertTrue(METADATA.is_nightly_version(result["version"]))
+
+    def test_release_rejects_impossible_nightly_date(self) -> None:
+        fixture = nightly_release_fixture()
+        bad = fixture["version"].replace("20260717", "20260230")
+        fixture["version"] = bad
+        fixture["tag"] = bad
+        fixture["release-workflow-identity"] = (
+            f"https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/{bad}"
+        )
+        with self.assertRaisesRegex(ValueError, "nightly version"):
+            METADATA.validate_release(fixture)
+
+    def test_nightly_rejects_branch_identity(self) -> None:
+        fixture = nightly_release_fixture()
+        fixture["release-workflow-identity"] = (
+            "https://github.com/unicity-aos/aos-ce/.github/workflows/"
+            "release.yml@refs/heads/main"
+        )
+        with self.assertRaisesRegex(ValueError, "exact tag"):
+            METADATA.validate_release(fixture)
 
     def test_release_ready_mode_rejects_false_gate(self) -> None:
         with self.assertRaisesRegex(ValueError, "release-ready gate is false"):
@@ -167,6 +232,19 @@ class ChannelMetadataTests(unittest.TestCase):
             now=dt.datetime(2026, 7, 17, tzinfo=dt.timezone.utc),
         )
         self.assertEqual(result["generation"], 7)
+
+    def test_channel_classes_do_not_cross(self) -> None:
+        METADATA.validate_channel(nightly_channel_fixture(), expected_channel="nightly")
+        nightly_as_dev = nightly_channel_fixture()
+        nightly_as_dev["channel"] = "dev"
+        nightly_as_dev["expires-at"] = "2026-07-23T10:00:00Z"
+        with self.assertRaisesRegex(ValueError, "canonical releases"):
+            METADATA.validate_channel(nightly_as_dev, expected_channel="dev")
+        canonical = channel_fixture()
+        canonical["channel"] = "nightly"
+        canonical["expires-at"] = "2026-07-18T10:00:00Z"
+        with self.assertRaisesRegex(ValueError, "nightly prerelease"):
+            METADATA.validate_channel(canonical, expected_channel="nightly")
 
     def test_channel_rejects_cross_channel_substitution(self) -> None:
         with self.assertRaisesRegex(ValueError, "expected dev"):

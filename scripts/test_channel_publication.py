@@ -22,10 +22,9 @@ class ChannelPublicationTests(unittest.TestCase):
     def plan(self, generation: int, assets: list[dict]) -> dict:
         return PUBLICATION.publication_plan("stable", generation, assets)
 
-    def test_empty_release_accepts_only_generation_one(self) -> None:
+    def test_empty_release_accepts_any_positive_initial_generation(self) -> None:
         self.assertEqual(self.plan(1, [])["transaction-floor"], 0)
-        with self.assertRaisesRegex(ValueError, "first channel generation"):
-            self.plan(2, [])
+        self.assertEqual(self.plan(47, [])["generation"], 47)
 
     def test_transaction_only_is_a_recoverable_exact_retry(self) -> None:
         transaction = asset(1, "channel-stable-7.transaction.json")

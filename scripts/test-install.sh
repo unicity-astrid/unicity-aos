@@ -193,6 +193,13 @@ EOF
 chmod 755 "$fake_bin/uname" "$fake_bin/date" "$fake_bin/curl" "$fake_bin/cosign" \
   "$fake_bin/sha256sum" "$fixture/cosign-linux-amd64"
 
+if PATH="$fake_bin:$PATH" HOME="$work/impossible-nightly-home" AOS_TEST_FIXTURE="$fixture" \
+  sh "$repo_root/install.sh" --version "2026.1.0-nightly.20260230.g$(printf '%040d' 0)" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer accepted a nightly version with an impossible date" >&2
+  exit 1
+fi
+test ! -e "$work/impossible-nightly-home/.aos"
+
 PATH="$fake_bin:$PATH" \
 HOME="$work/home" \
 AOS_TEST_FIXTURE="$fixture" \
@@ -244,6 +251,18 @@ grep -Fx 'https://github.com/unicity-aos/aos-ce/.github/workflows/promote-channe
   "$fixture/cosign-identities" >/dev/null
 grep -Fx 'https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/2026.1.0' \
   "$fixture/cosign-identities" >/dev/null
+
+cp "$fixture/channel-good.toml" "$fixture/channel.toml"
+nightly_version="2026.1.0-nightly.20260717.gaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+sed -i.bak "s/version = \"2026.1.0\"/version = \"$nightly_version\"/" "$fixture/channel.toml"
+rm "$fixture/channel.toml.bak"
+if PATH="$fake_bin:$PATH" HOME="$work/nightly-on-stable-home" AOS_TEST_FIXTURE="$fixture" \
+  sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null 2>&1; then
+  echo "installer accepted a nightly release through the stable channel" >&2
+  exit 1
+fi
+test ! -e "$work/nightly-on-stable-home/.aos"
+cp "$fixture/channel-good.toml" "$fixture/channel.toml"
 
 channel_root="$work/channel-home/.aos/update/channels/stable"
 mkdir "$channel_root/generations/3"

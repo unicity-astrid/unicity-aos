@@ -38,9 +38,13 @@ MAX_CHANNEL_LIFETIME = {
 }
 HEX_64 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
-VERSION = re.compile(
+CANONICAL_VERSION = (
     r"(?:202[6-9]|20[3-9][0-9])\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 )
+NIGHTLY_VERSION = re.compile(
+    rf"{CANONICAL_VERSION}-nightly\.[0-9]{{8}}\.g[0-9a-f]{{40}}"
+)
+VERSION = re.compile(rf"(?:{CANONICAL_VERSION}|{NIGHTLY_VERSION.pattern})")
 SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 )
@@ -49,6 +53,27 @@ SEMVER = re.compile(
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def is_nightly_version(version: str) -> bool:
+    return nightly_source_commit(version) is not None
+
+
+def nightly_source_commit(version: str) -> str | None:
+    match = NIGHTLY_VERSION.fullmatch(version)
+    if match is None:
+        return None
+    date = version.rsplit("-nightly.", 1)[1].split(".g", 1)[0]
+    try:
+        dt.datetime.strptime(date, "%Y%m%d")
+    except ValueError:
+        return None
+    return version.rsplit(".g", 1)[1]
+
+
+def release_workflow_identity(version: str, tag: str) -> str:
+    require(tag == version, "release tag must equal version")
+    return f"https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{tag}"
 
 
 def exact_keys(value: Any, expected: set[str], context: str) -> dict[str, Any]:
@@ -145,8 +170,12 @@ def validate_release(metadata: Any, *, require_ready: bool = False) -> dict[str,
     tag = string(root["tag"], "release metadata tag")
     require(tag == version, "release metadata tag must equal version")
     require(COMMIT.fullmatch(string(root["source-commit"], "release metadata source-commit")) is not None, "release metadata source-commit is malformed")
+    nightly_commit = nightly_source_commit(version)
+    if "-nightly." in version:
+        require(nightly_commit is not None, "release metadata nightly version is malformed")
+        require(nightly_commit == root["source-commit"], "release metadata nightly version must embed its source commit")
     timestamp(root["published-at"], "release metadata published-at")
-    expected_identity = f"https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{tag}"
+    expected_identity = release_workflow_identity(version, tag)
     require(
         string(root["release-workflow-identity"], "release metadata release-workflow-identity")
         == expected_identity,
@@ -278,11 +307,18 @@ def validate_channel(
     require(release["repository"] == REPOSITORY, f"channel release repository must be {REPOSITORY}")
     version = string(release["version"], "channel metadata.release.version")
     require(VERSION.fullmatch(version) is not None, "channel release version must be calendar semver")
+    if channel == "nightly":
+        require(is_nightly_version(version), "nightly channel must point to a nightly prerelease")
+    else:
+        require("-nightly." not in version, "stable and dev channels must point to canonical releases")
     require(release["tag"] == version, "channel release tag must equal version")
     require(COMMIT.fullmatch(string(release["source-commit"], "channel metadata.release.source-commit")) is not None, "channel release source-commit is malformed")
+    nightly_commit = nightly_source_commit(version)
+    if is_nightly_version(version):
+        require(nightly_commit == release["source-commit"], "nightly channel version must embed its source commit")
     require(release["metadata-asset"] == f"unicity-aos-{version}-release.toml", "channel release metadata asset is not canonical")
     require(HEX_64.fullmatch(string(release["metadata-sha256"], "channel metadata.release.metadata-sha256")) is not None, "channel release metadata SHA-256 is malformed")
-    expected_identity = f"https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{version}"
+    expected_identity = release_workflow_identity(version, release["tag"])
     require(release["release-workflow-identity"] == expected_identity, "channel release workflow identity is not the exact tag identity")
     validate_target_table(root["targets"], version=version, context="channel metadata.targets")
     return root
@@ -374,7 +410,7 @@ def render_release(args: argparse.Namespace) -> None:
             "sigstore-bundle": f"{asset}.sigstore.json",
             "size": path.stat().st_size,
         }
-    identity = f"https://github.com/{REPOSITORY}/.github/workflows/release.yml@refs/tags/{args.tag}"
+    identity = release_workflow_identity(args.version, args.tag)
     lines = [
         "schema-version = 1",
         'kind = "aos-release"',
