@@ -416,7 +416,7 @@ class RenderTests(unittest.TestCase):
         METADATA.validate_channel(rendered, expected_channel="stable")
         self.assertEqual(rendered["targets"], release["targets"])
 
-    def test_render_release_carries_staged_runtime_metadata_unavailability(self) -> None:
+    def test_render_release_carries_the_pinned_runtime_provenance(self) -> None:
         artifacts = self.root / "artifacts"
         artifacts.mkdir()
         sha_lines = []
@@ -450,10 +450,16 @@ class RenderTests(unittest.TestCase):
         )()
         METADATA.render_release(args)
         rendered = METADATA.load(output)
-        self.assertFalse(rendered["runtime"]["release-metadata-available"])
-        self.assertEqual(rendered["runtime"]["source-commit"], "")
-        self.assertEqual(rendered["runtime"]["release-metadata-asset"], "")
-        self.assertEqual(rendered["runtime"]["release-metadata-blake3"], "")
+        compatibility = METADATA.load(
+            SCRIPT.parent.parent / "release/runtime-compatibility.toml"
+        )["runtime"]
+        for field in (
+            "release-metadata-available",
+            "source-commit",
+            "release-metadata-asset",
+            "release-metadata-blake3",
+        ):
+            self.assertEqual(rendered["runtime"][field], compatibility[field])
 
 
 if __name__ == "__main__":

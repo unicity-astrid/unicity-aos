@@ -673,7 +673,7 @@ exit 23
 }
 
 #[test]
-fn native_status_does_not_invoke_the_runtime_cli() {
+fn native_status_reports_stopped_without_invoking_the_runtime_cli() {
     let fixture = Fixture::new("status");
     fixture.install_runtime(RECORDING_RUNTIME);
 
@@ -684,13 +684,12 @@ fn native_status_does_not_invoke_the_runtime_cli() {
             .output()
             .expect("run aos status");
 
-        assert!(!output.status.success());
+        assert!(output.status.success());
         assert!(!fixture.args.exists());
-        assert!(
-            String::from_utf8(output.stderr)
-                .expect("utf8 stderr")
-                .contains("aos: runtime status unavailable")
-        );
+        assert!(output.stderr.is_empty());
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        assert!(stdout.contains("stopped"));
+        assert!(stdout.contains("0.10.0"));
     }
 }
 

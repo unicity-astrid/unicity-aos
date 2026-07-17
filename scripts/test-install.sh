@@ -9,6 +9,17 @@ fake_bin="$work/fake-bin"
 mkdir -p "$fixture" "$fake_bin" "$work/home" "$work/capsules"
 mkdir -p "$work/home/.astrid"
 printf 'standalone-runtime-state\n' > "$work/home/.astrid/sentinel"
+read -r runtime_version runtime_tag runtime_identity < <(
+  python3 - "$repo_root/release/runtime-compatibility.toml" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+with pathlib.Path(sys.argv[1]).open("rb") as file:
+    runtime = tomllib.load(file)["runtime"]
+print(runtime["version"], runtime["tag"], runtime["release-workflow-identity"])
+PY
+)
 
 cat > "$work/aos" <<'EOF'
 #!/bin/sh
@@ -32,7 +43,7 @@ for spec in source_contract():
     write_fixture(output / spec.asset, spec)
 PY
 
-runtime_root="$work/astrid-0.9.4-x86_64-unknown-linux-gnu"
+runtime_root="$work/astrid-$runtime_version-x86_64-unknown-linux-gnu"
 mkdir -p "$runtime_root"
 for binary in astrid astrid-daemon astrid-build astrid-emit; do
   printf '#!/bin/sh\necho %s\n' "$binary" > "$runtime_root/$binary"
@@ -70,9 +81,9 @@ release-workflow-identity = "https://github.com/unicity-aos/aos-ce/.github/workf
 
 [runtime]
 repository = "astrid-runtime/astrid"
-version = "0.9.4"
-tag = "v0.9.4"
-release-workflow-identity = "https://github.com/unicity-astrid/astrid/.github/workflows/release.yml@refs/tags/v0.9.4"
+version = "${runtime_version}"
+tag = "${runtime_tag}"
+release-workflow-identity = "${runtime_identity}"
 release-metadata-available = false
 source-commit = ""
 release-metadata-asset = ""

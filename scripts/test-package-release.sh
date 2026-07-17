@@ -6,7 +6,21 @@ python3 "$repo_root/scripts/validate-release-contract.py"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 target=x86_64-unknown-linux-gnu
-runtime_root="$work/astrid-0.9.4-$target"
+read -r product_version runtime_version runtime_identity < <(
+  python3 - "$repo_root" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+with (root / "crates/unicity-aos-bootstrap/Cargo.toml").open("rb") as file:
+    product = tomllib.load(file)["package"]["version"]
+with (root / "release/runtime-compatibility.toml").open("rb") as file:
+    runtime = tomllib.load(file)["runtime"]
+print(product, runtime["version"], runtime["release-workflow-identity"])
+PY
+)
+runtime_root="$work/astrid-$runtime_version-$target"
 mkdir -p "$runtime_root" "$work/output"
 mkdir -p "$work/capsules"
 
@@ -49,7 +63,7 @@ bash "$repo_root/scripts/package-release.sh" \
   "$work/capsules" \
   "$work/output"
 
-archive="$work/output/unicity-aos-2026.1.0-$target.tar.gz"
+archive="$work/output/unicity-aos-$product_version-$target.tar.gz"
 test -f "$archive"
 tar -tzf "$archive" > "$work/files"
 grep -q '/bin/aos$' "$work/files"
@@ -68,18 +82,19 @@ if grep -F '@unicity-aos/capsule-' "$bundle_root/Distro.toml" >/dev/null; then
   echo "release archive retained a legacy capsule repository source" >&2
   exit 1
 fi
-python3 - "$manifest" <<'PY'
+python3 - "$manifest" "$product_version" "$runtime_version" "$runtime_identity" <<'PY'
 import json
 import pathlib
 import sys
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+product_version, runtime_version, runtime_identity = sys.argv[2:]
 assert manifest["schema_version"] == 2
-assert manifest["product"]["version"] == "2026.1.0"
-assert manifest["runtime"]["version"] == "0.9.4"
+assert manifest["product"]["version"] == product_version
+assert manifest["runtime"]["version"] == runtime_version
 assert manifest["runtime"]["digest"] == "blake3:" + "0" * 64
 assert "sha256" not in manifest["runtime"]
-assert manifest["runtime"]["release_workflow_identity"] == "https://github.com/unicity-astrid/astrid/.github/workflows/release.yml@refs/tags/v0.9.4"
+assert manifest["runtime"]["release_workflow_identity"] == runtime_identity
 assert manifest["contracts"]["repository"] == "astrid-runtime/wit"
 assert manifest["contracts"]["commit"] == "278dbca3e32f327d0f2358644fc86559779ba0fd"
 assert manifest["contracts"]["sdk_rust_version"] == "0.7.1"
@@ -90,13 +105,13 @@ assert len(set(manifest["capsules"]["assets"])) == 18
 PY
 
 unsafe_root="$work/unsafe-runtime"
-mkdir -p "$unsafe_root/astrid-0.9.4-$target"
-ln -s /tmp "$unsafe_root/astrid-0.9.4-$target/astrid"
+mkdir -p "$unsafe_root/astrid-$runtime_version-$target"
+ln -s /tmp "$unsafe_root/astrid-$runtime_version-$target/astrid"
 for binary in astrid-daemon astrid-build astrid-emit; do
-  printf '#!/bin/sh\nexit 0\n' > "$unsafe_root/astrid-0.9.4-$target/$binary"
-  chmod 755 "$unsafe_root/astrid-0.9.4-$target/$binary"
+  printf '#!/bin/sh\nexit 0\n' > "$unsafe_root/astrid-$runtime_version-$target/$binary"
+  chmod 755 "$unsafe_root/astrid-$runtime_version-$target/$binary"
 done
-COPYFILE_DISABLE=1 tar -czf "$work/unsafe-runtime.tar.gz" -C "$unsafe_root" "astrid-0.9.4-$target"
+COPYFILE_DISABLE=1 tar -czf "$work/unsafe-runtime.tar.gz" -C "$unsafe_root" "astrid-$runtime_version-$target"
 if bash "$repo_root/scripts/package-release.sh" \
   "$target" \
   "$work/aos" \
@@ -108,13 +123,13 @@ if bash "$repo_root/scripts/package-release.sh" \
   exit 1
 fi
 
-python3 - "$work/duplicate-runtime.tar.gz" "$target" <<'PY'
+python3 - "$work/duplicate-runtime.tar.gz" "$target" "$runtime_version" <<'PY'
 import io
 import sys
 import tarfile
 
-archive_path, target = sys.argv[1:]
-root = f"astrid-0.9.4-{target}"
+archive_path, target, runtime_version = sys.argv[1:]
+root = f"astrid-{runtime_version}-{target}"
 
 def add(archive, name, data=b"#!/bin/sh\nexit 0\n"):
     member = tarfile.TarInfo(name)

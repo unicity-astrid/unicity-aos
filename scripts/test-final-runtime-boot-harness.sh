@@ -136,6 +136,14 @@ release-ready = true
 upgrade-self-heal-ready = false
 EOF
 
+cat > "$work/pending-compatibility.toml" <<'EOF'
+schema-version = 1
+[runtime]
+version = "9.9.9"
+release-ready = false
+upgrade-self-heal-ready = false
+EOF
+
 new_case() {
   rm -rf "$work/current"
   mkdir -p "$work/current/home/.aos/runtime/run" "$work/current/state"
@@ -170,6 +178,15 @@ expect_failure() {
     grep -E "$pattern" "$work/failure.log" >/dev/null
   fi
 }
+
+new_case
+expect_failure 'not release-ready' env \
+  AOS_FINAL_BOOT_TEST_MODE=1 \
+  AOS_FINAL_BOOT_TEST_COMPATIBILITY="$work/pending-compatibility.toml" \
+  FAKE_STATE_DIR="$work/current/state" \
+  "$repo_root/scripts/test-final-runtime-boot.sh" \
+  "$work/fake-aos.py" \
+  "$work/current/home/.aos"
 
 cleanup_daemon() {
   local pid_file=$work/current/state/daemon.pid

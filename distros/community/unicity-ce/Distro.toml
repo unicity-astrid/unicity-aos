@@ -6,7 +6,7 @@ name = "Unicity CE"
 pretty-name = "Unicity CE 2026.1.0 (Genesis)"
 version = "2026.1.0"
 codename = "genesis"
-release-date = "2026-07-10"
+release-date = "2026-07-17"
 description = "The complete Unicity AOS agent operating system experience"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 maintainers = ["Joshua J. Bouw <jjb@unicity-labs.com>"]
@@ -15,7 +15,7 @@ support = "https://github.com/unicity-aos/aos-ce/discussions"
 bug-tracker = "https://github.com/unicity-aos/aos-ce/issues"
 repository = "https://github.com/unicity-aos/aos-ce"
 license = "MIT OR Apache-2.0"
-astrid-version = "=0.9.4"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
+astrid-version = "=0.10.0"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
 
 [distro.requires.astrid]
 llm = "^1.0"

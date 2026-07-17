@@ -177,7 +177,27 @@ for spec in source_contract():
 PY
 
 target=x86_64-unknown-linux-gnu
-runtime_root=$work/astrid-0.9.4-$target
+runtime_value() {
+  local key=$1
+  awk -v key="$key" '
+    $0 == "[runtime]" { in_runtime = 1; next }
+    in_runtime && /^\[/ { exit }
+    in_runtime && $1 == key && $2 == "=" {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*"/, "", value)
+      sub(/".*$/, "", value)
+      print value
+      exit
+    }
+  ' "$repo_root/release/runtime-compatibility.toml"
+}
+runtime_version=$(runtime_value version)
+runtime_tag=$(runtime_value tag)
+runtime_identity=$(runtime_value release-workflow-identity)
+test -n "$runtime_version"
+test -n "$runtime_tag"
+test -n "$runtime_identity"
+runtime_root=$work/astrid-$runtime_version-$target
 mkdir "$runtime_root"
 for name in astrid astrid-daemon astrid-build astrid-emit; do
   printf '#!/bin/sh\necho packaged-%s\n' "$name" > "$runtime_root/$name"
@@ -213,9 +233,9 @@ release-workflow-identity = "https://github.com/unicity-aos/aos-ce/.github/workf
 
 [runtime]
 repository = "astrid-runtime/astrid"
-version = "0.9.4"
-tag = "v0.9.4"
-release-workflow-identity = "https://github.com/unicity-astrid/astrid/.github/workflows/release.yml@refs/tags/v0.9.4"
+version = "${runtime_version}"
+tag = "${runtime_tag}"
+release-workflow-identity = "${runtime_identity}"
 release-metadata-available = false
 source-commit = ""
 release-metadata-asset = ""
@@ -439,12 +459,5 @@ HOME="$home" "$aos_home/bin/aos" migrate runtime --from "$legacy" > "$work/reins
 grep -F 'this runtime migration is already complete' "$work/reinstall-idempotent.log" >/dev/null
 test "$(b3sum -- "$receipt" | awk '{print $1}')" = "$receipt_before"
 test ! -e "$aos_home/runtime/run"
-if bash "$repo_root/scripts/test-final-runtime-boot.sh" \
-  "$aos_home/bin/aos" \
-  "$aos_home" > "$work/pending-boot.log" 2>&1; then
-  echo "final runtime boot gate ran before an exact runtime was approved" >&2
-  exit 1
-fi
-grep -F 'the exact approved runtime is not release-ready' "$work/pending-boot.log" >/dev/null
 
 echo "sanitized packaged migration, reinstall, and self-heal checks passed"

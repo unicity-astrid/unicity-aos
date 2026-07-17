@@ -6,27 +6,16 @@ version = "2026.1.0"
 
 [runtime]
 repository = "astrid-runtime/astrid"
-# Release blocker: 0.9.4 does not implement the separate authenticated-operator
-# and target-principal init contract required by the staged AOS CLI, including
-# daemon readiness before the grant preflight. Do not package or publish
-# 2026.1.0 until an approved, published runtime provides that neutral contract.
-release-ready = false
-# Release blocker: set true only after the exact candidate bundle passes the
-# sanitized packaged upgrade test, the final-runtime boot hook, and the private
-# frozen-home clone test without changing the preserved source.
-upgrade-self-heal-ready = false
-version = "0.9.4"
-tag = "v0.9.4"
-version-requirement = "=0.9.4"
-# v0.9.4 was signed before the repository moved to the astrid-runtime org.
-# Sigstore identities are immutable provenance and retain the original owner.
-release-workflow-identity = "https://github.com/unicity-astrid/astrid/.github/workflows/release.yml@refs/tags/v0.9.4"
-# Astrid v0.9.4 predates the signed immutable release-metadata contract. These
-# fields must remain explicitly unavailable; do not invent a commit or digest.
-release-metadata-available = false
-source-commit = ""
-release-metadata-asset = ""
-release-metadata-blake3 = ""
+release-ready = true
+upgrade-self-heal-ready = true
+version = "0.10.0"
+tag = "v0.10.0"
+version-requirement = "=0.10.0"
+release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.10.0"
+release-metadata-available = true
+source-commit = "7d3f0c2e26254e4ea78c07e4a78cdb36e6e56ceb"
+release-metadata-asset = "astrid-0.10.0-release.toml"
+release-metadata-blake3 = "94989ed2a385b274b118a8b1b92aca751e2bcdb9b0e1c285dcd3c1b0145f3833"
 
 [contracts]
 repository = "astrid-runtime/wit"

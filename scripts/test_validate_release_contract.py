@@ -139,12 +139,18 @@ class ReleaseReadinessTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "allowed calendar"):
             VALIDATOR.validate_product_version(valid, allow_nightly=False)
 
-    def test_main_passes_staged_and_refuses_strict_validation(self) -> None:
+    def test_main_matches_the_current_publication_gate(self) -> None:
         self.assertEqual(VALIDATOR.main([]), 0)
-        with self.assertRaisesRegex(ValueError, "refusing to publish"):
-            VALIDATOR.main(["--require-release-ready"])
+        runtime = VALIDATOR.readiness_metadata(
+            ROOT / "release/runtime-compatibility.toml"
+        )["runtime"]
+        if runtime["release-ready"] and runtime["upgrade-self-heal-ready"]:
+            self.assertEqual(VALIDATOR.main(["--require-release-ready"]), 0)
+        else:
+            with self.assertRaisesRegex(ValueError, "refusing to publish"):
+                VALIDATOR.main(["--require-release-ready"])
 
-    def test_cli_passes_staged_and_refuses_strict_validation(self) -> None:
+    def test_cli_matches_the_current_publication_gate(self) -> None:
         staged = subprocess.run(
             [sys.executable, str(SCRIPT)],
             cwd=ROOT,
@@ -154,6 +160,9 @@ class ReleaseReadinessTests(unittest.TestCase):
         )
         self.assertEqual(staged.returncode, 0, staged.stderr)
 
+        runtime = VALIDATOR.readiness_metadata(
+            ROOT / "release/runtime-compatibility.toml"
+        )["runtime"]
         strict = subprocess.run(
             [sys.executable, str(SCRIPT), "--require-release-ready"],
             cwd=ROOT,
@@ -161,8 +170,11 @@ class ReleaseReadinessTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(strict.returncode, 1)
-        self.assertIn("refusing to publish this staged product", strict.stderr)
+        if runtime["release-ready"] and runtime["upgrade-self-heal-ready"]:
+            self.assertEqual(strict.returncode, 0, strict.stderr)
+        else:
+            self.assertEqual(strict.returncode, 1)
+            self.assertIn("refusing to publish", strict.stderr)
 
 
 if __name__ == "__main__":

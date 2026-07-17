@@ -5,7 +5,7 @@
 ### Added
 
 - The `aos` product command and product-owned `~/.aos` state boundary.
-- A pinned Unicity CE distribution manifest over Astrid Runtime 0.9.4, emplaced
+- A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.0, emplaced
   as the bundled runtime's operator-enforced distro.
 - Reproducible macOS and Linux release bundles with primary BLAKE3 and
   Homebrew-compatible SHA-256 checksum manifests, Sigstore bundles, GitHub
@@ -33,6 +33,8 @@
 - A native release gate that initializes a clean AOS home, verifies the exact
   18-capsule CE lock, grants, and ready set, repeats initialization without
   changing runtime state, and proves clean daemon shutdown before publication.
+- Native `aos status` output for authenticated running state and verified
+  stopped state without invoking the runtime CLI.
 - An opt-in daily nightly train with deterministic run-dated versions, exact
   Astrid compatibility pins, protected publication and promotion, and
   idempotent recovery after interrupted release or pointer updates. It is

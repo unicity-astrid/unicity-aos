@@ -601,7 +601,7 @@ fn handle_status(json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let status = match runtime.block_on(unicity_aos_bootstrap::status::read()) {
+    let status = match runtime.block_on(unicity_aos_bootstrap::status::read(&home)) {
         Ok(status) => status,
         Err(error) => {
             eprintln!("aos: runtime status unavailable: {error}");
