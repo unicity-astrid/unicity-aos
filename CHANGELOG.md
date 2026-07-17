@@ -5,7 +5,7 @@
 ### Added
 
 - The `aos` product command and product-owned `~/.aos` state boundary.
-- A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.0, emplaced
+- A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.1, emplaced
   as the bundled runtime's operator-enforced distro.
 - Reproducible macOS and Linux release bundles with primary BLAKE3 and
   Homebrew-compatible SHA-256 checksum manifests, Sigstore bundles, GitHub

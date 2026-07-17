@@ -15,7 +15,7 @@ support = "https://github.com/unicity-aos/aos-ce/discussions"
 bug-tracker = "https://github.com/unicity-aos/aos-ce/issues"
 repository = "https://github.com/unicity-aos/aos-ce"
 license = "MIT OR Apache-2.0"
-astrid-version = "=0.10.0"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
+astrid-version = "=0.10.1"  # Product releases pin the exact bundled runtime; update this with release/runtime-compatibility.toml.
 
 [distro.requires.astrid]
 llm = "^1.0"
