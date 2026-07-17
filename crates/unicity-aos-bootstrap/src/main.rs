@@ -7,9 +7,9 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
-#[cfg(any(not(unix), test))]
 use std::process::ExitStatus;
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
@@ -170,6 +170,9 @@ fn main() -> ExitCode {
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
     }
+    if runtime_stop_requested(&args) {
+        return handle_runtime_stop(&args);
+    }
     if product_init_requested(&args)
         && let Err(code) = prepare_product_init(&args)
     {
@@ -195,6 +198,9 @@ fn main() -> ExitCode {
     if let Some(exit_code) = handle_product_command(&args) {
         return exit_code;
     }
+    if runtime_stop_requested(&args) {
+        return handle_runtime_stop(&args);
+    }
     if product_init_requested(&args)
         && let Err(code) = prepare_product_init(&args)
     {
@@ -214,7 +220,6 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(any(not(unix), test))]
 fn child_exit_code(status: ExitStatus) -> ExitCode {
     if status.success() {
         ExitCode::SUCCESS
@@ -365,6 +370,133 @@ fn runtime_args_for_dispatch(mut args: Vec<OsString>) -> Vec<OsString> {
         args.push(OsString::from("--grant-capsules"));
     }
     args
+}
+
+fn runtime_stop_requested(args: &[OsString]) -> bool {
+    match leading_runtime_root_index(args) {
+        Ok(Some(index)) => args.get(index).is_some_and(|root| root == "stop"),
+        Ok(None) => false,
+        Err(()) => fallback_runtime_root(args).is_some_and(|root| root == "stop"),
+    }
+}
+
+fn fallback_runtime_root(args: &[OsString]) -> Option<&str> {
+    args.iter().filter_map(|arg| arg.to_str()).find(|arg| {
+        matches!(
+            *arg,
+            "chat"
+                | "run"
+                | "agent"
+                | "group"
+                | "caps"
+                | "quota"
+                | "invite"
+                | "keypair"
+                | "pair-device"
+                | "secret"
+                | "voucher"
+                | "trust"
+                | "audit"
+                | "budget"
+                | "session"
+                | "capsule"
+                | "mcp"
+                | "distro"
+                | "init"
+                | "config"
+                | "gc"
+                | "start"
+                | "status"
+                | "stop"
+                | "restart"
+                | "logs"
+                | "ps"
+                | "top"
+                | "who"
+                | "doctor"
+                | "setup"
+                | "version"
+                | "completions"
+                | "update"
+                | "self-update"
+                | "self_update"
+                | "help"
+        )
+    })
+}
+
+fn handle_runtime_stop(args: &[OsString]) -> ExitCode {
+    let home = match resolve_home() {
+        Ok(home) => home,
+        Err(code) => return code,
+    };
+    let output = match home
+        .runtime_command_with_args(args)
+        .and_then(|mut command| command.output())
+    {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("aos: failed to run bundled runtime stop: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if output.status.success() {
+        return emit_runtime_output(&output)
+            .map_or_else(runtime_output_error, |()| ExitCode::SUCCESS);
+    }
+
+    if expected_shutdown_disconnect(&output) && wait_for_confirmed_stop(&home) {
+        if let Err(error) = std::io::stdout().write_all(&output.stdout) {
+            return runtime_output_error(error);
+        }
+        if output.stdout.is_empty() {
+            println!("Unicity AOS stopped.");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    match emit_runtime_output(&output) {
+        Ok(()) => child_exit_code(output.status),
+        Err(error) => runtime_output_error(error),
+    }
+}
+
+fn expected_shutdown_disconnect(output: &std::process::Output) -> bool {
+    if output.status.code() != Some(1) {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr.contains("connection lost waiting on astrid.v1.response.shutdown.")
+        && stderr.contains("connection closed before astrid.v1.response.shutdown.")
+}
+
+fn wait_for_confirmed_stop(home: &AosHome) -> bool {
+    const ATTEMPTS: usize = 100;
+    const INTERVAL: Duration = Duration::from_millis(50);
+
+    for attempt in 0..ATTEMPTS {
+        if unicity_aos_bootstrap::status::confirm_stopped(home)
+            .is_ok_and(|status| status.state == "stopped")
+        {
+            return true;
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(INTERVAL);
+        }
+    }
+    false
+}
+
+fn emit_runtime_output(output: &std::process::Output) -> io::Result<()> {
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    Ok(())
+}
+
+fn runtime_output_error(error: io::Error) -> ExitCode {
+    eprintln!("aos: failed to write bundled runtime output: {error}");
+    ExitCode::FAILURE
 }
 
 fn is_owned_root(value: &str) -> bool {
@@ -741,7 +873,7 @@ mod tests {
 
     use super::{
         ProductCli, ProductCommand, child_exit_code, handle_product_command, help_targets_product,
-        leading_owned_root, runtime_args_for_dispatch,
+        leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
     };
 
     #[test]
@@ -863,6 +995,31 @@ mod tests {
     #[test]
     fn unowned_command_is_left_for_runtime_parser() {
         assert!(handle_product_command(&[OsString::from("doctor")]).is_none());
+    }
+
+    #[test]
+    fn runtime_stop_keeps_the_inherited_argument_surface() {
+        assert!(runtime_stop_requested(&[OsString::from("stop")]));
+        assert!(runtime_stop_requested(&[
+            OsString::from("--principal"),
+            OsString::from("operator"),
+            OsString::from("stop"),
+        ]));
+        assert!(!runtime_stop_requested(&[
+            OsString::from("capsule"),
+            OsString::from("stop"),
+        ]));
+        assert!(runtime_stop_requested(&[
+            OsString::from("--future-runtime-global"),
+            OsString::from("future-value"),
+            OsString::from("stop"),
+        ]));
+        assert!(!runtime_stop_requested(&[
+            OsString::from("--future-runtime-global"),
+            OsString::from("future-value"),
+            OsString::from("capsule"),
+            OsString::from("stop"),
+        ]));
     }
 
     #[test]

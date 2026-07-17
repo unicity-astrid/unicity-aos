@@ -176,6 +176,72 @@ fn leading_runtime_globals_on_unowned_roots_pass_through_exactly() {
 }
 
 #[test]
+fn inherited_stop_succeeds_only_after_the_runtime_is_confirmed_stopped() {
+    let fixture = Fixture::new("confirmed-stop");
+    fixture.install_runtime(
+        r#"#!/bin/sh
+for arg in "$@"; do
+    echo "<$arg>"
+done > "$AOS_TEST_ARGS"
+echo 'error: connection lost waiting on astrid.v1.response.shutdown.test: connection lost: connection closed before astrid.v1.response.shutdown.test' >&2
+exit 1
+"#,
+    );
+
+    let ready_marker = fixture.home.join("runtime/run/system.ready");
+    fs::create_dir_all(ready_marker.parent().expect("runtime run directory"))
+        .expect("create runtime run directory");
+    fs::write(&ready_marker, []).expect("create runtime ready marker");
+    let marker_to_remove = ready_marker.clone();
+    let shutdown = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        fs::remove_file(marker_to_remove).expect("remove runtime ready marker");
+    });
+
+    let output = fixture
+        .command()
+        .args(["--future-runtime-global", "future-value", "stop"])
+        .output()
+        .expect("run inherited stop");
+    shutdown.join().expect("finish runtime shutdown");
+
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read delegated stop args"),
+        "<--future-runtime-global>\n<future-value>\n<stop>\n"
+    );
+    assert!(!ready_marker.exists());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stop output"),
+        "Unicity AOS stopped.\n"
+    );
+}
+
+#[test]
+fn inherited_stop_does_not_mask_other_runtime_failures() {
+    let fixture = Fixture::new("failed-stop");
+    fixture.install_runtime(
+        r#"#!/bin/sh
+echo 'invalid stop argument' >&2
+exit 2
+"#,
+    );
+
+    let output = fixture
+        .command()
+        .args(["stop", "--invalid"])
+        .output()
+        .expect("run rejected inherited stop");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("utf8 stop error"),
+        "invalid stop argument\n"
+    );
+}
+
+#[test]
 fn product_help_version_and_usage_errors_never_delegate() {
     let fixture = Fixture::new("product-roots");
     fixture.install_runtime(RECORDING_RUNTIME);

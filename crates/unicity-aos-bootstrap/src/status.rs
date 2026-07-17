@@ -78,7 +78,7 @@ pub async fn read(home: &AosHome) -> Result<AosStatus, String> {
     let mut client = match connection {
         Ok(client) => client,
         Err(connection_error) => {
-            return stopped_status(home)
+            return confirm_stopped(home)
                 .map_err(|state_error| format!("{connection_error}; {state_error}"));
         }
     };
@@ -95,7 +95,12 @@ pub async fn read(home: &AosHome) -> Result<AosStatus, String> {
     }
 }
 
-fn stopped_status(home: &AosHome) -> Result<AosStatus, String> {
+/// Confirm that the runtime has released its coordination state and singleton
+/// lock.
+///
+/// This is stricter than a missing socket: a shutdown is complete only after
+/// every transient marker is gone and the runtime lock can be acquired.
+pub fn confirm_stopped(home: &AosHome) -> Result<AosStatus, String> {
     let run_dir = home.runtime_home().join("run");
     for marker in ["system.sock", "system.pid", "system.ready", "system.token"] {
         match fs::symlink_metadata(run_dir.join(marker)) {
@@ -148,7 +153,7 @@ mod tests {
 
     use astrid_core::kernel_api::DaemonStatus;
 
-    use super::{AosStatus, stopped_status};
+    use super::{AosStatus, confirm_stopped};
     use crate::AosHome;
 
     fn temporary_status_home(case: &str) -> PathBuf {
@@ -205,7 +210,7 @@ mod tests {
         fs::create_dir_all(home.runtime_home().join("run")).expect("create runtime run dir");
         fs::write(home.runtime_home().join("run/system.lock"), []).expect("create runtime lock");
 
-        let status = stopped_status(&home).expect("read stopped status");
+        let status = confirm_stopped(&home).expect("read stopped status");
         assert_eq!(status.state, "stopped");
         assert_eq!(status.pid, 0);
         assert_eq!(status.runtime_version, "0.10.0");
@@ -229,7 +234,7 @@ mod tests {
             .expect("open runtime lock");
         lock.try_lock_exclusive().expect("hold runtime lock");
 
-        let error = stopped_status(&home).expect_err("held lock must not report stopped");
+        let error = confirm_stopped(&home).expect_err("held lock must not report stopped");
         assert!(error.contains("runtime lock is still held"));
 
         fs2::FileExt::unlock(&lock).expect("release runtime lock");

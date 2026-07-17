@@ -60,3 +60,7 @@
   Astrid 0.9.4 home shape and a final-candidate runtime boot hook.
 - Present product-facing capsule copy consistently as Unicity AOS while
   preserving stable Astrid Runtime crate, WIT, topic, artifact, and ABI names.
+- Treat the runtime's expected shutdown-response disconnect as a successful
+  `aos stop` only after every coordination marker is gone and the singleton
+  lock is available; all other inherited runtime failures retain their output
+  and exit status.
