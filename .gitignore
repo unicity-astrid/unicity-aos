@@ -1,4 +1,5 @@
 /target/
 /dist/
+/.aos/
 __pycache__/
 *.py[cod]

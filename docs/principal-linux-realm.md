@@ -164,10 +164,28 @@ Supervisor timer line; a successful reset halts the bounded machine. The
 `0x414f5300` implementation value is a private, unregistered profile value, not a
 claim to an assigned RISC-V SBI implementation ID.
 
-This is not Linux yet. No pinned Linux image has reached `/init` inside this
-machine. A PLIC, compressed instructions, and virtio block also remain absent and
-will be added only if the selected kernel/device profile requires them. Those are
-measurable boot facts, not implied scaffolding.
+The pinned Linux longterm 6.18.39 image now reaches the AOS-controlled `/init`
+inside a 32 MiB machine and powers down through SRST after 14,823,384 bounded
+steps. Its source archive matches kernel.org SHA-256
+`a7a7e3d2ae9d95e74197223a8d4eb5f6be7aac21b6e6de27e9685d001c1f8cb0`;
+the deterministic raw `Image` is
+`0dd20934e7c1b54484803a9a474a35e931f26dd881b280178d3e4fe937595852`.
+An identical rebuild produces the same digest. The checked-in capsule regression
+retains and asserts the exact kernel version, AOS machine model, `/init` launch,
+marker, and powerdown trace.
+
+The live packaged proof runs through AOS Runtime 0.10.1 as an installed
+`wasm32-unknown-unknown` component. The Realm performs a kernel-recognized
+cooperative IPC yield between each 100,000-step RV64 slice, and the successful
+MCP result reports 148 suspensions before `/init` powers down. The 32 MiB guest
+limit is deliberately below Astrid's independently enforced 64 MiB component
+linear-memory ceiling, leaving room for the embedded image, interpreter, stack,
+and capsule state.
+
+This is Linux, but it is not yet the agent workbench. The initramfs has only the
+static AOS `/init` and `/dev/console`; it has no shell, libc, packages, writable
+root, or workspace mount. A PLIC, compressed instructions, and virtio block also
+remain absent and will be added only when an admitted device requires them.
 
 ### 2.5 Privileged-machine component sketch and invariant ledger
 
@@ -217,9 +235,10 @@ an implicit RISC-V device.
 | Linux placement | Kernel, initramfs, and FDT ranges are checked before mutation; Linux receives the standard RV64 register handoff in S-mode | exact RAM-byte, FDT-header, layout, register, CSR, and privilege assertions |
 | SBI boundary | Firmware sees only admitted RAM, deterministic time, and bounded console/reset devices; unsupported extensions fail closed | Base 3.0 probe, DBCN write, TIME interrupt, SRST halt, and invalid-address regressions |
 
-The table is also the review boundary: a checkmark for privileged mode does not
-mean Linux compatibility. The next increment must run the exact pinned kernel and
-initramfs to an AOS-controlled `/init` and retain its serial evidence.
+The table is also the review boundary: a Linux boot checkmark does not mean a
+useful Linux environment. The next increment replaces the proof initramfs with a
+pinned Buildroot AOS userland and connects its process lifetime and durable state
+to the principal Realm actor.
 
 ## 3. The system seen from each side
 
@@ -1243,8 +1262,9 @@ CE set rather than test-installed companions.
 - [x] add exact Linux image/initramfs placement, generated versioned FDT bytes,
   S-mode handoff, and bounded SBI 3.0 Base/TIME/DBCN/SRST firmware;
 - add a PLIC when an admitted interrupting device requires it;
-- boot signed Linux longterm 6.18.39 with a Buildroot 2026.05.1 initramfs to an
-  AOS-controlled `/init`, and retain an exact serial trace as an executable test;
+- [x] boot pinned Linux longterm 6.18.39 to an AOS-controlled `/init`, retain its
+  exact serial evidence, and run it through the capsule command adapter;
+- replace the proof initramfs with a pinned Buildroot 2026.05.1 AOS userland;
 - add virtio-block behind an immutable base plus principal-private COW block
   overlay before making the root filesystem writable;
 - replace the probe-only execution adapter with a Realm process/job record whose
@@ -1505,10 +1525,12 @@ The first implementation must resolve these with executable evidence:
 - [ ] defer public WIT, Debian naming, arbitrary package claims, and native-kernel
     coupling until evidence requires them.
 
-The next Linux-bearing executable artifact is pinned Linux 6.18.39 plus Buildroot
-2026.05.1 serial boot to an AOS-controlled `/init`. The firmware contract beneath
-it is now executable: exact image/initramfs placement, generated FDT bytes, S-mode
-register state, and bounded SBI 3.0 Base/TIME/DBCN/SRST handling.
+The first Linux-bearing executable artifact is now live: pinned Linux 6.18.39
+serial-boots to an AOS-controlled `/init` through the installable capsule adapter.
+The next artifact is the Buildroot 2026.05.1 AOS userland, followed by a durable
+principal home and workspace projection. The firmware contract beneath it is
+executable: exact image/initramfs placement, generated FDT bytes, S-mode register
+state, and bounded SBI 3.0 Base/TIME/DBCN/SRST handling.
 Every artifact must run in bounded slices and
 fail with an exact architectural trap before virtio block, persistence,
 networking, or a shell are added. The parallel process track still needs

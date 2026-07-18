@@ -64,3 +64,9 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The nested RV64 interpreter is the Linux Realm's CPU hot path. Optimizing it
+# for speed keeps a full kernel boot inside the broker's bounded tool window;
+# the rest of the distro retains the size-first release profile above.
+[profile.release.package.aos-realm-machine]
+opt-level = 3

@@ -28,8 +28,18 @@ use host::{
 use serde::{Deserialize, Serialize};
 
 const HARD_MAX_FUEL: u64 = 100_000;
+const HARD_MAX_LINUX_STEPS: u64 = 20_000_000;
 const HARD_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const HARD_MEMORY_BYTES: usize = 64 * 1024;
+// The enclosing Astrid component has a 64 MiB linear-memory ceiling. Keep the
+// guest at 32 MiB so its RAM, embedded Image, interpreter state, and component
+// stack all fit inside that independently enforced outer limit.
+const HARD_LINUX_MEMORY_BYTES: usize = 32 * 1024 * 1024;
+const LINUX_SLICE_STEPS: u64 = 100_000;
+const LINUX_INIT_MARKER: &[u8] = b"AOS LINUX /init";
+#[cfg(target_arch = "wasm32")]
+const LINUX_COOPERATE_TOPIC: &str = "realm.v1.linux.cooperate";
+const AOS_LINUX_IMAGE: &[u8] = include_bytes!("../linux/Image");
 
 #[derive(Default)]
 pub struct LinuxRealm;
@@ -45,6 +55,7 @@ pub enum RealmProgram {
     RealmSh,
     Rv64Smoke,
     Rv64Supervisor,
+    LinuxBoot,
     WriteFile,
     Cat,
 }
@@ -115,7 +126,7 @@ struct StatusResponse {
     home_files: usize,
     home_manifest: Option<String>,
     mounts: Vec<MountStatus>,
-    commands: [&'static str; 10],
+    commands: [&'static str; 11],
     workspace_commit: &'static str,
     host_process: bool,
     actor_state: &'static str,
@@ -169,6 +180,7 @@ enum SelectedExecution {
     GuestPipeline,
     MiniShell,
     Rv64(&'static [u8]),
+    Linux,
 }
 
 impl SelectedExecution {
@@ -178,6 +190,21 @@ impl SelectedExecution {
                 "nested-core-wasm"
             }
             Self::Rv64(_) => "aos-rv64-interpreter",
+            Self::Linux => "aos-rv64-linux",
+        }
+    }
+
+    const fn hard_fuel(self) -> u64 {
+        match self {
+            Self::Linux => HARD_MAX_LINUX_STEPS,
+            _ => HARD_MAX_FUEL,
+        }
+    }
+
+    const fn memory_bytes(self) -> usize {
+        match self {
+            Self::Linux => HARD_LINUX_MEMORY_BYTES,
+            _ => HARD_MEMORY_BYTES,
         }
     }
 }
@@ -245,9 +272,10 @@ fn run_command_in_machine(
 ) -> Result<ExecResponse, SysError> {
     let selected = select_program(&args)?;
     let cwd = args.cwd.clone().unwrap_or_else(|| DEFAULT_CWD.to_string());
+    let hard_fuel = selected.execution.hard_fuel();
     let limits = RunLimits {
-        fuel: args.fuel.unwrap_or(HARD_MAX_FUEL).min(HARD_MAX_FUEL),
-        memory_bytes: HARD_MEMORY_BYTES,
+        fuel: args.fuel.unwrap_or(hard_fuel).min(hard_fuel),
+        memory_bytes: selected.execution.memory_bytes(),
         output_bytes: args
             .max_output_bytes
             .unwrap_or(HARD_MAX_OUTPUT_BYTES)
@@ -364,6 +392,7 @@ fn execute_selected(
         SelectedExecution::Rv64(program) => {
             execute_rv64(program, limits).map(|report| (report, vec![]))
         }
+        SelectedExecution::Linux => execute_linux(limits).map(|report| (report, vec![])),
     }
 }
 
@@ -392,6 +421,85 @@ fn execute_rv64(program: &[u8], limits: RunLimits) -> Result<ExecutionReport, Sy
         fuel_consumed: report.total_steps_executed,
         memory_limit_bytes: HARD_MEMORY_BYTES,
         suspensions: 0,
+    })
+}
+
+fn execute_linux(limits: RunLimits) -> Result<ExecutionReport, SysError> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let cooperate = ipc::subscribe(LINUX_COOPERATE_TOPIC)?;
+        return execute_linux_cooperatively(limits, || {
+            // recv(0) is the kernel-recognized run-loop yield primitive. A
+            // private never-published topic makes this a scheduling boundary
+            // without admitting input or consuming another actor queue.
+            let _ = cooperate.recv(0)?;
+            Ok(())
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    execute_linux_cooperatively(limits, || Ok(()))
+}
+
+fn execute_linux_cooperatively(
+    limits: RunLimits,
+    mut cooperate: impl FnMut() -> Result<(), SysError>,
+) -> Result<ExecutionReport, SysError> {
+    let mut machine = Rv64Machine::new(Rv64MachineConfig {
+        ram_bytes: limits.memory_bytes,
+        max_console_bytes: limits.output_bytes,
+    })
+    .map_err(|error| SysError::ApiError(error.to_string()))?;
+    machine
+        .boot_linux(
+            AOS_LINUX_IMAGE,
+            &[],
+            "earlycon=sbi console=hvc0 init=/init panic=-1",
+        )
+        .map_err(|error| SysError::ApiError(error.to_string()))?;
+
+    let mut stdout = Vec::new();
+    let mut fuel_consumed = 0;
+    let mut suspensions = 0;
+    let outcome = loop {
+        let remaining = limits.fuel.saturating_sub(fuel_consumed);
+        if remaining == 0 {
+            break ProcessOutcome::FuelExhausted;
+        }
+        let report = machine.run_slice(remaining.min(LINUX_SLICE_STEPS));
+        fuel_consumed = report.total_steps_executed;
+        let instructions_retired = report.total_instructions_retired;
+        stdout.extend_from_slice(&report.console);
+        match report.outcome {
+            SliceOutcome::Yielded => {
+                suspensions += 1;
+                cooperate()?;
+            }
+            SliceOutcome::Halted(status) if !status.passed => {
+                break ProcessOutcome::Exited(i32::try_from(status.code).unwrap_or(i32::MAX));
+            }
+            SliceOutcome::Halted(_) => {
+                if stdout
+                    .windows(LINUX_INIT_MARKER.len())
+                    .any(|bytes| bytes == LINUX_INIT_MARKER)
+                {
+                    break ProcessOutcome::Exited(0);
+                }
+                break ProcessOutcome::Trapped(format!(
+                    "Linux halted before the AOS /init marker after {instructions_retired} retired instructions"
+                ));
+            }
+            SliceOutcome::Trapped(trap) => break ProcessOutcome::Trapped(trap.to_string()),
+        }
+    };
+
+    Ok(ExecutionReport {
+        outcome,
+        stdout,
+        stderr: Vec::new(),
+        fuel_consumed,
+        memory_limit_bytes: limits.memory_bytes,
+        suspensions,
     })
 }
 
@@ -473,11 +581,12 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
             "realm-sh" => RealmProgram::RealmSh,
             "rv64-smoke" => RealmProgram::Rv64Smoke,
             "rv64-supervisor" => RealmProgram::Rv64Supervisor,
+            "linux-boot" => RealmProgram::LinuxBoot,
             "write-file" => RealmProgram::WriteFile,
             "cat" => RealmProgram::Cat,
             _ => {
                 return Err(SysError::ApiError(format!(
-                    "unsupported realm command `{command}`; supported: pwd, echo, pipe-echo, guest-pipe-echo, realm-sh, rv64-smoke, rv64-supervisor, write-file, cat, smoke-write"
+                    "unsupported realm command `{command}`; supported: pwd, echo, pipe-echo, guest-pipe-echo, realm-sh, rv64-smoke, rv64-supervisor, linux-boot, write-file, cat, smoke-write"
                 )));
             }
         }
@@ -542,6 +651,14 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
                 "rv64-supervisor",
                 SelectedExecution::Rv64(&RV64_SUPERVISOR_PROGRAM),
                 vec!["rv64-supervisor".to_string()],
+            )
+        }
+        RealmProgram::LinuxBoot => {
+            require_arity("linux-boot", &args.args, 0)?;
+            (
+                "linux-boot",
+                SelectedExecution::Linux,
+                vec!["linux-boot".to_string()],
             )
         }
         RealmProgram::WriteFile => {
@@ -628,6 +745,7 @@ fn status_response(
             "realm-sh",
             "rv64-smoke",
             "rv64-supervisor",
+            "linux-boot",
             "write-file",
             "cat",
             "smoke-write",
@@ -775,6 +893,59 @@ mod tests {
         assert_eq!(response.memory_limit_bytes, HARD_MEMORY_BYTES);
         assert_eq!(response.processes, 0);
         assert!(response.process_ids.is_empty());
+    }
+
+    #[test]
+    fn linux_boot_reaches_aos_init_and_powers_down_inside_the_rv64_machine() {
+        let response = run_command(
+            ExecArgs {
+                command: Some("linux-boot".to_string()),
+                ..ExecArgs::default()
+            },
+            "alice".to_string(),
+            Box::<TestHost>::default(),
+        )
+        .expect("embedded Linux boot succeeds");
+
+        assert_eq!(response.program, "linux-boot");
+        assert_eq!(response.execution_backend, "aos-rv64-linux");
+        assert_eq!(response.outcome, "exited");
+        assert_eq!(response.exit_status, Some(0));
+        assert!(response.stdout.contains("Linux version 6.18.39"));
+        assert!(
+            response
+                .stdout
+                .contains("Machine model: AOS RV64 virtual machine v0")
+        );
+        assert!(response.stdout.contains("Run /init as init process"));
+        assert!(response.stdout.contains("AOS LINUX /init"));
+        assert!(response.stdout.contains("reboot: Power down"));
+        assert_eq!(response.memory_limit_bytes, HARD_LINUX_MEMORY_BYTES);
+        assert!(response.fuel_consumed < HARD_MAX_LINUX_STEPS);
+        assert!(response.suspensions > 100);
+        assert_eq!(response.processes, 0);
+    }
+
+    #[test]
+    fn linux_runner_cooperates_after_every_yielded_slice() {
+        let mut cooperative_yields = 0_u64;
+        let report = execute_linux_cooperatively(
+            RunLimits {
+                fuel: LINUX_SLICE_STEPS * 2,
+                memory_bytes: HARD_LINUX_MEMORY_BYTES,
+                output_bytes: HARD_MAX_OUTPUT_BYTES,
+            },
+            || {
+                cooperative_yields += 1;
+                Ok(())
+            },
+        )
+        .expect("bounded Linux execution yields cooperatively");
+
+        assert_eq!(report.outcome, ProcessOutcome::FuelExhausted);
+        assert_eq!(report.fuel_consumed, LINUX_SLICE_STEPS * 2);
+        assert_eq!(report.suspensions, 2);
+        assert_eq!(cooperative_yields, report.suspensions);
     }
 
     #[test]

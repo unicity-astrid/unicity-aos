@@ -1,0 +1,3 @@
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+file /init @AOS_INIT@ 0755 0 0

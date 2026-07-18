@@ -4,11 +4,14 @@ This directory contains the executable seed of AOS Realm: a principal-owned
 agent workbench whose guest interface is Linux-shaped and whose outer authority
 is an ordinary Astrid capsule.
 
-It is useful now, but it is not Linux yet. The capsule runs signed, embedded core
-WebAssembly command modules under Wasmi and now contains the first bounded
-`aos-rv64-virt-v0` machine slice. Commands receive structured `argv` and an
-explicit current directory; there is no host shell command line and the manifest
-requests no `host_process` capability.
+It now boots Linux, but it is not yet the useful AOS Realm distribution. The
+capsule runs signed, embedded core WebAssembly command modules under Wasmi and a
+pinned Linux 6.18.39 image inside the bounded `aos-rv64-virt-v0` machine. The
+first Linux image reaches an AOS-controlled `/init`, retains its serial trace,
+and powers down through SBI. It does not yet contain a shell or general userland.
+Commands receive structured `argv` and an explicit current directory; there is
+no host shell command line and the manifest requests no `host_process`
+capability.
 
 ```text
 agent -> realm tool -> signed nested WASM command -> private realm ABI
@@ -18,8 +21,8 @@ agent -> realm tool -> signed nested WASM command -> private realm ABI
 
 ## What works
 
-`linux_realm_exec` currently admits eight signed core-WASM workloads and two
-diagnostic RV64 instruction images:
+`linux_realm_exec` currently admits eight signed core-WASM workloads, two
+diagnostic RV64 instruction images, and the first full Linux boot image:
 
 - `pwd`
 - `echo`
@@ -35,6 +38,10 @@ diagnostic RV64 instruction images:
   mode with `mret`, delegates a Supervisor `ecall` through `stvec`, returns with
   `sret`, writes `STR\n`, and halts from Supervisor mode. It charges 31 bounded
   steps while retiring 30 instructions because `ecall` does not retire
+- `linux-boot`, which boots the embedded, reproducibly built Linux 6.18.39
+  `Image` in a 32 MiB guest, reaches `AOS LINUX /init`, and powers down after
+  14,823,384 bounded machine steps. The packaged WASM path yields to Astrid
+  between each 100,000-step slice
 - `write-file`
 - `cat`
 - `smoke-write`, the original interpreter smoke test
@@ -136,11 +143,11 @@ it is not presented as an assigned RISC-V SBI implementation ID. The machine has
 no browser, JavaScript, JIT, host process, host filesystem, or network dependency
 and compiles for the capsule's `wasm32-unknown-unknown` target.
 
-Those probes and firmware tests are architectural boundary evidence, not a Linux
-boot claim. A pinned kernel and AOS-controlled `/init` must produce a retained
-serial trace inside this machine before that claim is made. Compressed
-instructions, PLIC, and virtio block are deliberately deferred until the selected
-kernel/device profile requires them.
+The pinned kernel and AOS-controlled `/init` now produce a retained serial trace
+inside this machine. That is a Linux boot claim, not yet a Linux-workbench claim:
+the initramfs has only `/init` and `/dev/console`. Compressed instructions, PLIC,
+and virtio block are deliberately deferred until the selected kernel/device
+profile requires them.
 
 The private ABI exposes bounded `pipe`, compatibility `spawn-signed`, record-based
 `spawn-signed-record`, `wait`, and `signal` operations. The record form selects an
@@ -183,13 +190,14 @@ cargo clippy -p aos-realm-abi -p aos-realm-core -p aos-realm-machine -p aos-real
   -p aos-realm-vfs -p aos-linux-realm \
   --target "$(rustc -vV | sed -n 's/^host: //p')" -- -D warnings
 cargo check -p aos-linux-realm --target wasm32-unknown-unknown
-astrid capsule build capsules/capsule-linux-realm
+aos capsule build capsules/capsule-linux-realm
 astrid --principal default capsule install \
   dist/aos-linux-realm.capsule
 ```
 
-The installed realm appears as two MCP tools when a current Astrid MCP broker is
-present and `astrid --principal default mcp serve` is connected to an MCP client.
+The installed realm appears as two MCP tools when an Astrid MCP broker such as
+`sage-mcp` is present and `astrid --principal default mcp serve` is connected to
+an MCP client. `astrid mcp serve` is the stdio transport shim, not the broker.
 The first mutating call may elicit session-ingress consent and a capsule grant.
 
 Example tool arguments:
@@ -205,6 +213,7 @@ Example tool arguments:
 {"command":"realm-sh","args":["env","ASTRID_REALM=ready"]}
 {"command":"rv64-smoke"}
 {"command":"rv64-supervisor"}
+{"command":"linux-boot"}
 {"command":"write-file","args":["notes.txt","durable\n"],"cwd":"/home/agent"}
 {"command":"cat","args":["notes.txt"],"cwd":"/home/agent"}
 {"command":"write-file","args":["candidate.rs","..."],"cwd":"/workspace"}
@@ -227,10 +236,12 @@ nested descriptor closes, so a trapped command does not leave a partial guest
 file. Durable-home closes select a content-addressed generation with a KV CAS;
 workspace and temporary files retain their outer mount semantics.
 
-This slice does not provide arbitrary executable resolution, shared or inherited
-open-file descriptions, sequential POSIX file actions, `execve`, Bash, a booting
-Linux kernel, general Linux syscalls, a libc, package management, networking,
-PTYs, background jobs, or a compiler. Those belong behind the same realm boundary;
+The embedded kernel does execute general RV64 Linux syscalls, including the
+minimal init's `write` and `reboot`; the earlier nested core-WASM process lane
+still uses the private Realm ABI. This slice does not yet provide arbitrary
+executable resolution, shared or inherited open-file descriptions, sequential
+POSIX file actions, `execve`, Bash, a libc, package management, networking, PTYs,
+background jobs, or a compiler. Those belong behind the same realm boundary;
 they must not be simulated by granting a host process.
 
 ## Distribution direction

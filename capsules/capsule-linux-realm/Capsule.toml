@@ -28,3 +28,7 @@ fs_write = ["cwd://", "home://.local/share/aos-realm/", "home://.local/tmp/aos-r
 "tool.v1.execute.linux_realm_exec" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_linux_realm_exec" }
 "tool.v1.execute.linux_realm_status" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_linux_realm_status" }
 "tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
+# No capsule publishes this topic. Linux execution owns a private subscription
+# and performs recv(0) between RV64 slices so the Astrid run-loop watchdog sees
+# a real cooperative host yield instead of one long CPU-bound WASM turn.
+"realm.v1.linux.cooperate" = "opaque"
