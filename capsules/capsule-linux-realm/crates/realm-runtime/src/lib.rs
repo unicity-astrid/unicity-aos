@@ -3,19 +3,32 @@
 //! Bounded execution of nested core WebAssembly processes.
 
 use aos_realm_abi::{
-    Descriptor, FIRST_FILE_FD, IMPORT_MODULE_V0, MAX_ARGUMENT_BYTES, MAX_PATH_BYTES, NO_DESCRIPTOR,
-    OPEN_READ, OPEN_WRITE_TRUNCATE, PIPE_ENDS_BYTES, PROCESS_HANDLE_BYTES,
-    PROCESS_HANDLE_GENERATION_OFFSET, PROCESS_HANDLE_ID_OFFSET, ProcessHandle, ProcessId,
-    SIGNAL_INTERRUPT, SIGNAL_KILL, SIGNAL_PIPE, SIGNAL_TERMINATE, SIGNED_PROGRAM_ECHO,
-    SIGNED_PROGRAM_STDIN_CAT, STDERR_FD, STDOUT_FD, TERMINATION_BYTES, TERMINATION_EXITED,
-    TERMINATION_SIGNALED,
+    Descriptor, FIRST_FILE_FD, IMPORT_MODULE_V0, MAX_ARGUMENT_BYTES, MAX_ARGUMENT_COUNT,
+    MAX_ENVIRONMENT_BYTES, MAX_ENVIRONMENT_COUNT, MAX_EXECUTABLE_PATH_BYTES, MAX_PATH_BYTES,
+    MAX_SPAWN_ACTIONS, NO_DESCRIPTOR, OPEN_READ, OPEN_WRITE_TRUNCATE, PIPE_ENDS_BYTES,
+    PROCESS_HANDLE_BYTES, PROCESS_HANDLE_GENERATION_OFFSET, PROCESS_HANDLE_ID_OFFSET,
+    ProcessHandle, ProcessId, SIGNAL_INTERRUPT, SIGNAL_KILL, SIGNAL_PIPE, SIGNAL_TERMINATE,
+    SIGNED_PROGRAM_ECHO, SIGNED_PROGRAM_STDIN_CAT, SPAWN_ACTION_BYTES, SPAWN_ACTION_CLOSE_PARENT,
+    SPAWN_ACTION_DUP, SPAWN_RECORD_ACTION_COUNT_OFFSET, SPAWN_RECORD_ACTION_POINTER_OFFSET,
+    SPAWN_RECORD_ARGV_COUNT_OFFSET, SPAWN_RECORD_ARGV_POINTER_OFFSET, SPAWN_RECORD_BYTES,
+    SPAWN_RECORD_ENV_COUNT_OFFSET, SPAWN_RECORD_ENV_POINTER_OFFSET,
+    SPAWN_RECORD_EXECUTABLE_LENGTH_OFFSET, SPAWN_RECORD_EXECUTABLE_POINTER_OFFSET,
+    SPAWN_RECORD_FLAGS_OFFSET, SPAWN_RECORD_HANDLE_POINTER_OFFSET, SPAWN_RECORD_VERSION,
+    SPAWN_RECORD_VERSION_OFFSET, STDERR_FD, STDOUT_FD, STRING_RECORD_BYTES, TERMINATION_BYTES,
+    TERMINATION_EXITED, TERMINATION_SIGNALED,
 };
 use aos_realm_core::{
     DescriptorBinding, DescriptorResource, ExecutableId, KernelError, ParkResult, PipeReadResult,
     PipeWriteResult, ProcessSpec, ProcessState, Quota, RealmKernel, RealmLimits, Termination,
     WaitResult,
 };
-use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc, vec::Vec};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    rc::Rc,
+    vec::Vec,
+};
 use wasmi::{
     Caller, Config, Engine, Error as WasmiError, Extern, Linker, Memory, Module, Store,
     StoreLimits, StoreLimitsBuilder, TrapCode, TypedFunc, Val,
@@ -47,9 +60,15 @@ pub const CAT_GUEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cat.wasm"
 /// Guest copying standard input to standard output with partial-write handling.
 pub const STDIN_CAT_GUEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stdin_cat.wasm"));
 
+/// Guest that prints its bounded process environment one entry per line.
+pub const ENV_GUEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/env.wasm"));
+
 /// Guest that creates, connects, waits for, and reaps its own signed pipeline.
 pub const GUEST_PIPELINE_GUEST: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/guest_pipeline.wasm"));
+
+/// Guest-side shell for a small signed foreground-job grammar.
+pub const MINI_SHELL_GUEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mini_shell.wasm"));
 
 /// Hard limits for one nested process invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +96,8 @@ impl Default for RunLimits {
 pub struct ProcessConfig {
     /// Argument vector including the program name at index zero.
     pub argv: Vec<String>,
+    /// Bounded process environment encoded as canonical `KEY=VALUE` entries.
+    pub environment: Vec<String>,
     /// Guest-visible absolute current working directory.
     pub cwd: String,
 }
@@ -85,6 +106,7 @@ impl Default for ProcessConfig {
     fn default() -> Self {
         Self {
             argv: vec!["smoke-write".to_string()],
+            environment: Vec::new(),
             cwd: "/workspace".to_string(),
         }
     }
@@ -217,7 +239,7 @@ pub enum LaunchError {
     MissingStart(String),
     /// The runtime could not configure a required realm host import.
     RuntimeConfiguration(String),
-    /// Process arguments or current directory violate the private ABI contract.
+    /// Process arguments, environment, or current directory violate the private ABI contract.
     InvalidProcess(String),
 }
 
@@ -248,7 +270,7 @@ pub enum HostFault {
     UnknownDescriptor(i32),
     /// The process exceeded its combined stdout/stderr budget.
     OutputLimit,
-    /// An argument index was absent from the process vector.
+    /// An argument or environment index was absent from its process vector.
     MissingArgument,
     /// A guest-provided buffer cannot hold a process argument or CWD.
     BufferTooSmall,
@@ -289,6 +311,7 @@ struct HostState {
     output_limit: usize,
     monotonic_ns: i64,
     argv: Vec<String>,
+    environment: Vec<String>,
     cwd: String,
     realm_host: Box<dyn RealmHost>,
     files: BTreeMap<i32, Box<dyn RealmFile>>,
@@ -430,6 +453,7 @@ impl RealmRuntime {
             output_limit: limits.output_bytes,
             monotonic_ns: 0,
             argv: process.argv,
+            environment: process.environment,
             cwd: process.cwd,
             realm_host,
             files: BTreeMap::new(),
@@ -482,6 +506,12 @@ fn validate_process(process: &ProcessConfig) -> Result<(), LaunchError> {
             "argv must contain a program name".to_string(),
         ));
     }
+    if process.argv.len() > MAX_ARGUMENT_COUNT {
+        return Err(LaunchError::InvalidProcess(format!(
+            "argv has {} entries; limit is {MAX_ARGUMENT_COUNT}",
+            process.argv.len()
+        )));
+    }
     let argument_bytes = process
         .argv
         .iter()
@@ -492,12 +522,67 @@ fn validate_process(process: &ProcessConfig) -> Result<(), LaunchError> {
             "arguments use {argument_bytes} bytes; limit is {MAX_ARGUMENT_BYTES}"
         )));
     }
+    if process.argv.iter().any(|argument| argument.contains('\0')) {
+        return Err(LaunchError::InvalidProcess(
+            "arguments cannot contain NUL bytes".to_string(),
+        ));
+    }
+    validate_environment(&process.environment)?;
     if process.cwd.len() > MAX_PATH_BYTES || !process.cwd.starts_with('/') {
         return Err(LaunchError::InvalidProcess(
             "cwd must be an absolute guest path no larger than 4096 bytes".to_string(),
         ));
     }
+    if process.cwd.contains('\0') {
+        return Err(LaunchError::InvalidProcess(
+            "cwd cannot contain NUL bytes".to_string(),
+        ));
+    }
     Ok(())
+}
+
+fn validate_environment(environment: &[String]) -> Result<(), LaunchError> {
+    if environment.len() > MAX_ENVIRONMENT_COUNT {
+        return Err(LaunchError::InvalidProcess(format!(
+            "environment has {} entries; limit is {MAX_ENVIRONMENT_COUNT}",
+            environment.len()
+        )));
+    }
+    let mut total = 0usize;
+    let mut keys = BTreeSet::new();
+    for entry in environment {
+        total = total
+            .checked_add(entry.len())
+            .ok_or_else(|| LaunchError::InvalidProcess("environment size overflow".to_string()))?;
+        let (key, _) = entry.split_once('=').ok_or_else(|| {
+            LaunchError::InvalidProcess("environment entries must be KEY=VALUE".to_string())
+        })?;
+        if entry.contains('\0') || !valid_environment_key(key) {
+            return Err(LaunchError::InvalidProcess(
+                "environment key is invalid".to_string(),
+            ));
+        }
+        if !keys.insert(key) {
+            return Err(LaunchError::InvalidProcess(format!(
+                "environment key `{key}` appears more than once"
+            )));
+        }
+    }
+    if total > MAX_ENVIRONMENT_BYTES {
+        return Err(LaunchError::InvalidProcess(format!(
+            "environment uses {total} bytes; limit is {MAX_ENVIRONMENT_BYTES}"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_environment_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first == b'_' || first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
 }
 
 fn process_spec(wasm: &[u8], process: &ProcessConfig) -> ProcessSpec {
@@ -511,8 +596,38 @@ fn install_realm_v0(linker: &mut Linker<HostState>) -> Result<(), LaunchError> {
     linker
         .func_wrap(
             IMPORT_MODULE_V0,
+            "arg-count",
+            |caller: Caller<'_, HostState>| process_vector_count(caller.data().argv.len()),
+        )
+        .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
+    linker
+        .func_wrap(
+            IMPORT_MODULE_V0,
             "arg-len",
             |caller: Caller<'_, HostState>, index: i32| realm_arg_len(&caller, index),
+        )
+        .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
+    linker
+        .func_wrap(
+            IMPORT_MODULE_V0,
+            "env-count",
+            |caller: Caller<'_, HostState>| process_vector_count(caller.data().environment.len()),
+        )
+        .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
+    linker
+        .func_wrap(
+            IMPORT_MODULE_V0,
+            "env-len",
+            |caller: Caller<'_, HostState>, index: i32| realm_env_len(&caller, index),
+        )
+        .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
+    linker
+        .func_wrap(
+            IMPORT_MODULE_V0,
+            "env-read",
+            |mut caller: Caller<'_, HostState>, index: i32, ptr: i32, capacity: i32| {
+                realm_env_read(&mut caller, index, ptr, capacity)
+            },
         )
         .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
     linker
@@ -602,6 +717,15 @@ fn install_realm_v0(linker: &mut Linker<HostState>) -> Result<(), LaunchError> {
     linker
         .func_wrap(
             IMPORT_MODULE_V0,
+            "spawn-signed-record",
+            |mut caller: Caller<'_, HostState>, record_ptr: i32, record_len: i32| {
+                realm_spawn_signed_record(&mut caller, record_ptr, record_len)
+            },
+        )
+        .map_err(|error| LaunchError::RuntimeConfiguration(error.to_string()))?;
+    linker
+        .func_wrap(
+            IMPORT_MODULE_V0,
             "wait",
             |mut caller: Caller<'_, HostState>, handle_ptr: i32, status_ptr: i32| {
                 realm_wait(&mut caller, handle_ptr, status_ptr)
@@ -638,6 +762,10 @@ fn install_realm_v0(linker: &mut Linker<HostState>) -> Result<(), LaunchError> {
 
 const MAX_IO_BYTES: usize = 64 * 1024;
 
+fn process_vector_count(count: usize) -> Result<i32, WasmiError> {
+    i32::try_from(count).map_err(|_| WasmiError::host(HostFault::InvalidArgument))
+}
+
 fn realm_arg_len(caller: &Caller<'_, HostState>, index: i32) -> Result<i32, WasmiError> {
     let index = usize::try_from(index).map_err(|_| WasmiError::host(HostFault::MissingArgument))?;
     let argument = caller
@@ -658,6 +786,33 @@ fn realm_arg_read(
     let bytes = caller
         .data()
         .argv
+        .get(index)
+        .ok_or_else(|| WasmiError::host(HostFault::MissingArgument))?
+        .as_bytes()
+        .to_vec();
+    copy_process_bytes(caller, ptr, capacity, &bytes)
+}
+
+fn realm_env_len(caller: &Caller<'_, HostState>, index: i32) -> Result<i32, WasmiError> {
+    let index = usize::try_from(index).map_err(|_| WasmiError::host(HostFault::MissingArgument))?;
+    let entry = caller
+        .data()
+        .environment
+        .get(index)
+        .ok_or_else(|| WasmiError::host(HostFault::MissingArgument))?;
+    i32::try_from(entry.len()).map_err(|_| WasmiError::host(HostFault::InvalidArgument))
+}
+
+fn realm_env_read(
+    caller: &mut Caller<'_, HostState>,
+    index: i32,
+    ptr: i32,
+    capacity: i32,
+) -> Result<i32, WasmiError> {
+    let index = usize::try_from(index).map_err(|_| WasmiError::host(HostFault::MissingArgument))?;
+    let bytes = caller
+        .data()
+        .environment
         .get(index)
         .ok_or_else(|| WasmiError::host(HostFault::MissingArgument))?
         .as_bytes()
@@ -882,10 +1037,78 @@ fn realm_spawn_signed(
     if argument_length > MAX_ARGUMENT_BYTES {
         return Err(WasmiError::host(HostFault::InvalidArgument));
     }
-    validate_guest_range(caller, handle_ptr, PROCESS_HANDLE_BYTES)?;
     let argument = read_guest_bytes(caller, arg_ptr, argument_length)?;
     let argument =
         String::from_utf8(argument).map_err(|_| WasmiError::host(HostFault::InvalidUtf8))?;
+    let (wasm, process) = signed_process(program, argument, &caller.data().cwd)?;
+    let actions = SpawnActions {
+        bindings: spawn_bindings(source_fd, target_fd)?,
+        close_parent: Vec::new(),
+    };
+    spawn_signed_child(caller, wasm, process, actions, handle_ptr)
+}
+
+fn realm_spawn_signed_record(
+    caller: &mut Caller<'_, HostState>,
+    record_ptr: i32,
+    record_len: i32,
+) -> Result<i32, WasmiError> {
+    let record_length =
+        usize::try_from(record_len).map_err(|_| WasmiError::host(HostFault::InvalidPointer))?;
+    if record_length != SPAWN_RECORD_BYTES {
+        return Err(WasmiError::host(HostFault::InvalidArgument));
+    }
+    let record = read_guest_bytes(caller, record_ptr, record_length)?;
+    if decode_i32(&record, SPAWN_RECORD_VERSION_OFFSET)? != SPAWN_RECORD_VERSION
+        || decode_i32(&record, SPAWN_RECORD_FLAGS_OFFSET)? != 0
+    {
+        return Err(WasmiError::host(HostFault::InvalidArgument));
+    }
+    let executable = read_record_string(
+        caller,
+        decode_i32(&record, SPAWN_RECORD_EXECUTABLE_POINTER_OFFSET)?,
+        decode_i32(&record, SPAWN_RECORD_EXECUTABLE_LENGTH_OFFSET)?,
+        MAX_EXECUTABLE_PATH_BYTES,
+        false,
+    )?;
+    let argv = read_string_vector(
+        caller,
+        decode_i32(&record, SPAWN_RECORD_ARGV_POINTER_OFFSET)?,
+        decode_i32(&record, SPAWN_RECORD_ARGV_COUNT_OFFSET)?,
+        MAX_ARGUMENT_COUNT,
+        MAX_ARGUMENT_BYTES,
+    )?;
+    let environment = read_string_vector(
+        caller,
+        decode_i32(&record, SPAWN_RECORD_ENV_POINTER_OFFSET)?,
+        decode_i32(&record, SPAWN_RECORD_ENV_COUNT_OFFSET)?,
+        MAX_ENVIRONMENT_COUNT,
+        MAX_ENVIRONMENT_BYTES,
+    )?;
+    let actions = read_spawn_actions(
+        caller,
+        decode_i32(&record, SPAWN_RECORD_ACTION_POINTER_OFFSET)?,
+        decode_i32(&record, SPAWN_RECORD_ACTION_COUNT_OFFSET)?,
+    )?;
+    let handle_ptr = decode_i32(&record, SPAWN_RECORD_HANDLE_POINTER_OFFSET)?;
+    let (wasm, process) =
+        signed_catalog_process(&executable, argv, environment, &caller.data().cwd)?;
+    spawn_signed_child(caller, wasm, process, actions, handle_ptr)
+}
+
+struct SpawnActions {
+    bindings: Vec<DescriptorBinding>,
+    close_parent: Vec<Descriptor>,
+}
+
+fn spawn_signed_child(
+    caller: &mut Caller<'_, HostState>,
+    wasm: &'static [u8],
+    process: ProcessConfig,
+    actions: SpawnActions,
+    handle_ptr: i32,
+) -> Result<i32, WasmiError> {
+    validate_guest_range(caller, handle_ptr, PROCESS_HANDLE_BYTES)?;
     let context = caller
         .data()
         .process
@@ -902,8 +1125,6 @@ fn realm_spawn_signed(
         }
         (state.runtime.clone(), state.child_limits)
     };
-    let (wasm, process) = signed_process(program, argument, &caller.data().cwd)?;
-    let bindings = spawn_bindings(source_fd, target_fd)?;
 
     // Validate and instantiate the signed image before allocating a PID. The
     // guest cannot select bytes or imports; it selects one immutable catalog
@@ -921,7 +1142,12 @@ fn realm_spawn_signed(
     let child = {
         let mut kernel = context.kernel.borrow_mut();
         let child = kernel
-            .spawn_child(context.process, process_spec(wasm, &process), &bindings)
+            .spawn_child_and_close(
+                context.process,
+                process_spec(wasm, &process),
+                &actions.bindings,
+                &actions.close_parent,
+            )
             .map_err(kernel_host_error)?;
         if let Err(error) = kernel.admit(child) {
             rollback_child(&mut kernel, context.process, child);
@@ -959,6 +1185,106 @@ fn realm_spawn_signed(
     });
     caller.data_mut().suspensions = caller.data().suspensions.saturating_add(1);
     Err(WasmiError::host(ProcessSuspended))
+}
+
+fn read_record_string(
+    caller: &Caller<'_, HostState>,
+    pointer: i32,
+    length: i32,
+    maximum: usize,
+    allow_empty: bool,
+) -> Result<String, WasmiError> {
+    let length =
+        usize::try_from(length).map_err(|_| WasmiError::host(HostFault::InvalidPointer))?;
+    if length > maximum || (!allow_empty && length == 0) {
+        return Err(WasmiError::host(HostFault::InvalidArgument));
+    }
+    let bytes = read_guest_bytes(caller, pointer, length)?;
+    String::from_utf8(bytes).map_err(|_| WasmiError::host(HostFault::InvalidUtf8))
+}
+
+fn read_string_vector(
+    caller: &Caller<'_, HostState>,
+    table_pointer: i32,
+    count: i32,
+    maximum_count: usize,
+    maximum_bytes: usize,
+) -> Result<Vec<String>, WasmiError> {
+    let count = usize::try_from(count).map_err(|_| WasmiError::host(HostFault::InvalidPointer))?;
+    if count > maximum_count {
+        return Err(WasmiError::host(HostFault::InvalidArgument));
+    }
+    let table_bytes = count
+        .checked_mul(STRING_RECORD_BYTES)
+        .ok_or_else(|| WasmiError::host(HostFault::InvalidPointer))?;
+    let table = read_guest_bytes(caller, table_pointer, table_bytes)?;
+    let mut total = 0usize;
+    let mut values = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = index
+            .checked_mul(STRING_RECORD_BYTES)
+            .ok_or_else(|| WasmiError::host(HostFault::InvalidPointer))?;
+        let pointer = decode_i32(&table, offset)?;
+        let length = decode_i32(&table, offset + 4)?;
+        let length =
+            usize::try_from(length).map_err(|_| WasmiError::host(HostFault::InvalidPointer))?;
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| WasmiError::host(HostFault::InvalidPointer))?;
+        if total > maximum_bytes {
+            return Err(WasmiError::host(HostFault::InvalidArgument));
+        }
+        let bytes = read_guest_bytes(caller, pointer, length)?;
+        values
+            .push(String::from_utf8(bytes).map_err(|_| WasmiError::host(HostFault::InvalidUtf8))?);
+    }
+    Ok(values)
+}
+
+fn read_spawn_actions(
+    caller: &Caller<'_, HostState>,
+    table_pointer: i32,
+    count: i32,
+) -> Result<SpawnActions, WasmiError> {
+    let count = usize::try_from(count).map_err(|_| WasmiError::host(HostFault::InvalidPointer))?;
+    if count > MAX_SPAWN_ACTIONS {
+        return Err(WasmiError::host(HostFault::InvalidArgument));
+    }
+    let table_bytes = count
+        .checked_mul(SPAWN_ACTION_BYTES)
+        .ok_or_else(|| WasmiError::host(HostFault::InvalidPointer))?;
+    let table = read_guest_bytes(caller, table_pointer, table_bytes)?;
+    let mut bindings = Vec::new();
+    let mut close_parent = Vec::new();
+    let mut targets = BTreeSet::new();
+    let mut closes = BTreeSet::new();
+    for index in 0..count {
+        let offset = index
+            .checked_mul(SPAWN_ACTION_BYTES)
+            .ok_or_else(|| WasmiError::host(HostFault::InvalidPointer))?;
+        let kind = decode_i32(&table, offset)?;
+        let source = Descriptor::new(decode_i32(&table, offset + 4)?);
+        let target = Descriptor::new(decode_i32(&table, offset + 8)?);
+        match kind {
+            SPAWN_ACTION_DUP if source.get() >= 0 && target.get() >= 0 => {
+                if !targets.insert(target) {
+                    return Err(WasmiError::host(HostFault::InvalidArgument));
+                }
+                bindings.push(DescriptorBinding { source, target });
+            }
+            SPAWN_ACTION_CLOSE_PARENT if source.get() >= 0 && target.get() == NO_DESCRIPTOR => {
+                if !closes.insert(source) {
+                    return Err(WasmiError::host(HostFault::InvalidArgument));
+                }
+                close_parent.push(source);
+            }
+            _ => return Err(WasmiError::host(HostFault::InvalidArgument)),
+        }
+    }
+    Ok(SpawnActions {
+        bindings,
+        close_parent,
+    })
 }
 
 fn realm_wait(
@@ -1038,6 +1364,7 @@ fn signed_process(
             ECHO_GUEST,
             ProcessConfig {
                 argv: vec!["echo".to_string(), argument],
+                environment: Vec::new(),
                 cwd: cwd.to_string(),
             },
         )),
@@ -1045,11 +1372,33 @@ fn signed_process(
             STDIN_CAT_GUEST,
             ProcessConfig {
                 argv: vec!["stdin-cat".to_string()],
+                environment: Vec::new(),
                 cwd: cwd.to_string(),
             },
         )),
         _ => Err(WasmiError::host(HostFault::InvalidArgument)),
     }
+}
+
+fn signed_catalog_process(
+    executable: &str,
+    argv: Vec<String>,
+    environment: Vec<String>,
+    cwd: &str,
+) -> Result<(&'static [u8], ProcessConfig), WasmiError> {
+    let wasm = match executable {
+        "/bin/echo" => ECHO_GUEST,
+        "/bin/cat" => STDIN_CAT_GUEST,
+        "/usr/bin/env" => ENV_GUEST,
+        _ => return Err(WasmiError::host(HostFault::InvalidArgument)),
+    };
+    let process = ProcessConfig {
+        argv,
+        environment,
+        cwd: cwd.to_string(),
+    };
+    validate_process(&process).map_err(|_| WasmiError::host(HostFault::InvalidArgument))?;
+    Ok((wasm, process))
 }
 
 fn spawn_bindings(source_fd: i32, target_fd: i32) -> Result<Vec<DescriptorBinding>, WasmiError> {
@@ -1094,6 +1443,18 @@ fn decode_u64(bytes: &[u8], offset: usize) -> Result<u64, WasmiError> {
         .try_into()
         .map_err(|_| WasmiError::host(HostFault::InvalidArgument))?;
     Ok(u64::from_le_bytes(encoded))
+}
+
+fn decode_i32(bytes: &[u8], offset: usize) -> Result<i32, WasmiError> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| WasmiError::host(HostFault::InvalidArgument))?;
+    let encoded: [u8; 4] = bytes
+        .get(offset..end)
+        .ok_or_else(|| WasmiError::host(HostFault::InvalidArgument))?
+        .try_into()
+        .map_err(|_| WasmiError::host(HostFault::InvalidArgument))?;
+    Ok(i32::from_le_bytes(encoded))
 }
 
 fn encode_process_handle(handle: ProcessHandle) -> [u8; PROCESS_HANDLE_BYTES] {
@@ -1397,6 +1758,7 @@ mod tests {
                 PWD_GUEST,
                 ProcessConfig {
                     argv: vec!["pwd".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace/project".to_string(),
                 },
                 RunLimits::default(),
@@ -1415,6 +1777,7 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "hello realm".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1424,6 +1787,50 @@ mod tests {
 
         assert_eq!(report.outcome, ProcessOutcome::Exited(0));
         assert_eq!(report.stdout, b"hello realm\n");
+    }
+
+    #[test]
+    fn env_reads_the_canonical_process_environment() {
+        let report = RealmRuntime::default()
+            .execute_process(
+                ENV_GUEST,
+                ProcessConfig {
+                    argv: vec!["env".to_string()],
+                    environment: vec!["ASTRID_REALM=ready".to_string(), "EMPTY=".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                RunLimits::default(),
+                Box::<MemoryRealmHost>::default(),
+            )
+            .expect("env guest launches");
+
+        assert_eq!(report.outcome, ProcessOutcome::Exited(0));
+        assert_eq!(report.stdout, b"ASTRID_REALM=ready\nEMPTY=\n");
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_environment_is_rejected_before_launch() {
+        for environment in [
+            vec!["NO_EQUALS".to_string()],
+            vec!["9BAD=value".to_string()],
+            vec!["DUP=one".to_string(), "DUP=two".to_string()],
+            vec!["NUL=bad\0value".to_string()],
+        ] {
+            let error = RealmRuntime::default()
+                .execute_process(
+                    ENV_GUEST,
+                    ProcessConfig {
+                        argv: vec!["env".to_string()],
+                        environment,
+                        cwd: "/workspace".to_string(),
+                    },
+                    RunLimits::default(),
+                    Box::<MemoryRealmHost>::default(),
+                )
+                .expect_err("invalid environment fails admission");
+
+            assert!(matches!(error, LaunchError::InvalidProcess(_)));
+        }
     }
 
     #[test]
@@ -1439,6 +1846,7 @@ mod tests {
                         "note.txt".to_string(),
                         "durable bytes".to_string(),
                     ],
+                    environment: Vec::new(),
                     cwd: "/workspace/project".to_string(),
                 },
                 RunLimits::default(),
@@ -1457,6 +1865,7 @@ mod tests {
                 CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["cat".to_string(), "note.txt".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace/project".to_string(),
                 },
                 RunLimits::default(),
@@ -1475,6 +1884,7 @@ mod tests {
                 CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["cat".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1495,6 +1905,7 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "x".repeat(MAX_ARGUMENT_BYTES)],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),

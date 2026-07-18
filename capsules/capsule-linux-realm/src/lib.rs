@@ -9,9 +9,10 @@ mod actor;
 mod host;
 
 use aos_realm_runtime::{
-    CAT_GUEST, ECHO_GUEST, ExecutionReport, GUEST_PIPELINE_GUEST, HostFault, PWD_GUEST,
-    ProcessConfig, ProcessOutcome, ProcessTreeReport, RealmHost, RealmIoError, RealmMachine,
-    RealmMachineStatus, RunLimits, SMOKE_WRITE_GUEST, STDIN_CAT_GUEST, Signal, WRITE_FILE_GUEST,
+    CAT_GUEST, ECHO_GUEST, ExecutionReport, GUEST_PIPELINE_GUEST, HostFault, MINI_SHELL_GUEST,
+    PWD_GUEST, ProcessConfig, ProcessOutcome, ProcessTreeReport, RealmHost, RealmIoError,
+    RealmMachine, RealmMachineStatus, RunLimits, SMOKE_WRITE_GUEST, STDIN_CAT_GUEST, Signal,
+    WRITE_FILE_GUEST,
 };
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
@@ -37,6 +38,7 @@ pub enum RealmProgram {
     Echo,
     PipeEcho,
     GuestPipeEcho,
+    RealmSh,
     WriteFile,
     Cat,
 }
@@ -48,7 +50,8 @@ pub struct ExecArgs {
     pub program: Option<RealmProgram>,
     /// Exact command name. This is never evaluated by a host shell.
     pub command: Option<String>,
-    /// Command arguments. Shell operators have no special meaning.
+    /// Structured command arguments. The outer adapter never tokenizes strings;
+    /// `realm-sh` alone recognizes its separate `|` token.
     #[serde(default)]
     pub args: Vec<String>,
     /// Guest-visible CWD beneath `/workspace`, `/home/agent`, or `/tmp`.
@@ -105,7 +108,7 @@ struct StatusResponse {
     home_files: usize,
     home_manifest: Option<String>,
     mounts: Vec<MountStatus>,
-    commands: [&'static str; 7],
+    commands: [&'static str; 8],
     workspace_commit: &'static str,
     host_process: bool,
     actor_state: &'static str,
@@ -157,6 +160,7 @@ enum SelectedExecution {
     Single(&'static [u8]),
     EchoPipeline,
     GuestPipeline,
+    MiniShell,
 }
 
 #[capsule]
@@ -268,6 +272,7 @@ fn execute_selected(
                 guest,
                 ProcessConfig {
                     argv: selected.argv.clone(),
+                    environment: Vec::new(),
                     cwd: cwd.to_string(),
                 },
                 limits,
@@ -281,11 +286,13 @@ fn execute_selected(
                     ECHO_GUEST,
                     ProcessConfig {
                         argv: selected.argv.clone(),
+                        environment: Vec::new(),
                         cwd: cwd.to_string(),
                     },
                     STDIN_CAT_GUEST,
                     ProcessConfig {
                         argv: vec!["stdin-cat".to_string()],
+                        environment: Vec::new(),
                         cwd: cwd.to_string(),
                     },
                     limits,
@@ -304,6 +311,25 @@ fn execute_selected(
                     GUEST_PIPELINE_GUEST,
                     ProcessConfig {
                         argv: selected.argv.clone(),
+                        environment: Vec::new(),
+                        cwd: cwd.to_string(),
+                    },
+                    limits,
+                    realm_host,
+                    2,
+                )
+                .map_err(|error| SysError::ApiError(error.to_string()))?;
+            let mut process_ids = vec![tree.root.process_id.get()];
+            process_ids.extend(tree.children.iter().map(|child| child.process_id.get()));
+            Ok((combine_process_tree(tree), process_ids))
+        }
+        SelectedExecution::MiniShell => {
+            let tree = machine
+                .execute_process_tree(
+                    MINI_SHELL_GUEST,
+                    ProcessConfig {
+                        argv: selected.argv.clone(),
+                        environment: Vec::new(),
                         cwd: cwd.to_string(),
                     },
                     limits,
@@ -393,11 +419,12 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
             "echo" => RealmProgram::Echo,
             "pipe-echo" => RealmProgram::PipeEcho,
             "guest-pipe-echo" => RealmProgram::GuestPipeEcho,
+            "realm-sh" => RealmProgram::RealmSh,
             "write-file" => RealmProgram::WriteFile,
             "cat" => RealmProgram::Cat,
             _ => {
                 return Err(SysError::ApiError(format!(
-                    "unsupported realm command `{command}`; supported: pwd, echo, pipe-echo, guest-pipe-echo, write-file, cat, smoke-write"
+                    "unsupported realm command `{command}`; supported: pwd, echo, pipe-echo, guest-pipe-echo, realm-sh, write-file, cat, smoke-write"
                 )));
             }
         }
@@ -442,6 +469,11 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
                 SelectedExecution::GuestPipeline,
                 vec!["guest-pipeline".to_string(), args.args[0].clone()],
             )
+        }
+        RealmProgram::RealmSh => {
+            let mut argv = vec!["realm-sh".to_string()];
+            argv.extend(args.args.iter().cloned());
+            ("realm-sh", SelectedExecution::MiniShell, argv)
         }
         RealmProgram::WriteFile => {
             require_arity("write-file", &args.args, 2)?;
@@ -524,6 +556,7 @@ fn status_response(
             "echo",
             "pipe-echo",
             "guest-pipe-echo",
+            "realm-sh",
             "write-file",
             "cat",
             "smoke-write",
@@ -692,6 +725,91 @@ mod tests {
         assert_eq!(response.stdout, "guest-selected process topology\n");
         assert!(response.suspensions >= 2);
         assert!(response.fuel_consumed <= HARD_MAX_FUEL);
+    }
+
+    #[test]
+    fn realm_shell_builds_a_direct_signed_job_from_structured_tokens() {
+        let response = run_command(
+            ExecArgs {
+                command: Some("realm-sh".to_string()),
+                args: vec!["echo".to_string(), "hello from the guest shell".to_string()],
+                ..ExecArgs::default()
+            },
+            "alice".to_string(),
+            Box::<TestHost>::default(),
+        )
+        .expect("guest shell command succeeds");
+
+        assert_eq!(
+            response.argv,
+            ["realm-sh", "echo", "hello from the guest shell"]
+        );
+        assert_eq!(response.processes, 2);
+        assert_eq!(response.process_ids, vec![1, 2]);
+        assert_eq!(response.outcome, "exited");
+        assert_eq!(response.stdout, "hello from the guest shell\n");
+    }
+
+    #[test]
+    fn realm_shell_connects_a_foreground_pipeline_inside_the_guest() {
+        let response = run_command(
+            ExecArgs {
+                command: Some("realm-sh".to_string()),
+                args: vec![
+                    "echo".to_string(),
+                    "record based pipeline".to_string(),
+                    "|".to_string(),
+                    "cat".to_string(),
+                ],
+                ..ExecArgs::default()
+            },
+            "alice".to_string(),
+            Box::<TestHost>::default(),
+        )
+        .expect("guest shell pipeline succeeds");
+
+        assert_eq!(response.processes, 3);
+        assert_eq!(response.process_ids, vec![1, 2, 3]);
+        assert_eq!(response.outcome, "exited");
+        assert_eq!(response.stdout, "record based pipeline\n");
+        assert!(response.suspensions >= 4);
+    }
+
+    #[test]
+    fn realm_shell_passes_a_bounded_environment_to_a_signed_child() {
+        let response = run_command(
+            ExecArgs {
+                command: Some("realm-sh".to_string()),
+                args: vec!["env".to_string(), "ASTRID_REALM=ready".to_string()],
+                ..ExecArgs::default()
+            },
+            "alice".to_string(),
+            Box::<TestHost>::default(),
+        )
+        .expect("guest shell environment command succeeds");
+
+        assert_eq!(response.processes, 2);
+        assert_eq!(response.outcome, "exited");
+        assert_eq!(response.stdout, "ASTRID_REALM=ready\n");
+    }
+
+    #[test]
+    fn realm_shell_rejects_text_command_lines_as_unsupported_grammar() {
+        let response = run_command(
+            ExecArgs {
+                command: Some("realm-sh".to_string()),
+                args: vec!["echo hello | cat".to_string()],
+                ..ExecArgs::default()
+            },
+            "alice".to_string(),
+            Box::<TestHost>::default(),
+        )
+        .expect("guest shell returns a process result");
+
+        assert_eq!(response.processes, 1);
+        assert_eq!(response.outcome, "exited");
+        assert_eq!(response.exit_status, Some(64));
+        assert!(response.stdout.is_empty());
     }
 
     #[test]

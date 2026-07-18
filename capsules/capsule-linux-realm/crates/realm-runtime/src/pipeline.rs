@@ -963,6 +963,34 @@ mod tests {
         }
     }
 
+    fn assert_spawn_record_rejected_without_child(wat_source: &str, fault: HostFault) {
+        let guest = wat::parse_str(wat_source).expect("spawn-record test guest compiles");
+        let mut machine = RealmMachine::with_generation(21);
+        let report = machine
+            .execute_process_tree(
+                &guest,
+                ProcessConfig {
+                    argv: vec!["malformed-spawn".to_string()],
+                    environment: Vec::new(),
+                    cwd: "/workspace".to_string(),
+                },
+                RunLimits::default(),
+                Box::<DenyRealmHost>::default(),
+                1,
+            )
+            .expect("malformed request returns a bounded process report");
+
+        assert_eq!(
+            report.root.execution.outcome,
+            ProcessOutcome::HostFault(fault)
+        );
+        assert!(report.children.is_empty());
+        assert_eq!(machine.status().process_records, 0);
+        assert_eq!(machine.status().pipe_objects, 0);
+        assert_eq!(machine.status().reserved_pipe_bytes, 0);
+        assert_eq!(machine.status().next_process_id, Some(ProcessId::new(2)));
+    }
+
     #[test]
     fn guest_file_and_pipe_descriptors_share_one_number_space() {
         let guest = wat::parse_str(
@@ -1018,6 +1046,7 @@ mod tests {
                 &guest,
                 ProcessConfig {
                     argv: vec!["descriptor-space".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1042,6 +1071,7 @@ mod tests {
                         "guest-pipeline".to_string(),
                         "hello from guest-created children".to_string(),
                     ],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 limits,
@@ -1081,6 +1111,179 @@ mod tests {
     }
 
     #[test]
+    fn mini_shell_builds_a_record_spawn_pipeline_and_releases_every_endpoint() {
+        let limits = RunLimits::default();
+        let mut machine = RealmMachine::with_generation(10);
+        let report = machine
+            .execute_process_tree(
+                MINI_SHELL_GUEST,
+                ProcessConfig {
+                    argv: vec![
+                        "realm-sh".to_string(),
+                        "echo".to_string(),
+                        "shell-owned topology".to_string(),
+                        "|".to_string(),
+                        "cat".to_string(),
+                    ],
+                    environment: Vec::new(),
+                    cwd: "/workspace".to_string(),
+                },
+                limits,
+                Box::<DenyRealmHost>::default(),
+                2,
+            )
+            .expect("mini shell process tree completes");
+
+        assert_eq!(report.root.process_id, ProcessId::new(1));
+        assert_eq!(report.children.len(), 2);
+        assert_eq!(report.children[0].process_id, ProcessId::new(2));
+        assert_eq!(
+            report.children[0].execution.stdout,
+            b"shell-owned topology\n"
+        );
+        assert_eq!(report.children[1].process_id, ProcessId::new(3));
+        assert!(report.children[1].execution.stdout.is_empty());
+        assert_eq!(report.root.execution.outcome, ProcessOutcome::Exited(0));
+        assert!(
+            report
+                .children
+                .iter()
+                .all(|child| child.execution.outcome == ProcessOutcome::Exited(0))
+        );
+        assert_eq!(machine.status().process_records, 0);
+        assert_eq!(machine.status().pipe_objects, 0);
+        assert_eq!(machine.status().reserved_pipe_bytes, 0);
+        assert_eq!(machine.status().next_process_id, Some(ProcessId::new(4)));
+    }
+
+    #[test]
+    fn malformed_signed_spawn_records_fail_before_allocating_a_child_pid() {
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (func (export "_start")
+                    i32.const 0 i32.const 99 i32.store
+                    i32.const 0 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidArgument,
+        );
+
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (data (i32.const 512) "/usr/bin/env")
+                (data (i32.const 524) "env")
+                (data (i32.const 527) "BAD-KEY=x")
+                (func (export "_start")
+                    i32.const 0 i32.const 1 i32.store
+                    i32.const 8 i32.const 512 i32.store
+                    i32.const 12 i32.const 12 i32.store
+                    i32.const 16 i32.const 64 i32.store
+                    i32.const 20 i32.const 1 i32.store
+                    i32.const 24 i32.const 72 i32.store
+                    i32.const 28 i32.const 1 i32.store
+                    i32.const 40 i32.const 128 i32.store
+                    i32.const 64 i32.const 524 i32.store
+                    i32.const 68 i32.const 3 i32.store
+                    i32.const 72 i32.const 527 i32.store
+                    i32.const 76 i32.const 9 i32.store
+                    i32.const 0 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidArgument,
+        );
+
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "pipe"
+                    (func $pipe (param i32 i32) (result i32)))
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (data (i32.const 512) "/bin/echo")
+                (data (i32.const 521) "echo")
+                (data (i32.const 525) "x")
+                (func (export "_start")
+                    i32.const 4 i32.const 48 call $pipe drop
+                    i32.const 0 i32.const 1 i32.store
+                    i32.const 8 i32.const 512 i32.store
+                    i32.const 12 i32.const 9 i32.store
+                    i32.const 16 i32.const 64 i32.store
+                    i32.const 20 i32.const 2 i32.store
+                    i32.const 32 i32.const 80 i32.store
+                    i32.const 36 i32.const 2 i32.store
+                    i32.const 40 i32.const 128 i32.store
+                    i32.const 64 i32.const 521 i32.store
+                    i32.const 68 i32.const 4 i32.store
+                    i32.const 72 i32.const 525 i32.store
+                    i32.const 76 i32.const 1 i32.store
+                    i32.const 80 i32.const 1 i32.store
+                    i32.const 84 i32.const 48 i32.load i32.store
+                    i32.const 88 i32.const 1 i32.store
+                    i32.const 92 i32.const 1 i32.store
+                    i32.const 96 i32.const 52 i32.load i32.store
+                    i32.const 100 i32.const 1 i32.store
+                    i32.const 0 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidArgument,
+        );
+
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (func (export "_start")
+                    i32.const 65520 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidPointer,
+        );
+
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (data (i32.const 512) "/bin/echo")
+                (func (export "_start")
+                    i32.const 0 i32.const 1 i32.store
+                    i32.const 8 i32.const 512 i32.store
+                    i32.const 12 i32.const 9 i32.store
+                    i32.const 20 i32.const 65 i32.store
+                    i32.const 40 i32.const 128 i32.store
+                    i32.const 0 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidArgument,
+        );
+
+        assert_spawn_record_rejected_without_child(
+            r#"(module
+                (import "aos_realm_v0" "spawn-signed-record"
+                    (func $spawn (param i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (data (i32.const 512) "/bin/echo")
+                (data (i32.const 521) "echo")
+                (data (i32.const 525) "x")
+                (func (export "_start")
+                    i32.const 0 i32.const 1 i32.store
+                    i32.const 8 i32.const 512 i32.store
+                    i32.const 12 i32.const 9 i32.store
+                    i32.const 16 i32.const 64 i32.store
+                    i32.const 20 i32.const 2 i32.store
+                    i32.const 32 i32.const 80 i32.store
+                    i32.const 36 i32.const 1 i32.store
+                    i32.const 40 i32.const 128 i32.store
+                    i32.const 64 i32.const 521 i32.store
+                    i32.const 68 i32.const 4 i32.store
+                    i32.const 72 i32.const 525 i32.store
+                    i32.const 76 i32.const 1 i32.store
+                    i32.const 80 i32.const 2 i32.store
+                    i32.const 84 i32.const 9 i32.store
+                    i32.const 88 i32.const -1 i32.store
+                    i32.const 0 i32.const 44 call $spawn drop))"#,
+            HostFault::InvalidArgument,
+        );
+    }
+
+    #[test]
     fn guest_child_budget_fails_closed_and_cleans_up_the_partial_tree() {
         let mut machine = RealmMachine::with_generation(4);
         let report = machine
@@ -1088,6 +1291,7 @@ mod tests {
                 GUEST_PIPELINE_GUEST,
                 ProcessConfig {
                     argv: vec!["guest-pipeline".to_string(), "bounded".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1142,6 +1346,7 @@ mod tests {
                 &guest,
                 ProcessConfig {
                     argv: vec!["forged-wait".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1221,6 +1426,7 @@ mod tests {
                 &guest,
                 ProcessConfig {
                     argv: vec!["signal-child".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1246,11 +1452,13 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "hello pipeline".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 STDIN_CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["stdin-cat".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1276,11 +1484,13 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "x".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 STDIN_CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["stdin-cat".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1303,11 +1513,13 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "unread".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 &immediate_exit,
                 ProcessConfig {
                     argv: vec!["exit".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1330,6 +1542,7 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "first".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1341,11 +1554,13 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "second".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 STDIN_CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["stdin-cat".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),
@@ -1372,11 +1587,13 @@ mod tests {
                 ECHO_GUEST,
                 ProcessConfig {
                     argv: vec!["echo".to_string(), "x".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 STDIN_CAT_GUEST,
                 ProcessConfig {
                     argv: vec!["stdin-cat".to_string()],
+                    environment: Vec::new(),
                     cwd: "/workspace".to_string(),
                 },
                 RunLimits::default(),

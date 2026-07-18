@@ -16,13 +16,15 @@ agent -> realm tool -> nested WASM command -> private realm ABI
 
 ## What works
 
-`linux_realm_exec` currently admits exactly seven signed workloads:
+`linux_realm_exec` currently admits exactly eight signed workloads:
 
 - `pwd`
 - `echo`
 - `pipe-echo`, a two-process resumable echo-to-stdin-cat pipeline
 - `guest-pipe-echo`, whose supervisor guest creates that pipe and both children,
   then waits for and reaps them itself
+- `realm-sh`, a guest-side shell over structured tokens. Its current grammar is
+  `echo TEXT`, `env KEY=VALUE`, or `echo TEXT | cat`
 - `write-file`
 - `cat`
 - `smoke-write`, the original interpreter smoke test
@@ -103,22 +105,24 @@ to zero while their identifiers are never reused during that capsule boot. A
 principal-scoped boot sequence is advanced with KV compare-and-swap and makes PID
 reuse after restart explicit as `(boot sequence, PID)`.
 
-The private ABI now exposes bounded `pipe`, `spawn-signed`, `wait`, and `signal`
-operations. `guest-pipe-echo` is the first workload whose topology is selected by
-guest code: it creates a four-byte pipe, starts signed `stdin-cat` and `echo`
-children with exact descriptor mappings, closes its copies, waits for both, and
-checks their terminal records. Every process has an isolated Wasmi store and
-memory.
+The private ABI exposes bounded `pipe`, compatibility `spawn-signed`, record-based
+`spawn-signed-record`, `wait`, and `signal` operations. The record form selects an
+absolute path from an immutable catalog, carries up to 64 argv entries and 64
+validated `KEY=VALUE` environment entries, and applies at most 16 explicit
+descriptor actions. A `dup` action grants one named pipe endpoint at one child
+descriptor. A `close-parent` action atomically releases the parent's copy only
+after child creation succeeds; rejected records leave its table unchanged.
 
-This is deliberately narrower than `posix_spawn`. A guest selects an immutable
-executable-catalog entry, one bounded UTF-8 argument, and at most one pipe
-descriptor mapping. It cannot submit module bytes, inherit Astrid authority, or
-start a host process. Process handles encode `(realm boot generation, PID)` and
-`wait`/`signal` reject a stale generation or a process that is not the caller's
-direct child. The foreground command admits at most two descendants; fuel and
-captured-output budgets are partitioned before execution, and all process and pipe
-records are deterministically cleaned before the tool result returns. Background
-jobs still do not survive calls.
+`realm-sh` is ordinary nested guest code, not host parsing. It reads the structured
+tokens passed in `argv`, resolves the three currently admitted catalog paths
+(`/bin/echo`, `/bin/cat`, and `/usr/bin/env`), writes spawn records into its own
+linear memory, starts the children, and waits for exact terminal records. Every
+process has an isolated Wasmi store and memory. A guest cannot submit module bytes,
+inherit Astrid authority, search the host `PATH`, or start a host process.
+Generation-checked handles prevent stale PID use, the foreground command admits at
+most two descendants, budgets are partitioned before execution, and all process
+and pipe records are cleaned before the tool result returns. Background jobs still
+do not survive calls.
 
 The actor also retains a bounded 64-entry replay window for mutating tool call
 IDs. A transport retry with the same principal, call ID, and arguments returns the
@@ -154,29 +158,36 @@ Example tool arguments:
 {"command":"echo","args":["hello", "realm"]}
 {"command":"pipe-echo","args":["hello through two processes"]}
 {"command":"guest-pipe-echo","args":["the guest built this pipeline"]}
+{"command":"realm-sh","args":["echo","the shell built this job"]}
+{"command":"realm-sh","args":["echo","the shell built this pipe","|","cat"]}
+{"command":"realm-sh","args":["env","ASTRID_REALM=ready"]}
 {"command":"write-file","args":["notes.txt","durable\n"],"cwd":"/home/agent"}
 {"command":"cat","args":["notes.txt"],"cwd":"/home/agent"}
 {"command":"write-file","args":["candidate.rs","..."],"cwd":"/workspace"}
 ```
 
-Shell syntax is data, not authority. For example, `{"command":"pwd && whoami"}`
-is rejected as an unknown program rather than evaluated by Bash.
+The outer `command` field is never a command line. For example,
+`{"command":"pwd && whoami"}` is rejected as an unknown program. `realm-sh`
+interprets only its separate structured `args` tokens according to the grammar
+above; a single argument containing `"echo hello | cat"` exits with usage status
+64 instead of being reparsed as text.
 
 ## Current boundary
 
-The private `aos_realm_v0` ABI supplies bounded argument and CWD reads,
-open/read/write/close, pipe creation, signed child creation, direct-child wait,
-direct-child signal, monotonic time, and exit. Paths are normalized within
+The private `aos_realm_v0` ABI supplies bounded argument, environment, and CWD
+reads, open/read/write/close, pipe creation, signed record-based child creation,
+direct-child wait, direct-child signal, monotonic time, and exit. Paths are normalized within
 `/home/agent`, `/workspace`, or `/tmp`; unmounted absolute paths and upward escape
 fail closed. Writes are buffered at the capsule edge and committed only when the
 nested descriptor closes, so a trapped command does not leave a partial guest
 file. Durable-home closes select a content-addressed generation with a KV CAS;
 workspace and temporary files retain their outer mount semantics.
 
-This slice does not provide arbitrary executable resolution, full `posix_spawn`
-file actions, `execve`, Bash, general Linux syscalls, a libc, package management,
-networking, PTYs, background jobs, or a compiler. Those belong behind the same
-realm boundary; they must not be simulated by granting a host process.
+This slice does not provide arbitrary executable resolution, inherited file
+descriptors, sequential POSIX file actions, `execve`, Bash, general Linux syscalls,
+a libc, package management, networking, PTYs, background jobs, or a compiler.
+Those belong behind the same realm boundary; they must not be simulated by
+granting a host process.
 
 ## Distribution direction
 

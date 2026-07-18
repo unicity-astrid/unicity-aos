@@ -295,6 +295,8 @@ pub enum KernelError {
     InvalidDescriptorTarget(Descriptor),
     /// Two inheritance bindings selected the same child descriptor.
     DuplicateDescriptorTarget(Descriptor),
+    /// One parent descriptor was selected for close more than once.
+    DuplicateDescriptorClose(Descriptor),
     /// A configured realm quota was exceeded.
     QuotaExceeded(Quota),
     /// A monotonic identifier reached the end of its representation.
@@ -353,6 +355,11 @@ impl fmt::Display for KernelError {
             Self::DuplicateDescriptorTarget(descriptor) => write!(
                 formatter,
                 "child descriptor {} is mapped more than once",
+                descriptor.get()
+            ),
+            Self::DuplicateDescriptorClose(descriptor) => write!(
+                formatter,
+                "parent descriptor {} is closed more than once",
                 descriptor.get()
             ),
             Self::QuotaExceeded(quota) => write!(formatter, "realm {quota:?} quota exceeded"),
@@ -538,6 +545,23 @@ impl RealmKernel {
         spec: ProcessSpec,
         bindings: &[DescriptorBinding],
     ) -> Result<ProcessId, KernelError> {
+        self.spawn_child_and_close(parent, spec, bindings, &[])
+    }
+
+    /// Atomically allocate a direct child, inherit exact descriptors, and
+    /// close selected descriptors in the parent.
+    ///
+    /// Every source and close target is validated before the process table,
+    /// descriptor tables, pipe reference counts, or PID sequence are mutated.
+    /// A descriptor may be both inherited and closed: the child retains the
+    /// endpoint while the parent's copy is released.
+    pub fn spawn_child_and_close(
+        &mut self,
+        parent: ProcessId,
+        spec: ProcessSpec,
+        bindings: &[DescriptorBinding],
+        close_parent: &[Descriptor],
+    ) -> Result<ProcessId, KernelError> {
         self.require_state(parent, ProcessState::Running, ProcessOperation::SpawnChild)?;
         self.validate_spawn(&spec)?;
 
@@ -564,6 +588,18 @@ impl RealmKernel {
                 })?;
             descriptors.insert(binding.target, resource);
         }
+        let mut closes = BTreeSet::new();
+        for descriptor in close_parent {
+            if !closes.insert(*descriptor) {
+                return Err(KernelError::DuplicateDescriptorClose(*descriptor));
+            }
+            if !parent_record.descriptors.contains_key(descriptor) {
+                return Err(KernelError::DescriptorNotFound {
+                    process: parent,
+                    descriptor: *descriptor,
+                });
+            }
+        }
         if descriptors.len() > self.limits.max_descriptors_per_process {
             return Err(KernelError::QuotaExceeded(Quota::Descriptors));
         }
@@ -572,6 +608,24 @@ impl RealmKernel {
         let child = self.insert_process(Some(parent), spec, descriptors.clone())?;
         for resource in descriptors.into_values() {
             self.retain_resource(resource);
+        }
+        let released = {
+            let parent_record = self
+                .processes
+                .get_mut(&parent)
+                .expect("parent existence checked before child insertion");
+            closes
+                .into_iter()
+                .map(|descriptor| {
+                    parent_record
+                        .descriptors
+                        .remove(&descriptor)
+                        .expect("close descriptor validated before child insertion")
+                })
+                .collect::<Vec<_>>()
+        };
+        for resource in released {
+            self.release_resource(resource);
         }
         Ok(child)
     }
@@ -1563,6 +1617,68 @@ mod tests {
         );
         assert_eq!(kernel.process_count(), process_count);
         assert_eq!(kernel.pipe(pipe), Ok(before));
+    }
+
+    #[test]
+    fn child_inheritance_and_parent_close_are_one_atomic_transition() {
+        let mut kernel = RealmKernel::new(RealmLimits::default());
+        let parent = running_root(&mut kernel, 1);
+        let ends = kernel.create_pipe(parent, 8).expect("pipe creates");
+        let pipe = pipe_id(&kernel, parent, ends.write);
+
+        let child = kernel
+            .spawn_child_and_close(
+                parent,
+                spec(2),
+                &[DescriptorBinding {
+                    source: ends.write,
+                    target: Descriptor::STDOUT,
+                }],
+                &[ends.write],
+            )
+            .expect("child inherits while parent closes");
+
+        assert_eq!(
+            kernel.descriptor(child, Descriptor::STDOUT),
+            Ok(DescriptorResource::PipeWrite(pipe))
+        );
+        assert_eq!(
+            kernel.descriptor(parent, ends.write),
+            Err(KernelError::DescriptorNotFound {
+                process: parent,
+                descriptor: ends.write,
+            })
+        );
+        assert_eq!(kernel.pipe(pipe).expect("pipe retained").writers, 1);
+    }
+
+    #[test]
+    fn invalid_parent_close_does_not_allocate_a_pid_or_change_descriptors() {
+        let mut kernel = RealmKernel::new(RealmLimits::default());
+        let parent = running_root(&mut kernel, 1);
+        let ends = kernel.create_pipe(parent, 8).expect("pipe creates");
+        let next_process = kernel.next_process_id();
+        let process_count = kernel.process_count();
+        let pipe_count = kernel.pipe_count();
+
+        let error = kernel
+            .spawn_child_and_close(
+                parent,
+                spec(2),
+                &[DescriptorBinding {
+                    source: ends.read,
+                    target: Descriptor::STDIN,
+                }],
+                &[ends.write, ends.write],
+            )
+            .expect_err("duplicate close fails before mutation");
+
+        assert_eq!(error, KernelError::DuplicateDescriptorClose(ends.write));
+        assert_eq!(kernel.next_process_id(), next_process);
+        assert_eq!(kernel.process_count(), process_count);
+        assert_eq!(kernel.pipe_count(), pipe_count);
+        assert!(kernel.descriptor(parent, ends.read).is_ok());
+        assert!(kernel.descriptor(parent, ends.write).is_ok());
     }
 
     #[test]
