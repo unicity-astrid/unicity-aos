@@ -39,6 +39,10 @@
 - A signed `pipe-echo` realm workload that runs two isolated Wasmi process stores
   through the core scheduler and a four-byte stdout-to-stdin pipe, exercising
   partial writes, read/write suspension, wakeup, EOF, and exact output accounting.
+- A long-lived `aos-linux-realm` service actor with one isolated Realm machine per
+  kernel-verified principal, monotonic per-boot process identities, CAS-allocated
+  boot sequences, bounded aggregate principal admission, foreground resource
+  reaping, and live process/pipe accounting through the existing tool protocol.
 - Homebrew formula updates initiated by the tap's authenticated stable-release
   poll, eliminating the cross-repository dispatch credential.
 - Strict, signed stable/dev/nightly channel and immutable release metadata

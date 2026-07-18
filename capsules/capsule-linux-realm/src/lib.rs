@@ -5,12 +5,13 @@
 
 //! Principal-scoped command and workspace adapter for the first AOS Realm.
 
+mod actor;
 mod host;
 
 use aos_realm_runtime::{
     CAT_GUEST, ECHO_GUEST, ExecutionReport, HostFault, PWD_GUEST, ProcessConfig, ProcessOutcome,
-    RealmHost, RealmIoError, RealmRuntime, RunLimits, SMOKE_WRITE_GUEST, STDIN_CAT_GUEST,
-    WRITE_FILE_GUEST,
+    RealmHost, RealmIoError, RealmMachine, RealmMachineStatus, RunLimits, SMOKE_WRITE_GUEST,
+    STDIN_CAT_GUEST, WRITE_FILE_GUEST,
 };
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
@@ -73,6 +74,9 @@ struct ExecResponse {
     memory_limit_bytes: usize,
     suspensions: u64,
     processes: usize,
+    realm_boot_sequence: u64,
+    process_ids: Vec<u64>,
+    next_process_id: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -103,6 +107,41 @@ struct StatusResponse {
     commands: [&'static str; 6],
     workspace_commit: &'static str,
     host_process: bool,
+    actor_state: &'static str,
+    realm_boot_sequence: u64,
+    commands_completed: u64,
+    process_records: usize,
+    pipe_objects: usize,
+    reserved_pipe_bytes: usize,
+    next_process_id: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActorSnapshot {
+    state: &'static str,
+    boot_sequence: u64,
+    commands_completed: u64,
+    machine: RealmMachineStatus,
+}
+
+impl ActorSnapshot {
+    fn idle() -> Self {
+        Self {
+            state: "idle",
+            boot_sequence: 0,
+            commands_completed: 0,
+            machine: RealmMachine::default().status(),
+        }
+    }
+
+    fn compatibility() -> Self {
+        Self {
+            state: "compatibility-entrypoint",
+            boot_sequence: 0,
+            commands_completed: 0,
+            machine: RealmMachine::default().status(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -120,6 +159,12 @@ enum SelectedExecution {
 
 #[capsule]
 impl LinuxRealm {
+    /// Own the principal-isolated Realm machines for this capsule boot.
+    #[astrid::run]
+    fn run(&self) -> Result<(), SysError> {
+        actor::run_actor_loop()
+    }
+
     /// Run one signed command in the caller's principal-scoped AOS Realm.
     ///
     /// `/workspace` maps to the invocation's confined Astrid copy-on-write
@@ -140,7 +185,12 @@ impl LinuxRealm {
     #[astrid::tool("linux_realm_status")]
     pub fn status(&self, _args: StatusArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
-        let response = status_response(principal, layout_state()?, home_status()?);
+        let response = status_response(
+            principal,
+            layout_state()?,
+            home_status()?,
+            ActorSnapshot::compatibility(),
+        );
         serde_json::to_string(&response).map_err(|error| SysError::ApiError(error.to_string()))
     }
 }
@@ -157,6 +207,17 @@ fn run_command(
     principal: String,
     realm_host: Box<dyn RealmHost>,
 ) -> Result<ExecResponse, SysError> {
+    let mut machine = RealmMachine::default();
+    run_command_in_machine(args, principal, realm_host, &mut machine, 0)
+}
+
+fn run_command_in_machine(
+    args: ExecArgs,
+    principal: String,
+    realm_host: Box<dyn RealmHost>,
+    machine: &mut RealmMachine,
+    boot_sequence: u64,
+) -> Result<ExecResponse, SysError> {
     let selected = select_program(&args)?;
     let cwd = args.cwd.clone().unwrap_or_else(|| DEFAULT_CWD.to_string());
     let limits = RunLimits {
@@ -167,7 +228,9 @@ fn run_command(
             .unwrap_or(HARD_MAX_OUTPUT_BYTES)
             .min(HARD_MAX_OUTPUT_BYTES),
     };
-    let (report, processes) = execute_selected(&selected, &cwd, limits, realm_host)?;
+    let (report, mut process_ids) = execute_selected(&selected, &cwd, limits, realm_host, machine)?;
+    process_ids.sort_unstable();
+    let machine_status = machine.status();
     let (outcome, exit_status, fault) = outcome_fields(&report.outcome);
     Ok(ExecResponse {
         realm: REALM_NAME,
@@ -183,7 +246,10 @@ fn run_command(
         fuel_consumed: report.fuel_consumed,
         memory_limit_bytes: report.memory_limit_bytes,
         suspensions: report.suspensions,
-        processes,
+        processes: process_ids.len(),
+        realm_boot_sequence: boot_sequence,
+        process_ids,
+        next_process_id: machine_status.next_process_id.map(|process| process.get()),
     })
 }
 
@@ -192,10 +258,10 @@ fn execute_selected(
     cwd: &str,
     limits: RunLimits,
     realm_host: Box<dyn RealmHost>,
-) -> Result<(ExecutionReport, usize), SysError> {
-    let runtime = RealmRuntime::default();
+    machine: &mut RealmMachine,
+) -> Result<(ExecutionReport, Vec<u64>), SysError> {
     match selected.execution {
-        SelectedExecution::Single(guest) => runtime
+        SelectedExecution::Single(guest) => machine
             .execute_process(
                 guest,
                 ProcessConfig {
@@ -205,10 +271,10 @@ fn execute_selected(
                 limits,
                 realm_host,
             )
-            .map(|report| (report, 1))
+            .map(|report| (report.execution, vec![report.process_id.get()]))
             .map_err(|error| SysError::ApiError(error.to_string())),
         SelectedExecution::EchoPipeline => {
-            let pipeline = runtime
+            let pipeline = machine
                 .execute_pipeline(
                     ECHO_GUEST,
                     ProcessConfig {
@@ -224,7 +290,11 @@ fn execute_selected(
                     4,
                 )
                 .map_err(|error| SysError::ApiError(error.to_string()))?;
-            Ok((combine_pipeline(pipeline), 2))
+            let process_ids = vec![
+                pipeline.producer.process_id.get(),
+                pipeline.consumer.process_id.get(),
+            ];
+            Ok((combine_pipeline(pipeline), process_ids))
         }
     }
 }
@@ -355,6 +425,7 @@ fn status_response(
     principal: String,
     state: &'static str,
     home_status: FsStatus,
+    actor: ActorSnapshot,
 ) -> StatusResponse {
     StatusResponse {
         realm: REALM_NAME,
@@ -399,6 +470,13 @@ fn status_response(
         ],
         workspace_commit: "outer-astrid-promotion-required",
         host_process: false,
+        actor_state: actor.state,
+        realm_boot_sequence: actor.boot_sequence,
+        commands_completed: actor.commands_completed,
+        process_records: actor.machine.process_records,
+        pipe_objects: actor.machine.pipe_objects,
+        reserved_pipe_bytes: actor.machine.reserved_pipe_bytes,
+        next_process_id: actor.machine.next_process_id.map(|process| process.get()),
     }
 }
 
@@ -564,6 +642,12 @@ mod tests {
                 files: 3,
                 manifest: None,
             },
+            ActorSnapshot {
+                state: "running",
+                boot_sequence: 9,
+                commands_completed: 4,
+                machine: RealmMachine::default().status(),
+            },
         ))
         .expect("status serializes");
 
@@ -571,6 +655,8 @@ mod tests {
         assert!(json.contains("/home/agent"));
         assert!(json.contains("kv-cas-head+content-addressed-file-blobs"));
         assert!(json.contains("\"home_generation\":7"));
+        assert!(json.contains("\"realm_boot_sequence\":9"));
+        assert!(json.contains("\"commands_completed\":4"));
         assert!(json.contains("outer-astrid-promotion-required"));
         assert!(!json.contains("/Users/"));
         assert!(!json.contains(".astrid/home"));

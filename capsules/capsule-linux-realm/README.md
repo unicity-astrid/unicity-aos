@@ -26,12 +26,16 @@ agent -> realm tool -> nested WASM command -> private realm ABI
 - `smoke-write`, the original interpreter smoke test
 
 `linux_realm_status` reports the guest-visible mount and command surface without
-exposing physical host paths. Every result identifies the kernel-stamped owner
-principal and includes the nested process outcome, exit status, stdout, stderr,
-fuel consumed, and memory ceiling.
+exposing physical host paths. It also reports the caller's actor boot sequence,
+completed-command count, next process identifier, and live process/pipe resource
+accounting. Every execution result identifies the kernel-stamped owner principal
+and includes the nested process outcome, exit status, stdout, stderr, fuel
+consumed, memory ceiling, and process identifiers.
 
-The first execution call lazily creates this layout for the invoking principal;
-status reports `uninitialized` before that point without mutating storage:
+The first execution call lazily creates this layout and its in-memory Realm
+machine for the invoking principal. Status reports `uninitialized` and an idle
+actor before that point without allocating a machine or advancing durable boot
+state:
 
 ```text
 /home/agent   durable realm home
@@ -89,12 +93,20 @@ typed signal termination, a single-running-process FIFO reference scheduler,
 atomic pipe-descriptor inheritance, bounded partial pipe I/O, backpressure, EOF,
 broken-pipe behavior, and aggregate quotas.
 
+The capsule now runs as a long-lived service actor. It admits at most 32 active
+principal machines, derives identity only from each kernel-verified message, and
+keeps a separate semantic kernel and monotonic PID namespace for each principal.
+Completed foreground jobs are reaped, so their process and pipe resources return
+to zero while their identifiers are never reused during that capsule boot. A
+principal-scoped boot sequence is advanced with KV compare-and-swap and makes PID
+reuse after restart explicit as `(boot sequence, PID)`.
+
 This model is intentionally not exposed as guest `spawn`, `wait`, or `pipe`
-creation imports yet. `pipe-echo` does exercise two isolated, resumable Wasmi
-processes and a four-byte bounded pipe during one foreground tool invocation. A
-long-lived realm actor is still required before process handles or background jobs
-can survive across calls; recreating that state per call would make persistent PID
-and wait semantics false.
+creation imports yet. `pipe-echo` exercises two isolated, resumable Wasmi
+processes and a four-byte bounded pipe during one foreground request. Process
+handles and background jobs still do not survive calls because every admitted job
+is foreground and reaped; the actor establishes the honest owner in which those
+guest operations can be added next.
 
 ## Build and install
 

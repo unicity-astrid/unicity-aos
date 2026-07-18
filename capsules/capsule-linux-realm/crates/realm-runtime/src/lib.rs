@@ -8,7 +8,7 @@ use aos_realm_abi::{
 };
 use aos_realm_core::{
     DescriptorBinding, DescriptorResource, ExecutableId, KernelError, ParkResult, PipeReadResult,
-    PipeWriteResult, ProcessSpec, RealmKernel, RealmLimits, Signal, Termination,
+    PipeWriteResult, ProcessSpec, Quota, RealmKernel, RealmLimits, Signal,
 };
 use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc, vec::Vec};
 use wasmi::{
@@ -18,7 +18,9 @@ use wasmi::{
 
 mod pipeline;
 
-pub use pipeline::{PipelineError, PipelineProcessReport, PipelineReport};
+pub use pipeline::{
+    PipelineError, PipelineProcessReport, PipelineReport, RealmMachine, RealmMachineStatus,
+};
 
 /// Compiled smoke guest embedded into the capsule at build time.
 pub const SMOKE_WRITE_GUEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/smoke_write.wasm"));
@@ -1157,8 +1159,10 @@ mod tests {
 
     #[test]
     fn output_is_bounded_before_copying() {
-        let mut limits = RunLimits::default();
-        limits.output_bytes = 4;
+        let limits = RunLimits {
+            output_bytes: 4,
+            ..RunLimits::default()
+        };
         let report = RealmRuntime::default()
             .execute(SMOKE_WRITE_GUEST, limits)
             .expect("guest launches");
@@ -1177,8 +1181,10 @@ mod tests {
                 (func (export "_start")
                     (loop $forever (br $forever))))"#,
         );
-        let mut limits = RunLimits::default();
-        limits.fuel = 100;
+        let limits = RunLimits {
+            fuel: 100,
+            ..RunLimits::default()
+        };
         let report = RealmRuntime::default()
             .execute(&wasm, limits)
             .expect("guest launches");

@@ -21,6 +21,286 @@ pub struct PipelineReport {
     pub consumer: PipelineProcessReport,
 }
 
+/// Observable accounting for one long-lived realm machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RealmMachineStatus {
+    /// Process records currently retained by the semantic kernel.
+    pub process_records: usize,
+    /// Pipe objects currently retained by the semantic kernel.
+    pub pipe_objects: usize,
+    /// Aggregate capacity reserved by retained pipes.
+    pub reserved_pipe_bytes: usize,
+    /// Next monotonic process identity, or `None` after exhaustion.
+    pub next_process_id: Option<ProcessId>,
+}
+
+/// Principal-local interpreter and semantic-kernel owner.
+///
+/// A machine is intended to live for one Realm boot. Completed foreground
+/// processes are reaped, but their identifiers are never reused during that
+/// boot. Active process state is never shared between `RealmMachine` values.
+pub struct RealmMachine {
+    runtime: RealmRuntime,
+    kernel: Rc<RefCell<RealmKernel>>,
+    limits: RealmLimits,
+}
+
+impl Default for RealmMachine {
+    fn default() -> Self {
+        Self::new(RealmLimits {
+            max_processes: 64,
+            max_pipes: 64,
+            max_pipe_bytes: MAX_IO_BYTES,
+            max_total_pipe_bytes: MAX_IO_BYTES * 16,
+            max_descriptors_per_process: 64,
+        })
+    }
+}
+
+impl RealmMachine {
+    /// Create a machine with explicit semantic-kernel quotas.
+    #[must_use]
+    pub fn new(limits: RealmLimits) -> Self {
+        Self {
+            runtime: RealmRuntime::default(),
+            kernel: Rc::new(RefCell::new(RealmKernel::new(limits))),
+            limits,
+        }
+    }
+
+    /// Snapshot live kernel accounting without exposing mutable process state.
+    #[must_use]
+    pub fn status(&self) -> RealmMachineStatus {
+        let kernel = self.kernel.borrow();
+        RealmMachineStatus {
+            process_records: kernel.process_count(),
+            pipe_objects: kernel.pipe_count(),
+            reserved_pipe_bytes: kernel.reserved_pipe_bytes(),
+            next_process_id: kernel.next_process_id(),
+        }
+    }
+
+    /// Execute and reap one foreground process in this machine.
+    pub fn execute_process(
+        &mut self,
+        wasm: &[u8],
+        process: ProcessConfig,
+        limits: RunLimits,
+        realm_host: Box<dyn RealmHost>,
+    ) -> Result<PipelineProcessReport, PipelineError> {
+        // Admission and instantiation happen before kernel mutation so a bad
+        // module cannot consume a PID or strand a process record.
+        let (store, start) =
+            self.runtime
+                .prepare_process(wasm, process.clone(), limits, realm_host, None)?;
+        let process_id = {
+            let mut kernel = self.kernel.borrow_mut();
+            let process_id = kernel.spawn_root(process_spec(wasm, &process))?;
+            if let Err(error) = kernel.admit(process_id) {
+                abort_processes(&mut kernel, &[process_id])?;
+                return Err(error.into());
+            }
+            if kernel.dispatch_next() != Some(process_id) {
+                abort_processes(&mut kernel, &[process_id])?;
+                return Err(PipelineError::Deadlock);
+            }
+            process_id
+        };
+
+        let mut slot = ProcessSlot {
+            store,
+            invocation: InvocationState::Start(start),
+            limits,
+            report: None,
+        };
+        attach_process(&mut slot, process_id, &self.kernel);
+        if let Err(error) = drive_slot(process_id, &mut slot, &self.kernel) {
+            abort_processes(&mut self.kernel.borrow_mut(), &[process_id])?;
+            return Err(error);
+        }
+        if slot.report.is_none() {
+            abort_processes(&mut self.kernel.borrow_mut(), &[process_id])?;
+            return Err(PipelineError::Deadlock);
+        }
+        let execution = slot
+            .report
+            .take()
+            .ok_or(PipelineError::MissingReport(process_id))?;
+        self.kernel.borrow_mut().reap_root(process_id)?;
+        Ok(PipelineProcessReport {
+            process_id,
+            execution,
+        })
+    }
+
+    /// Execute and reap two foreground processes connected by one bounded pipe.
+    pub fn execute_pipeline(
+        &mut self,
+        producer_wasm: &[u8],
+        producer: ProcessConfig,
+        consumer_wasm: &[u8],
+        consumer: ProcessConfig,
+        limits: RunLimits,
+        pipe_capacity: usize,
+    ) -> Result<PipelineReport, PipelineError> {
+        self.preflight_pipeline(pipe_capacity)?;
+        let producer_limits = RunLimits {
+            fuel: limits.fuel / 2,
+            memory_bytes: limits.memory_bytes,
+            output_bytes: limits.output_bytes / 2,
+        };
+        let consumer_limits = RunLimits {
+            fuel: limits.fuel.saturating_sub(producer_limits.fuel),
+            memory_bytes: limits.memory_bytes,
+            output_bytes: limits
+                .output_bytes
+                .saturating_sub(producer_limits.output_bytes),
+        };
+
+        // Prepare both stores before allocating any semantic-kernel resource.
+        let (consumer_store, consumer_start) = self.runtime.prepare_process(
+            consumer_wasm,
+            consumer.clone(),
+            consumer_limits,
+            Box::<DenyRealmHost>::default(),
+            None,
+        )?;
+        let (producer_store, producer_start) = self.runtime.prepare_process(
+            producer_wasm,
+            producer.clone(),
+            producer_limits,
+            Box::<DenyRealmHost>::default(),
+            None,
+        )?;
+
+        let mut allocated = Vec::with_capacity(3);
+        let setup = (|| -> Result<(ProcessId, ProcessId), PipelineError> {
+            let mut kernel = self.kernel.borrow_mut();
+            let supervisor =
+                kernel.spawn_root(ProcessSpec::new(ExecutableId::REALM_SUPERVISOR, "/"))?;
+            allocated.push(supervisor);
+            kernel.admit(supervisor)?;
+            if kernel.dispatch_next() != Some(supervisor) {
+                return Err(PipelineError::Deadlock);
+            }
+            let ends = kernel.create_pipe(supervisor, pipe_capacity)?;
+            let consumer_id = kernel.spawn_child(
+                supervisor,
+                process_spec(consumer_wasm, &consumer),
+                &[DescriptorBinding {
+                    source: ends.read,
+                    target: Descriptor::STDIN,
+                }],
+            )?;
+            allocated.push(consumer_id);
+            let producer_id = kernel.spawn_child(
+                supervisor,
+                process_spec(producer_wasm, &producer),
+                &[DescriptorBinding {
+                    source: ends.write,
+                    target: Descriptor::STDOUT,
+                }],
+            )?;
+            allocated.push(producer_id);
+            kernel.close_descriptor(supervisor, ends.read)?;
+            kernel.close_descriptor(supervisor, ends.write)?;
+            kernel.admit(consumer_id)?;
+            kernel.admit(producer_id)?;
+            kernel.exit(supervisor, 0)?;
+            kernel.reap_root(supervisor)?;
+            Ok((consumer_id, producer_id))
+        })();
+        let (consumer_id, producer_id) = match setup {
+            Ok(ids) => ids,
+            Err(error) => {
+                abort_processes(&mut self.kernel.borrow_mut(), &allocated)?;
+                return Err(error);
+            }
+        };
+
+        let mut slots = BTreeMap::new();
+        let mut consumer_slot = ProcessSlot {
+            store: consumer_store,
+            invocation: InvocationState::Start(consumer_start),
+            limits: consumer_limits,
+            report: None,
+        };
+        attach_process(&mut consumer_slot, consumer_id, &self.kernel);
+        slots.insert(consumer_id, consumer_slot);
+        let mut producer_slot = ProcessSlot {
+            store: producer_store,
+            invocation: InvocationState::Start(producer_start),
+            limits: producer_limits,
+            report: None,
+        };
+        attach_process(&mut producer_slot, producer_id, &self.kernel);
+        slots.insert(producer_id, producer_slot);
+
+        let drive_result = (|| -> Result<(), PipelineError> {
+            while slots.values().any(|slot| slot.report.is_none()) {
+                let process = self
+                    .kernel
+                    .borrow_mut()
+                    .dispatch_next()
+                    .ok_or(PipelineError::Deadlock)?;
+                let slot = slots
+                    .get_mut(&process)
+                    .ok_or(PipelineError::MissingReport(process))?;
+                drive_slot(process, slot, &self.kernel)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = drive_result {
+            abort_processes(&mut self.kernel.borrow_mut(), &[consumer_id, producer_id])?;
+            return Err(error);
+        }
+
+        let report = PipelineReport {
+            producer: PipelineProcessReport {
+                process_id: producer_id,
+                execution: take_report(&mut slots, producer_id)?,
+            },
+            consumer: PipelineProcessReport {
+                process_id: consumer_id,
+                execution: take_report(&mut slots, consumer_id)?,
+            },
+        };
+        {
+            let mut kernel = self.kernel.borrow_mut();
+            kernel.reap_root(consumer_id)?;
+            kernel.reap_root(producer_id)?;
+        }
+        Ok(report)
+    }
+
+    fn preflight_pipeline(&self, pipe_capacity: usize) -> Result<(), PipelineError> {
+        let kernel = self.kernel.borrow();
+        if pipe_capacity == 0 {
+            return Err(KernelError::InvalidPipeCapacity.into());
+        }
+        if pipe_capacity > self.limits.max_pipe_bytes {
+            return Err(KernelError::QuotaExceeded(Quota::PipeBytes).into());
+        }
+        if kernel.process_count().saturating_add(3) > self.limits.max_processes {
+            return Err(KernelError::QuotaExceeded(Quota::Processes).into());
+        }
+        if kernel.pipe_count().saturating_add(1) > self.limits.max_pipes {
+            return Err(KernelError::QuotaExceeded(Quota::Pipes).into());
+        }
+        let total_pipe_bytes = kernel
+            .reserved_pipe_bytes()
+            .checked_add(pipe_capacity)
+            .ok_or(KernelError::InvalidPipeCapacity)?;
+        if total_pipe_bytes > self.limits.max_total_pipe_bytes {
+            return Err(KernelError::QuotaExceeded(Quota::TotalPipeBytes).into());
+        }
+        if self.limits.max_descriptors_per_process < 2 {
+            return Err(KernelError::QuotaExceeded(Quota::Descriptors).into());
+        }
+        Ok(())
+    }
+}
+
 /// Failure to construct or drive the bounded pipeline machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PipelineError {
@@ -99,129 +379,42 @@ impl RealmRuntime {
         limits: RunLimits,
         pipe_capacity: usize,
     ) -> Result<PipelineReport, PipelineError> {
-        let producer_limits = RunLimits {
-            fuel: limits.fuel / 2,
-            memory_bytes: limits.memory_bytes,
-            output_bytes: limits.output_bytes / 2,
-        };
-        let consumer_limits = RunLimits {
-            fuel: limits.fuel.saturating_sub(producer_limits.fuel),
-            memory_bytes: limits.memory_bytes,
-            output_bytes: limits
-                .output_bytes
-                .saturating_sub(producer_limits.output_bytes),
-        };
-        let mut kernel = RealmKernel::new(RealmLimits {
-            max_processes: 3,
-            max_pipes: 1,
-            max_pipe_bytes: MAX_IO_BYTES,
-            max_total_pipe_bytes: MAX_IO_BYTES,
-            max_descriptors_per_process: 4,
-        });
-        let supervisor =
-            kernel.spawn_root(ProcessSpec::new(ExecutableId::REALM_SUPERVISOR, "/"))?;
-        kernel.admit(supervisor)?;
-        if kernel.dispatch_next() != Some(supervisor) {
-            return Err(PipelineError::Deadlock);
-        }
-        let ends = kernel.create_pipe(supervisor, pipe_capacity)?;
-        let consumer_id = kernel.spawn_child(
-            supervisor,
-            process_spec(consumer_wasm, &consumer),
-            &[DescriptorBinding {
-                source: ends.read,
-                target: Descriptor::STDIN,
-            }],
-        )?;
-        let producer_id = kernel.spawn_child(
-            supervisor,
-            process_spec(producer_wasm, &producer),
-            &[DescriptorBinding {
-                source: ends.write,
-                target: Descriptor::STDOUT,
-            }],
-        )?;
-        kernel.close_descriptor(supervisor, ends.read)?;
-        kernel.close_descriptor(supervisor, ends.write)?;
-        kernel.admit(consumer_id)?;
-        kernel.admit(producer_id)?;
-        kernel.exit(supervisor, 0)?;
-        if kernel.reap_root(supervisor)? != Termination::Exited(0) {
-            return Err(PipelineError::Deadlock);
-        }
-
-        let kernel = Rc::new(RefCell::new(kernel));
-        let mut slots = BTreeMap::new();
-        slots.insert(
-            consumer_id,
-            self.pipeline_slot(
-                consumer_wasm,
-                consumer,
-                consumer_limits,
-                consumer_id,
-                &kernel,
-            )?,
-        );
-        slots.insert(
-            producer_id,
-            self.pipeline_slot(
-                producer_wasm,
-                producer,
-                producer_limits,
-                producer_id,
-                &kernel,
-            )?,
-        );
-
-        while slots.values().any(|slot| slot.report.is_none()) {
-            let process = kernel
-                .borrow_mut()
-                .dispatch_next()
-                .ok_or(PipelineError::Deadlock)?;
-            let slot = slots
-                .get_mut(&process)
-                .ok_or(PipelineError::MissingReport(process))?;
-            drive_slot(process, slot, &kernel)?;
-        }
-
-        Ok(PipelineReport {
-            producer: PipelineProcessReport {
-                process_id: producer_id,
-                execution: take_report(&mut slots, producer_id)?,
-            },
-            consumer: PipelineProcessReport {
-                process_id: consumer_id,
-                execution: take_report(&mut slots, consumer_id)?,
-            },
-        })
-    }
-
-    fn pipeline_slot(
-        &self,
-        wasm: &[u8],
-        process: ProcessConfig,
-        limits: RunLimits,
-        process_id: ProcessId,
-        kernel: &Rc<RefCell<RealmKernel>>,
-    ) -> Result<ProcessSlot, PipelineError> {
-        let context = ProcessContext {
-            process: process_id,
-            kernel: Rc::clone(kernel),
-        };
-        let (store, start) = self.prepare_process(
-            wasm,
-            process,
+        RealmMachine::default().execute_pipeline(
+            producer_wasm,
+            producer,
+            consumer_wasm,
+            consumer,
             limits,
-            Box::<DenyRealmHost>::default(),
-            Some(context),
-        )?;
-        Ok(ProcessSlot {
-            store,
-            invocation: InvocationState::Start(start),
-            limits,
-            report: None,
-        })
+            pipe_capacity,
+        )
     }
+}
+
+fn attach_process(slot: &mut ProcessSlot, process: ProcessId, kernel: &Rc<RefCell<RealmKernel>>) {
+    slot.store.data_mut().process = Some(ProcessContext {
+        process,
+        kernel: Rc::clone(kernel),
+    });
+}
+
+fn abort_processes(kernel: &mut RealmKernel, processes: &[ProcessId]) -> Result<(), KernelError> {
+    for process in processes {
+        let Ok(snapshot) = kernel.process(*process) else {
+            continue;
+        };
+        if !snapshot.state.is_terminal() {
+            kernel.signal(*process, Signal::Kill)?;
+        }
+    }
+    for process in processes {
+        let Ok(snapshot) = kernel.process(*process) else {
+            continue;
+        };
+        if snapshot.parent.is_none() && snapshot.state.is_terminal() {
+            kernel.reap_root(*process)?;
+        }
+    }
+    Ok(())
 }
 
 fn process_spec(wasm: &[u8], process: &ProcessConfig) -> ProcessSpec {
@@ -503,5 +696,74 @@ mod tests {
             report.producer.execution.outcome,
             ProcessOutcome::HostFault(HostFault::BrokenPipe)
         );
+    }
+
+    #[test]
+    fn long_lived_machine_reaps_resources_without_reusing_process_ids() {
+        let mut machine = RealmMachine::default();
+        let first = machine
+            .execute_process(
+                ECHO_GUEST,
+                ProcessConfig {
+                    argv: vec!["echo".to_string(), "first".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                RunLimits::default(),
+                Box::<DenyRealmHost>::default(),
+            )
+            .expect("first process completes");
+        let pipeline = machine
+            .execute_pipeline(
+                ECHO_GUEST,
+                ProcessConfig {
+                    argv: vec!["echo".to_string(), "second".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                STDIN_CAT_GUEST,
+                ProcessConfig {
+                    argv: vec!["stdin-cat".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                RunLimits::default(),
+                4,
+            )
+            .expect("pipeline completes");
+        let status = machine.status();
+
+        assert_eq!(first.process_id.get(), 1);
+        assert_eq!(pipeline.consumer.process_id.get(), 3);
+        assert_eq!(pipeline.producer.process_id.get(), 4);
+        assert_eq!(status.next_process_id.map(ProcessId::get), Some(5));
+        assert_eq!(status.process_records, 0);
+        assert_eq!(status.pipe_objects, 0);
+        assert_eq!(status.reserved_pipe_bytes, 0);
+    }
+
+    #[test]
+    fn failed_pipeline_admission_leaves_machine_state_unchanged() {
+        let mut machine = RealmMachine::default();
+        let before = machine.status();
+        let error = machine
+            .execute_pipeline(
+                ECHO_GUEST,
+                ProcessConfig {
+                    argv: vec!["echo".to_string(), "x".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                STDIN_CAT_GUEST,
+                ProcessConfig {
+                    argv: vec!["stdin-cat".to_string()],
+                    cwd: "/workspace".to_string(),
+                },
+                RunLimits::default(),
+                0,
+            )
+            .expect_err("zero capacity is rejected");
+
+        assert_eq!(
+            error,
+            PipelineError::Kernel(KernelError::InvalidPipeCapacity)
+        );
+        assert_eq!(machine.status(), before);
     }
 }

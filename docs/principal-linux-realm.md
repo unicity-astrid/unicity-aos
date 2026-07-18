@@ -1,6 +1,6 @@
 # AOS Principal Linux Realm Capsule
 
-Status: active implementation programme; command, mount, and persistence seed live
+Status: active implementation programme; persistent principal Realm actor live
 
 Last reviewed: 2026-07-18
 
@@ -402,20 +402,37 @@ removed and its reserved capacity released only after its last read and write
 endpoint close.
 
 The model does not yet claim live `spawn`, `wait`, `pipe`, signal, or PTY guest
-imports. Wiring those imports requires resumable Wasmi instances and a realm actor
-that owns one process table across invocations; constructing a new process table
-inside each one-shot tool call would produce dishonest PID and lifecycle semantics.
+imports. The required owner now exists: the capsule is a long-lived run-loop actor
+with one `RealmMachine` and semantic kernel per kernel-verified principal. It keeps
+process identifiers monotonic across tool calls within one capsule boot, reaps
+completed foreground jobs, and exposes live process, pipe, reserved-byte, command,
+and next-PID accounting. Constructing a new process table inside each one-shot
+tool call is no longer the live path.
 
-The reference runtime now wires a deliberately smaller executable proof: one
-foreground machine creates two signed processes, maps a four-byte pipe from the
+The reference runtime still wires a deliberately smaller executable proof: one
+foreground request creates two signed processes, maps a four-byte pipe from the
 producer's stdout to the consumer's stdin, starts the consumer first, and drives
 both independent Wasmi stores through repeated read and write suspension. The
 producer handles partial writes; the consumer observes EOF only after producer
 exit closes the last writer. The caller's fuel and captured-output budgets are
 split across the two processes, while each retains the declared per-process memory
 ceiling. Suspension counts are returned in process accounting. This proves the
-scheduler/backend junction, bounded backpressure, and resumable call stacks. It
-does not create guest-facing process syscalls or persistent background jobs.
+scheduler/backend junction, bounded backpressure, resumable call stacks, and actor
+ownership. It does not create guest-facing process syscalls or persistent
+background jobs. Calls are currently serialized by one capsule run loop; fair
+cross-principal scheduling becomes mandatory before background jobs are admitted.
+
+Astrid's subscription host returns at most one routed message per envelope and
+installs that message's principal as the invocation context before Realm KV, file,
+and publish calls. The actor additionally requires `verified` attribution rather
+than trusting a principal string in the payload.
+
+Process identity is the tuple `(realm boot sequence, process id)`. The process ID
+returns to 1 after a capsule restart, while a principal-scoped boot sequence is
+advanced atomically with KV compare-and-swap. Read-only status does not allocate a
+machine or advance that sequence. The actor admits at most 32 principal machines
+per capsule boot and currently has no eviction policy; reaching the bound fails
+before initializing durable state for the rejected machine.
 
 ## 8. Executable compatibility lanes
 
@@ -659,6 +676,7 @@ capsules/capsule-linux-realm/
   Capsule.toml
   src/
     lib.rs               tool surface, command admission, result accounting
+    actor.rs             run loop and principal-isolated Realm machine ownership
     host.rs              mount normalization and Astrid VFS adapter
   crates/
     realm-abi/          guest syscall numbers, records, errno, executable metadata
@@ -700,6 +718,8 @@ The proof deliberately avoids Bash, Debian, networking, and a large image.
   open/read/write/close, monotonic time, and exit;
 - Wasmi configured with fuel and memory limits;
 - structured `linux_realm_exec` and read-only `linux_realm_status` tools;
+- one long-lived run-loop actor with a separate Realm machine per verified
+  principal, CAS-allocated boot identity, and bounded aggregate admission;
 - `/home/agent`, `/workspace`, and `/tmp` mount projections;
 - no `host_process` grant.
 
@@ -738,13 +758,18 @@ agent invokes linux_realm_exec(write-file, ["notes.txt", "hello"], /home/agent)
 - an interrupted commit leaving unselected blobs;
 - concurrent head loss, bounded retry, and persistent contention;
 - concurrent invocation state leakage.
+- status allocating or mutating a previously idle principal machine;
+- overlapping boot allocation selecting the same principal boot identity;
+- failed process/pipe admission consuming a PID or retaining kernel resources;
 
 ### Exit condition
 
 An installed Astrid capsule runs signed nested WASM commands through an internal
-Linux-shaped descriptor boundary, returns exact output and accounting, reads and
-writes principal-scoped storage, survives a daemon restart where promised, rejects
-cross-principal home reads, traps safely, and has no host-process capability.
+Linux-shaped descriptor boundary and a long-lived principal Realm actor, returns
+exact output and accounting, reads and writes principal-scoped storage, survives a
+daemon restart where promised, rejects cross-principal home and process-state
+reads, traps safely, reaps foreground resources, and has no host-process
+capability.
 
 This proves the recursive containment model. It does not prove POSIX or Linux
 compatibility.
@@ -753,13 +778,15 @@ compatibility.
 
 - the seed is based on `unicity-aos/aos-ce` main commit
   `dfa1d71c2737a016d8d4dd169d0755ff624f6b50`;
-- fifty-five focused host tests pass, including nested argument/CWD delivery,
+- sixty-three focused host tests pass, including nested argument/CWD delivery,
   file round trips across process instances, path confinement, stable host-error
   mapping, the actual manifest authority test, fuel exhaustion, memory/output
   admission, selected-generation restart reconstruction, competing-writer merge,
   orphan invisibility, corruption failure, process lifecycle and wait/reap,
   deterministic scheduling, descriptor inheritance, pipe EOF/backpressure,
-  endpoint wakeups, quota failure atomicity, and identifier exhaustion;
+  endpoint wakeups, quota failure atomicity, identifier exhaustion, actor PID
+  continuity, principal machine isolation, idle-status non-mutation, CAS boot
+  encoding, aggregate actor admission, and foreground cleanup;
 - the reference runtime drives a signed `echo | stdin-cat` workload as two
   isolated, resumable Wasmi stores over a four-byte pipe; both processes block and
   resume under measured backpressure and reproduce the exact input plus newline;
@@ -767,8 +794,9 @@ compatibility.
   `wasm32-unknown-unknown`;
 - the current stable Wasmi 1.1.0 runs with default `std` and WAT parsing disabled,
   BTree-backed collections, extra runtime checks, fuel, and store limits;
-- `astrid-build` 0.10.1 produced a 375 KiB final test artifact with SHA-256
-  `ee1ca8fd62343bdeed1c9115c0970462e46f1408f2a4e2e5ed5c74d25f2f0068`;
+- `astrid-build` 0.10.1 produced a 396,742-byte (387 KiB) final actor artifact
+  with SHA-256
+  `42e393e7ff19dfd9471587651acce550b2df151a9ad556c00c321e5ced349ad6`;
   Astrid 0.10.1 loads it as a shared component with `host_process=false`;
 - the two outer archive digests differed because `astrid-build` copied the
   rebuilt component's modification time into its tar header. Reproducible outer
@@ -794,6 +822,23 @@ compatibility.
   two processes with 128 KiB aggregate linear-memory ceiling, 1,198 consumed
   interpreter fuel, 15 measured read/write suspensions over a four-byte pipe, and
   exact stdout `live resumable realm pipeline\n`;
+- a clean actor-only fixture with current `aos-cli`, `sage-mcp`, and
+  `aos-linux-realm` exercised the actual tool bus. Default ran PID 1, then a
+  two-process pipeline at guest PIDs 3 and 4 (PID 2 was the reaped supervisor),
+  and reported next PID 5 with zero retained process records, pipe objects, or
+  reserved pipe bytes;
+- after a full daemon restart, default returned to PID 1 under boot sequence 2.
+  A normal least-privilege `realm_alice` profile, granted only the three test
+  capsules, independently started at PID 1 and boot sequence 1. Each status kept
+  its own command count and next PID, demonstrating that mutable process state is
+  principal-isolated even though the capsule component instance is shared;
+- the final 396,742-byte artifact was then installed into every test view and loaded
+  as one shared component hash. Immediately after restart, read-only status
+  returned `actor_state=idle`, boot sequence 0, command count 0, and next PID 1;
+  the first execution atomically selected the principal's next durable boot
+  sequence (4 in the reused fixture), ran as PID 1, and left zero process and pipe
+  resources. The following status returned `running` with that same boot sequence,
+  one completed command, and next PID 2;
 - the initial live run discovered two integration constraints rather than hiding
   them: Astrid's component FileHandle methods are not implemented, so the adapter
   uses bounded whole-file I/O and commits on descriptor close; `/tmp` must be
@@ -805,10 +850,11 @@ compatibility.
   built 0.10.1 daemon proved the realm, but AOS startup must select and verify the
   exact product-pinned runtime companion before the realm enters the default set.
 
-The E2E run used the current `astrid-mcp` capsule as a test front door because the
-current CE distribution does not yet install an MCP broker. Adding the realm to the
-default distribution before adding its invocation front door would produce an
-installed but unreachable workbench.
+The earlier persistence E2E run used the then-current `astrid-mcp` capsule as its
+front door. The actor E2E used the product `aos-cli` proxy and current `sage-mcp`
+broker. The Realm still must not enter the default distribution until that broker
+and invocation path are part of the supported CE set rather than test-installed
+companions.
 
 ## 16. Ordered implementation milestones
 
@@ -841,8 +887,10 @@ installed but unreachable workbench.
   pipes, atomic descriptor inheritance, and aggregate process/pipe quotas;
 - [x] bind resumable Wasmi process slots to the kernel for a foreground
   two-process stdout-to-stdin pipeline with measured suspension and exact output;
-- [ ] add a long-lived realm actor plus guest `exec`, `posix_spawn`, wait, pipe,
-  and signal imports;
+- [x] add a long-lived principal Realm actor with per-boot PID continuity,
+  restart-disambiguating boot identity, verified-principal isolation, aggregate
+  admission, foreground cleanup, and live accounting;
+- [ ] add guest `exec`, `posix_spawn`, wait, pipe, and signal imports;
 - [ ] add PTYs, sessions, process groups, and job-control signals;
 - run multiple guest modules with isolated memories;
 - compile and run a small shell;
@@ -902,6 +950,9 @@ The design must be tested against at least these scenarios:
 | Realm is deleted | Keys/handles revoked and durable blocks become collectible |
 | Guest writes projected workspace | Change remains in Astrid COW until outer promotion |
 | Daemon restarts before promotion | Durable home remains; staged workspace is discarded |
+| Actor restarts and PID 1 is reused | Boot sequence advances; the identity tuple remains unique |
+| Principal B executes while A is warm | B receives a distinct machine, PID namespace, counters, and boot sequence |
+| Actor principal bound is exhausted | New execution fails before Realm state is initialized |
 
 ## 18. Measurements
 
@@ -1012,6 +1063,10 @@ The first implementation must resolve these with executable evidence:
 10. At what stable boundary does a public realm WIT RFC become necessary?
 11. Which existing first-party capsules genuinely need bounded realm jobs, and
     which must retain a narrower service dependency?
+12. What fair scheduling and admission policy should replace serialized foreground
+    calls before principals may keep background jobs?
+13. Should idle principal machines be evicted, and if so which process, descriptor,
+    and boot-generation conditions make eviction observable and safe?
 
 ## 22. Implementation ledger and immediate task list
 
@@ -1047,8 +1102,11 @@ The first implementation must resolve these with executable evidence:
 - [x] run two signed guest modules with isolated memories through the core
   scheduler, a four-byte bounded pipe, resumable read/write host calls, partial
   producer writes, consumer EOF, and exact combined accounting;
-- [ ] add a long-lived principal realm actor and resumable Wasmi process slots,
-  then expose the tested process operations through the private guest ABI;
+- [x] add a long-lived principal Realm actor with isolated machine state,
+  monotonic per-boot PIDs, CAS-allocated boot sequences, read-only idle status,
+  a 32-principal aggregate bound, and foreground process/pipe cleanup;
+- [ ] expose the tested spawn, wait, pipe, and signal operations through the
+  private guest ABI without allowing background jobs to escape actor accounting;
 - [ ] add an outer workspace diff/promote workflow; realm code must not silently
   commit its own COW projection;
 - [ ] put a supported MCP broker/invocation front door in the CE distribution
@@ -1068,8 +1126,9 @@ The first implementation must resolve these with executable evidence:
 - [ ] defer public WIT, Debian naming, arbitrary package claims, and native-kernel
     coupling until evidence requires them.
 
-The next executable artifact binds resumable Wasmi process slots to the new
-`realm-core` oracle inside a long-lived principal realm actor, then exposes the
-smallest honest `posix_spawn`/wait/pipe guest path. The storage track adds named
-checkpoint/diff/reset and outer workspace promotion. A tiny shell follows those
-live mechanics; Bash and a compiler remain acceptance workloads.
+The next executable artifact exposes the smallest honest
+`posix_spawn`/wait/pipe path from guest code into the now-live principal actor,
+including handle generation checks, bounded background admission, cancellation,
+and deterministic cleanup. The storage track adds named checkpoint/diff/reset and
+outer workspace promotion. A tiny shell follows those live mechanics; Bash and a
+compiler remain acceptance workloads.

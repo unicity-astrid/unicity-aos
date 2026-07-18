@@ -83,6 +83,12 @@ pub enum ProcessState {
 }
 
 impl ProcessState {
+    /// Whether the process has reached a waitable terminal state.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Exited(_) | Self::Signaled(_))
+    }
+
     fn termination(self) -> Option<Termination> {
         match self {
             Self::Exited(status) => Some(Termination::Exited(status)),
@@ -463,6 +469,12 @@ impl RealmKernel {
     #[must_use]
     pub fn reserved_pipe_bytes(&self) -> usize {
         self.reserved_pipe_bytes
+    }
+
+    /// Next process identity that will be allocated, or `None` after exhaustion.
+    #[must_use]
+    pub fn next_process_id(&self) -> Option<ProcessId> {
+        (self.next_process_id != 0).then(|| ProcessId::new(self.next_process_id))
     }
 
     /// Snapshot one process without exposing mutable kernel state.
@@ -1193,9 +1205,12 @@ mod tests {
         kernel.exit(first, 0).expect("first exits");
         assert_eq!(kernel.reap_root(first), Ok(Termination::Exited(0)));
         assert_eq!(kernel.reap_root(second), Ok(Termination::Exited(7)));
+        assert!(ProcessState::Exited(7).is_terminal());
+        assert!(!ProcessState::Runnable.is_terminal());
 
         let third = kernel.spawn_root(spec(3)).expect("third spawns");
         assert!(third.get() > second.get());
+        assert_eq!(kernel.next_process_id().map(ProcessId::get), Some(4));
     }
 
     #[test]
@@ -1280,8 +1295,10 @@ mod tests {
 
     #[test]
     fn process_quota_counts_zombies_until_reaped() {
-        let mut limits = RealmLimits::default();
-        limits.max_processes = 1;
+        let limits = RealmLimits {
+            max_processes: 1,
+            ..RealmLimits::default()
+        };
         let mut kernel = RealmKernel::new(limits);
         let process = running_root(&mut kernel, 1);
         kernel.exit(process, 0).expect("root exits");
@@ -1525,10 +1542,12 @@ mod tests {
 
     #[test]
     fn pipe_quota_failure_is_atomic_and_capacity_is_released_on_last_close() {
-        let mut limits = RealmLimits::default();
-        limits.max_pipes = 1;
-        limits.max_pipe_bytes = 8;
-        limits.max_total_pipe_bytes = 8;
+        let limits = RealmLimits {
+            max_pipes: 1,
+            max_pipe_bytes: 8,
+            max_total_pipe_bytes: 8,
+            ..RealmLimits::default()
+        };
         let mut kernel = RealmKernel::new(limits);
         let process = running_root(&mut kernel, 1);
         let ends = kernel.create_pipe(process, 8).expect("pipe creates");
@@ -1558,8 +1577,10 @@ mod tests {
 
     #[test]
     fn descriptor_quota_failure_does_not_allocate_a_pipe() {
-        let mut limits = RealmLimits::default();
-        limits.max_descriptors_per_process = 1;
+        let limits = RealmLimits {
+            max_descriptors_per_process: 1,
+            ..RealmLimits::default()
+        };
         let mut kernel = RealmKernel::new(limits);
         let process = running_root(&mut kernel, 1);
 
@@ -1594,6 +1615,7 @@ mod tests {
             kernel.spawn_root(spec(2)),
             Err(KernelError::IdentifierExhausted)
         );
+        assert_eq!(kernel.next_process_id(), None);
         assert_eq!(kernel.process_count(), 1);
 
         kernel.admit(final_process).expect("last process admits");
