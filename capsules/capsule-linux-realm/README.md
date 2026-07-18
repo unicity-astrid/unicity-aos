@@ -120,17 +120,19 @@ reuse after restart explicit as `(boot sequence, PID)`.
 `crates/realm-machine` is the host-testable full-system backend seed. It owns only
 admitted guest CPU/CSR state, contiguous RAM, bounded serial input/output, the
 standard test finisher, and slice execution. Its current surface is the RV64I
-integer subset used by the probes plus the Zicsr operations, typed M/S CSR subset,
-WARL masks, ECALL exception delivery/delegation, and `mret`/`sret` privilege-stack
-transitions defined by the ratified RISC-V Machine and Supervisor ISA 1.13. It has
+integer subset used by the probes plus Zicsr, typed M/S CSRs, general synchronous
+exception delivery/delegation, `mret`/`sret`, Sv39 translation, and `sfence.vma`
+under the ratified RISC-V Machine and Supervisor ISA 1.13. The page walker is
+bounded and checks canonicality, PTE/superpage form, U/S and R/W/X permissions,
+SUM/MXR, MPRV, and A/D updates against admitted RAM. It has
 no browser, JavaScript, JIT, host process, host filesystem, or network dependency
 and compiles for the capsule's `wasm32-unknown-unknown` target.
 
-Those probes are architectural boundary tests, not Linux claims. General
-instruction/load/store fault delivery, Sv39, atomics/compressed instructions,
-CLINT, PLIC, SBI/boot handoff, a device tree, and virtio block still have to land
-before a Linux kernel can boot. `satp` is intentionally WARL Bare and interrupt
-CSRs are hardwired to zero until their corresponding machine components exist.
+Those probes are architectural boundary tests, not Linux claims. The M/A
+extensions, counters, compressed instructions, timer/interrupt delivery, PLIC,
+SBI/boot handoff, a device tree, and virtio block still have to land before a Linux
+kernel can boot. Interrupt CSRs remain hardwired to zero until their corresponding
+machine components exist.
 
 The private ABI exposes bounded `pipe`, compatibility `spawn-signed`, record-based
 `spawn-signed-record`, `wait`, and `signal` operations. The record form selects an

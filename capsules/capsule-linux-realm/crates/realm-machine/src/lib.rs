@@ -42,6 +42,8 @@ const MSTATUS_SPP: u64 = 1 << 8;
 const MSTATUS_MPP_SHIFT: u32 = 11;
 const MSTATUS_MPP: u64 = 0b11 << MSTATUS_MPP_SHIFT;
 const MSTATUS_MPRV: u64 = 1 << 17;
+const MSTATUS_SUM: u64 = 1 << 18;
+const MSTATUS_MXR: u64 = 1 << 19;
 const MSTATUS_UXL_RV64: u64 = 0b10 << 32;
 const MSTATUS_SXL_RV64: u64 = 0b10 << 34;
 const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
@@ -50,15 +52,49 @@ const MSTATUS_WRITABLE: u64 = MSTATUS_SIE
     | MSTATUS_MPIE
     | MSTATUS_SPP
     | MSTATUS_MPP
-    | MSTATUS_MPRV;
-const SSTATUS_VISIBLE: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_UXL_RV64;
-const SSTATUS_WRITABLE: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP;
+    | MSTATUS_MPRV
+    | MSTATUS_SUM
+    | MSTATUS_MXR;
+const SSTATUS_VISIBLE: u64 =
+    MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR | MSTATUS_UXL_RV64;
+const SSTATUS_WRITABLE: u64 = MSTATUS_SIE | MSTATUS_SPIE | MSTATUS_SPP | MSTATUS_SUM | MSTATUS_MXR;
 const MISA_RV64_ISU: u64 = (0b10 << 62) | (1 << 8) | (1 << 18) | (1 << 20);
-const MEDELEG_SUPPORTED: u64 = (1 << 8) | (1 << 9);
+const MEDELEG_SUPPORTED: u64 = (1 << 0)
+    | (1 << 1)
+    | (1 << 2)
+    | (1 << 3)
+    | (1 << 4)
+    | (1 << 5)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 9)
+    | (1 << 12)
+    | (1 << 13)
+    | (1 << 15);
+
+const SATP_MODE_SHIFT: u32 = 60;
+const SATP_MODE_BARE: u64 = 0;
+const SATP_MODE_SV39: u64 = 8;
+const SATP_ASID_MASK: u64 = 0xffff << 44;
+const SATP_PPN_MASK: u64 = (1 << 44) - 1;
+
+const PTE_VALID: u64 = 1 << 0;
+const PTE_READ: u64 = 1 << 1;
+const PTE_WRITE: u64 = 1 << 2;
+const PTE_EXECUTE: u64 = 1 << 3;
+const PTE_USER: u64 = 1 << 4;
+const PTE_ACCESSED: u64 = 1 << 6;
+const PTE_DIRTY: u64 = 1 << 7;
+const PTE_PPN_MASK: u64 = (1 << 44) - 1;
+const PTE_RESERVED_MASK: u64 = !((PTE_PPN_MASK << 10) | 0x3ff);
 
 const CAUSE_ECALL_FROM_USER: u64 = 8;
 const CAUSE_ECALL_FROM_SUPERVISOR: u64 = 9;
 const CAUSE_ECALL_FROM_MACHINE: u64 = 11;
+const CAUSE_INSTRUCTION_PAGE_FAULT: u64 = 12;
+const CAUSE_LOAD_PAGE_FAULT: u64 = 13;
+const CAUSE_STORE_PAGE_FAULT: u64 = 15;
 
 /// Explicit resource admission for one virtual machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,8 +193,8 @@ pub enum Csr {
     Stval = 0x143,
     /// Supervisor interrupt-pending view.
     Sip = 0x144,
-    /// Supervisor address translation and protection register. Only Bare mode
-    /// is admitted until the Sv39 increment lands.
+    /// Supervisor address translation and protection register. The machine
+    /// admits Bare and Sv39 modes.
     Satp = 0x180,
     /// Machine status.
     Mstatus = 0x300,
@@ -219,7 +255,8 @@ impl Csr {
     }
 }
 
-/// Stable architectural trap reported to the outer Realm scheduler.
+/// Stable machine fault descriptor. Architectural faults are consumed by trap
+/// entry; resource faults remain visible to the outer Realm scheduler.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineTrap {
     /// The next instruction address violates the RV64I four-byte alignment.
@@ -236,6 +273,12 @@ pub enum MachineTrap {
     StoreAddressMisaligned { address: u64, bytes: u8 },
     /// A store address is outside RAM and admitted MMIO.
     StoreAccessFault { address: u64, bytes: u8 },
+    /// Sv39 could not translate or authorize an instruction fetch.
+    InstructionPageFault { address: u64 },
+    /// Sv39 could not translate or authorize a load.
+    LoadPageFault { address: u64 },
+    /// Sv39 could not translate or authorize a store.
+    StorePageFault { address: u64 },
     /// Guest execution reached an `ebreak` instruction.
     Breakpoint { pc: u64 },
     /// Serial output exceeded its admitted retained-byte ceiling.
@@ -266,6 +309,11 @@ impl fmt::Display for MachineTrap {
             Self::StoreAccessFault { address, bytes } => {
                 write!(f, "{bytes}-byte store access fault at {address:#x}")
             }
+            Self::InstructionPageFault { address } => {
+                write!(f, "instruction page fault at {address:#x}")
+            }
+            Self::LoadPageFault { address } => write!(f, "load page fault at {address:#x}"),
+            Self::StorePageFault { address } => write!(f, "store page fault at {address:#x}"),
             Self::Breakpoint { pc } => write!(f, "breakpoint at {pc:#x}"),
             Self::ConsoleLimit { limit } => {
                 write!(f, "console output exceeded {limit} bytes")
@@ -292,7 +340,7 @@ pub enum SliceOutcome {
     Yielded,
     /// The guest wrote a terminal value to the standard finisher.
     Halted(HaltStatus),
-    /// The guest crossed an unsupported or invalid architectural boundary.
+    /// The guest crossed a non-architectural Realm resource boundary.
     Trapped(MachineTrap),
 }
 
@@ -352,6 +400,7 @@ impl Cpu {
 struct CsrFile {
     mstatus: u64,
     medeleg: u64,
+    satp: u64,
     mtvec: u64,
     mscratch: u64,
     mepc: u64,
@@ -392,7 +441,7 @@ impl CsrFile {
             Csr::Sepc => self.sepc & !0b11,
             Csr::Scause => self.scause,
             Csr::Stval => self.stval,
-            Csr::Satp => 0,
+            Csr::Satp => self.satp,
             Csr::Mstatus => self.mstatus | MSTATUS_UXL_RV64 | MSTATUS_SXL_RV64,
             Csr::Misa => MISA_RV64_ISU,
             Csr::Medeleg => self.medeleg,
@@ -416,7 +465,14 @@ impl CsrFile {
             Csr::Sepc => self.sepc = value & !0b11,
             Csr::Scause => self.scause = value,
             Csr::Stval => self.stval = value,
-            Csr::Satp => {}
+            Csr::Satp => {
+                let mode = value >> SATP_MODE_SHIFT;
+                if matches!(mode, SATP_MODE_BARE | SATP_MODE_SV39) {
+                    self.satp = (mode << SATP_MODE_SHIFT)
+                        | (value & SATP_ASID_MASK)
+                        | (value & SATP_PPN_MASK);
+                }
+            }
             Csr::Mstatus => {
                 let mut admitted = value & MSTATUS_WRITABLE;
                 if admitted & MSTATUS_MPP == 0b10 << MSTATUS_MPP_SHIFT {
@@ -463,6 +519,31 @@ struct Devices {
 struct StepEffect {
     halt: Option<HaltStatus>,
     retired: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessType {
+    Instruction,
+    Load,
+    Store,
+}
+
+impl AccessType {
+    const fn page_fault(self, address: u64) -> MachineTrap {
+        match self {
+            Self::Instruction => MachineTrap::InstructionPageFault { address },
+            Self::Load => MachineTrap::LoadPageFault { address },
+            Self::Store => MachineTrap::StorePageFault { address },
+        }
+    }
+
+    const fn access_fault(self, address: u64, bytes: u8) -> MachineTrap {
+        match self {
+            Self::Instruction => MachineTrap::InstructionAccessFault { address },
+            Self::Load => MachineTrap::LoadAccessFault { address, bytes },
+            Self::Store => MachineTrap::StoreAccessFault { address, bytes },
+        }
+    }
 }
 
 impl StepEffect {
@@ -599,6 +680,24 @@ impl Devices {
         let end = start.checked_add(usize::from(bytes))?;
         (end <= self.ram.len()).then_some(start..end)
     }
+
+    fn read_ram(&self, address: u64, bytes: u8) -> Option<u64> {
+        let mut value = 0_u64;
+        for (shift, byte) in self.ram[self.ram_range(address, bytes)?].iter().enumerate() {
+            value |= u64::from(*byte) << (shift * 8);
+        }
+        Some(value)
+    }
+
+    fn write_ram(&mut self, address: u64, value: u64, bytes: u8) -> bool {
+        let Some(range) = self.ram_range(address, bytes) else {
+            return false;
+        };
+        for (shift, byte) in self.ram[range].iter_mut().enumerate() {
+            *byte = (value >> (shift * 8)) as u8;
+        }
+        true
+    }
 }
 
 /// An admitted RV64 machine whose execution can only advance in explicit slices.
@@ -699,7 +798,16 @@ impl Machine {
                         self.state = RunState::Halted(status);
                     }
                 }
-                Err(trap) => self.state = RunState::Trapped(trap),
+                Err(trap) => {
+                    if let Some((cause, value)) = architectural_exception(&trap) {
+                        steps = steps.saturating_add(1);
+                        self.steps_executed = self.steps_executed.saturating_add(1);
+                        self.take_exception(cause, value, self.cpu.pc);
+                        self.cpu.registers[0] = 0;
+                    } else {
+                        self.state = RunState::Trapped(trap);
+                    }
+                }
             }
         }
 
@@ -723,9 +831,10 @@ impl Machine {
         if pc & 3 != 0 {
             return Err(MachineTrap::InstructionAddressMisaligned { address: pc });
         }
+        let physical_pc = self.translate(pc, AccessType::Instruction)?;
         let instruction = self
             .devices
-            .read(pc, 4)
+            .read(physical_pc, 4)
             .map_err(|_| MachineTrap::InstructionAccessFault { address: pc })?
             as u32;
         let opcode = instruction & 0x7f;
@@ -751,7 +860,11 @@ impl Machine {
                     _ => return Err(illegal(pc, instruction)),
                 };
                 ensure_aligned(address, bytes, false)?;
-                let value = self.devices.read(address, bytes)?;
+                let physical = self.translate(address, AccessType::Load)?;
+                let value = self
+                    .devices
+                    .read(physical, bytes)
+                    .map_err(|_| MachineTrap::LoadAccessFault { address, bytes })?;
                 let value = if signed {
                     sign_extend(value, u32::from(bytes) * 8)
                 } else {
@@ -779,7 +892,14 @@ impl Machine {
                 };
                 let address = self.cpu.read(rs1).wrapping_add(immediate_s(instruction));
                 ensure_aligned(address, bytes, true)?;
-                halt = self.devices.write(address, self.cpu.read(rs2), bytes)?;
+                let physical = self.translate(address, AccessType::Store)?;
+                halt = self
+                    .devices
+                    .write(physical, self.cpu.read(rs2), bytes)
+                    .map_err(|trap| match trap {
+                        MachineTrap::ConsoleLimit { .. } => trap,
+                        _ => MachineTrap::StoreAccessFault { address, bytes },
+                    })?;
             }
             0x33 => self.execute_op(instruction, rd, rs1, rs2, funct3, funct7, pc)?,
             0x37 => self.cpu.write(rd, immediate_u(instruction)),
@@ -828,6 +948,11 @@ impl Machine {
                             return Ok(StepEffect::trapped_architecturally());
                         }
                         0x0010_0073 => return Err(MachineTrap::Breakpoint { pc }),
+                        value if value & 0xfe00_7fff == 0x1200_0073 => {
+                            if self.cpu.privilege < Privilege::Supervisor {
+                                return Err(illegal(pc, instruction));
+                            }
+                        }
                         0x1020_0073 => next_pc = self.execute_sret(pc, instruction)?,
                         0x3020_0073 => next_pc = self.execute_mret(pc, instruction)?,
                         _ => return Err(illegal(pc, instruction)),
@@ -840,6 +965,107 @@ impl Machine {
         self.cpu.pc = next_pc;
         self.cpu.registers[0] = 0;
         Ok(StepEffect::retired(halt))
+    }
+
+    fn translate(&mut self, address: u64, access: AccessType) -> Result<u64, MachineTrap> {
+        let effective_privilege = if access != AccessType::Instruction
+            && self.cpu.privilege == Privilege::Machine
+            && self.csrs.mstatus & MSTATUS_MPRV != 0
+        {
+            Privilege::from_mpp(self.csrs.mstatus).unwrap_or(Privilege::User)
+        } else {
+            self.cpu.privilege
+        };
+        let mode = self.csrs.satp >> SATP_MODE_SHIFT;
+        if effective_privilege == Privilege::Machine || mode == SATP_MODE_BARE {
+            return Ok(address);
+        }
+        if mode != SATP_MODE_SV39 || !is_sv39_canonical(address) {
+            return Err(access.page_fault(address));
+        }
+
+        let vpn = [
+            (address >> 12) & 0x1ff,
+            (address >> 21) & 0x1ff,
+            (address >> 30) & 0x1ff,
+        ];
+        let mut table = (self.csrs.satp & SATP_PPN_MASK) << 12;
+        for level in (0..=2).rev() {
+            let pte_address = table
+                .checked_add(vpn[level] * 8)
+                .ok_or_else(|| access.access_fault(address, 8))?;
+            let mut pte = self
+                .devices
+                .read_ram(pte_address, 8)
+                .ok_or_else(|| access.access_fault(address, 8))?;
+            if pte & PTE_RESERVED_MASK != 0
+                || pte & PTE_VALID == 0
+                || pte & PTE_READ == 0 && pte & PTE_WRITE != 0
+            {
+                return Err(access.page_fault(address));
+            }
+            if pte & (PTE_READ | PTE_EXECUTE) == 0 {
+                table = (pte >> 10 & PTE_PPN_MASK) << 12;
+                continue;
+            }
+
+            let pte_ppn = (pte >> 10) & PTE_PPN_MASK;
+            let lower_ppn_bits = match level {
+                0 => 0,
+                1 => 0x1ff,
+                2 => 0x3_ffff,
+                _ => unreachable!("Sv39 has exactly three levels"),
+            };
+            if pte_ppn & lower_ppn_bits != 0
+                || !self.page_permissions_allow(pte, access, effective_privilege)
+            {
+                return Err(access.page_fault(address));
+            }
+
+            let required_ad = PTE_ACCESSED
+                | if access == AccessType::Store {
+                    PTE_DIRTY
+                } else {
+                    0
+                };
+            if pte & required_ad != required_ad {
+                pte |= required_ad;
+                if !self.devices.write_ram(pte_address, pte, 8) {
+                    return Err(access.access_fault(address, 8));
+                }
+            }
+
+            let mut physical_ppn = pte_ppn;
+            if level >= 1 {
+                physical_ppn = (physical_ppn & !0x1ff) | vpn[0];
+            }
+            if level == 2 {
+                physical_ppn = (physical_ppn & !0x3_ffff) | (vpn[1] << 9) | vpn[0];
+            }
+            return Ok((physical_ppn << 12) | (address & 0xfff));
+        }
+        Err(access.page_fault(address))
+    }
+
+    fn page_permissions_allow(&self, pte: u64, access: AccessType, privilege: Privilege) -> bool {
+        let user_page = pte & PTE_USER != 0;
+        if privilege == Privilege::User && !user_page {
+            return false;
+        }
+        if privilege == Privilege::Supervisor
+            && user_page
+            && (access == AccessType::Instruction || self.csrs.mstatus & MSTATUS_SUM == 0)
+        {
+            return false;
+        }
+        match access {
+            AccessType::Instruction => pte & PTE_EXECUTE != 0,
+            AccessType::Load => {
+                pte & PTE_READ != 0
+                    || self.csrs.mstatus & MSTATUS_MXR != 0 && pte & PTE_EXECUTE != 0
+            }
+            AccessType::Store => pte & PTE_WRITE != 0,
+        }
     }
 
     fn execute_csr(
@@ -1095,6 +1321,33 @@ fn illegal(pc: u64, instruction: u32) -> MachineTrap {
     MachineTrap::IllegalInstruction { pc, instruction }
 }
 
+fn architectural_exception(trap: &MachineTrap) -> Option<(u64, u64)> {
+    Some(match *trap {
+        MachineTrap::InstructionAddressMisaligned { address } => (0, address),
+        MachineTrap::InstructionAccessFault { address } => (1, address),
+        MachineTrap::IllegalInstruction { instruction, .. } => (2, u64::from(instruction)),
+        MachineTrap::Breakpoint { .. } => (3, 0),
+        MachineTrap::LoadAddressMisaligned { address, .. } => (4, address),
+        MachineTrap::LoadAccessFault { address, .. } => (5, address),
+        MachineTrap::StoreAddressMisaligned { address, .. } => (6, address),
+        MachineTrap::StoreAccessFault { address, .. } => (7, address),
+        MachineTrap::InstructionPageFault { address } => (CAUSE_INSTRUCTION_PAGE_FAULT, address),
+        MachineTrap::LoadPageFault { address } => (CAUSE_LOAD_PAGE_FAULT, address),
+        MachineTrap::StorePageFault { address } => (CAUSE_STORE_PAGE_FAULT, address),
+        MachineTrap::ConsoleLimit { .. } => return None,
+    })
+}
+
+const fn is_sv39_canonical(address: u64) -> bool {
+    let sign = (address >> 38) & 1;
+    let upper = address >> 39;
+    if sign == 0 {
+        upper == 0
+    } else {
+        upper == (1 << 25) - 1
+    }
+}
+
 const fn ecall_cause(privilege: Privilege) -> u64 {
     match privilege {
         Privilege::User => CAUSE_ECALL_FROM_USER,
@@ -1308,6 +1561,59 @@ mod tests {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
     }
 
+    fn paged_machine() -> Machine {
+        let mut machine = Machine::new(MachineConfig {
+            ram_bytes: 64 * 1024,
+            max_console_bytes: 64,
+        })
+        .expect("valid paged machine");
+        machine
+            .load_program(&[0, 0, 0, 0])
+            .expect("load reset marker");
+        machine
+    }
+
+    fn install_4k_mapping(
+        machine: &mut Machine,
+        virtual_address: u64,
+        physical: u64,
+        flags: u64,
+    ) -> u64 {
+        let root = DRAM_BASE + 0x1000;
+        let level_one = DRAM_BASE + 0x2000;
+        let level_zero = DRAM_BASE + 0x3000;
+        let vpn = [
+            virtual_address >> 12 & 0x1ff,
+            virtual_address >> 21 & 0x1ff,
+            virtual_address >> 30 & 0x1ff,
+        ];
+        assert!(machine.devices.write_ram(
+            root + vpn[2] * 8,
+            ((level_one >> 12) << 10) | PTE_VALID,
+            8,
+        ));
+        assert!(machine.devices.write_ram(
+            level_one + vpn[1] * 8,
+            ((level_zero >> 12) << 10) | PTE_VALID,
+            8,
+        ));
+        let leaf_address = level_zero + vpn[0] * 8;
+        assert!(
+            machine
+                .devices
+                .write_ram(leaf_address, ((physical >> 12) << 10) | flags, 8,)
+        );
+        machine.csrs.write(
+            Csr::Satp,
+            (SATP_MODE_SV39 << SATP_MODE_SHIFT) | (root >> 12),
+        );
+        leaf_address
+    }
+
+    const fn encode_load(rd: u32, rs1: u32, immediate: u32, funct3: u32) -> u32 {
+        ((immediate & 0xfff) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | 0x03
+    }
+
     #[test]
     fn smoke_program_runs_in_slices_and_halts_exactly() {
         let mut machine = machine(64);
@@ -1392,13 +1698,10 @@ mod tests {
         let report = rv.run_slice(2);
         assert_eq!(rv.register(5), Some(0));
         assert_eq!(report.instructions_retired, 1);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::IllegalInstruction {
-                pc: DRAM_BASE + 4,
-                instruction: encode_csrw(Csr::Mhartid, 5),
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(rv.csr(Csr::Mcause), 2);
+        assert_eq!(rv.csr(Csr::Mepc), DRAM_BASE + 4);
+        assert_eq!(rv.csr(Csr::Mtval), u64::from(encode_csrw(Csr::Mhartid, 5)));
 
         let mut supervisor = machine(8);
         supervisor
@@ -1411,14 +1714,15 @@ mod tests {
         let offset = usize::try_from(supervisor.pc() - DRAM_BASE).expect("RAM offset");
         supervisor.devices.ram[offset..offset + 4].copy_from_slice(&forbidden.to_le_bytes());
         let report = supervisor.run_slice(1);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::IllegalInstruction {
-                pc: DRAM_BASE + u64::from(SUPERVISOR_ENTRY_OFFSET),
-                instruction: forbidden,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
         assert_eq!(report.instructions_retired, 0);
+        assert_eq!(supervisor.privilege(), Privilege::Machine);
+        assert_eq!(supervisor.csr(Csr::Mcause), 2);
+        assert_eq!(
+            supervisor.csr(Csr::Mepc),
+            DRAM_BASE + u64::from(SUPERVISOR_ENTRY_OFFSET)
+        );
+        assert_eq!(supervisor.csr(Csr::Mtval), u64::from(forbidden));
     }
 
     #[test]
@@ -1439,7 +1743,7 @@ mod tests {
         ]);
         rv.load_program(&program).expect("load CSR program");
 
-        let report = rv.run_slice(16);
+        let report = rv.run_slice(11);
         assert_eq!(report.instructions_retired, 10);
         assert_eq!(rv.register(6), Some(0));
         assert_eq!(rv.register(8), Some(0x0f));
@@ -1449,12 +1753,9 @@ mod tests {
         assert_eq!(rv.register(13), Some(7));
         assert_eq!(rv.register(14), Some(6));
         assert_eq!(rv.csr(Csr::Mscratch), 6);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::Breakpoint {
-                pc: DRAM_BASE + 10 * 4,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(rv.csr(Csr::Mcause), 3);
+        assert_eq!(rv.csr(Csr::Mepc), DRAM_BASE + 10 * 4);
     }
 
     #[test]
@@ -1467,13 +1768,10 @@ mod tests {
         let mret = 0x3020_0073_u32;
         let offset = usize::try_from(supervisor.pc() - DRAM_BASE).expect("RAM offset");
         supervisor.devices.ram[offset..offset + 4].copy_from_slice(&mret.to_le_bytes());
-        assert_eq!(
-            supervisor.run_slice(1).outcome,
-            SliceOutcome::Trapped(MachineTrap::IllegalInstruction {
-                pc: DRAM_BASE + u64::from(SUPERVISOR_ENTRY_OFFSET),
-                instruction: mret,
-            })
-        );
+        assert_eq!(supervisor.run_slice(1).outcome, SliceOutcome::Yielded);
+        assert_eq!(supervisor.privilege(), Privilege::Machine);
+        assert_eq!(supervisor.csr(Csr::Mcause), 2);
+        assert_eq!(supervisor.csr(Csr::Mtval), u64::from(mret));
 
         let mut user = machine(8);
         let program = words(&[
@@ -1486,15 +1784,11 @@ mod tests {
         ]);
         user.load_program(&program).expect("load user transition");
         let report = user.run_slice(6);
-        assert_eq!(user.privilege(), Privilege::User);
+        assert_eq!(user.privilege(), Privilege::Machine);
         assert_eq!(report.instructions_retired, 5);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::IllegalInstruction {
-                pc: DRAM_BASE + 5 * 4,
-                instruction: 0x1020_0073,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(user.csr(Csr::Mcause), 2);
+        assert_eq!(user.csr(Csr::Mepc), DRAM_BASE + 5 * 4);
     }
 
     #[test]
@@ -1507,7 +1801,7 @@ mod tests {
             0x0010_0073,
         ]);
         rv.load_program(&program).expect("load WARL program");
-        let report = rv.run_slice(4);
+        let report = rv.run_slice(3);
 
         assert_eq!(report.instructions_retired, 3);
         assert_eq!(rv.register(6).expect("x6") & MSTATUS_MPP, 0);
@@ -1528,12 +1822,12 @@ mod tests {
             0x0010_0073,
         ]);
         rv.load_program(&program).expect("load SRET program");
-        let report = rv.run_slice(8);
+        let report = rv.run_slice(7);
 
         assert_eq!(rv.privilege(), Privilege::Supervisor);
         assert_eq!(rv.csr(Csr::Mstatus) & MSTATUS_MPRV, 0);
         assert_eq!(report.instructions_retired, 7);
-        assert!(matches!(report.outcome, SliceOutcome::Trapped(_)));
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
     }
 
     #[test]
@@ -1561,11 +1855,10 @@ mod tests {
 
         let report = machine.run_slice(2);
         assert_eq!(machine.register(0), Some(0));
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::Breakpoint { pc: DRAM_BASE + 4 })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
         assert_eq!(report.instructions_retired, 1);
+        assert_eq!(machine.csr(Csr::Mcause), 3);
+        assert_eq!(machine.csr(Csr::Mepc), DRAM_BASE + 4);
     }
 
     #[test]
@@ -1576,14 +1869,11 @@ mod tests {
             .expect("load program");
 
         let report = machine.run_slice(1);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::IllegalInstruction {
-                pc: DRAM_BASE,
-                instruction: 0xffff_ffff,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
         assert_eq!(report.instructions_retired, 0);
+        assert_eq!(machine.csr(Csr::Mcause), 2);
+        assert_eq!(machine.csr(Csr::Mepc), DRAM_BASE);
+        assert_eq!(machine.csr(Csr::Mtval), 0xffff_ffff);
     }
 
     #[test]
@@ -1596,15 +1886,12 @@ mod tests {
             .expect("load program");
 
         let report = machine.run_slice(1);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::InstructionAddressMisaligned {
-                address: DRAM_BASE + 2,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
         assert_eq!(report.instructions_retired, 0);
         assert_eq!(machine.register(1), Some(0));
-        assert_eq!(machine.pc(), DRAM_BASE);
+        assert_eq!(machine.pc(), 0);
+        assert_eq!(machine.csr(Csr::Mcause), 0);
+        assert_eq!(machine.csr(Csr::Mtval), DRAM_BASE + 2);
     }
 
     #[test]
@@ -1635,14 +1922,10 @@ mod tests {
         machine.load_program(&program).expect("load program");
 
         let report = machine.run_slice(4);
-        assert_eq!(
-            report.outcome,
-            SliceOutcome::Trapped(MachineTrap::StoreAddressMisaligned {
-                address: DRAM_BASE + 1,
-                bytes: 4,
-            })
-        );
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
         assert_eq!(report.instructions_retired, 3);
+        assert_eq!(machine.csr(Csr::Mcause), 6);
+        assert_eq!(machine.csr(Csr::Mtval), DRAM_BASE + 1);
     }
 
     #[test]
@@ -1680,6 +1963,197 @@ mod tests {
         let report = machine.run_slice(4);
         assert_eq!(machine.register(6), Some(0x61));
         assert_eq!(machine.register(7), Some(u64::from(b'Z')));
-        assert!(matches!(report.outcome, SliceOutcome::Trapped(_)));
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(machine.csr(Csr::Mcause), 3);
+    }
+
+    #[test]
+    fn sv39_translates_fetch_load_and_store_and_sets_ad_bits() {
+        let mut machine = paged_machine();
+        let virtual_address = 0x4000_0000;
+        let physical = DRAM_BASE + 0x4000;
+        let program = words(&[
+            encode_addi(5, 0, 42),
+            encode_auipc(6, 0),
+            encode_store(6, 5, 0x100, 2),
+            encode_load(7, 6, 0x100, 6),
+        ]);
+        assert!(machine.devices.write_ram(physical, 0, 8));
+        for (offset, byte) in program.iter().copied().enumerate() {
+            assert!(
+                machine
+                    .devices
+                    .write_ram(physical + offset as u64, u64::from(byte), 1)
+            );
+        }
+        let leaf = install_4k_mapping(
+            &mut machine,
+            virtual_address,
+            physical,
+            PTE_VALID | PTE_READ | PTE_WRITE | PTE_EXECUTE,
+        );
+        machine.cpu.pc = virtual_address;
+        machine.cpu.privilege = Privilege::Supervisor;
+
+        let report = machine.run_slice(4);
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(report.instructions_retired, 4);
+        assert_eq!(machine.register(7), Some(42));
+        assert_eq!(machine.devices.read_ram(physical + 0x104, 4), Some(42));
+        let pte = machine.devices.read_ram(leaf, 8).expect("leaf PTE");
+        assert_eq!(pte & (PTE_ACCESSED | PTE_DIRTY), PTE_ACCESSED | PTE_DIRTY);
+    }
+
+    #[test]
+    fn sv39_permission_fault_is_delegated_with_virtual_stval() {
+        let mut machine = paged_machine();
+        let virtual_address = 0x4000_0000;
+        let physical = DRAM_BASE + 0x4000;
+        let load = encode_load(7, 6, 0, 3);
+        assert!(machine.devices.write_ram(physical, u64::from(load), 4));
+        assert!(machine.devices.write_ram(physical + 0x100, 0xfeed_face, 8));
+        let leaf = install_4k_mapping(
+            &mut machine,
+            virtual_address,
+            physical,
+            PTE_VALID | PTE_EXECUTE,
+        );
+        machine.cpu.pc = virtual_address;
+        machine.cpu.registers[6] = virtual_address + 0x100;
+        machine.cpu.privilege = Privilege::Supervisor;
+        machine.csrs.medeleg = 1 << CAUSE_LOAD_PAGE_FAULT;
+        machine.csrs.stvec = virtual_address + 0x200;
+
+        let report = machine.run_slice(1);
+        assert_eq!(report.outcome, SliceOutcome::Yielded);
+        assert_eq!(report.instructions_retired, 0);
+        assert_eq!(machine.privilege(), Privilege::Supervisor);
+        assert_eq!(machine.pc(), virtual_address + 0x200);
+        assert_eq!(machine.csr(Csr::Scause), CAUSE_LOAD_PAGE_FAULT);
+        assert_eq!(machine.csr(Csr::Sepc), virtual_address);
+        assert_eq!(machine.csr(Csr::Stval), virtual_address + 0x100);
+        assert_ne!(
+            machine.devices.read_ram(leaf, 8).expect("leaf PTE") & PTE_ACCESSED,
+            0
+        );
+
+        machine.cpu.pc = virtual_address;
+        machine.cpu.privilege = Privilege::Supervisor;
+        machine.csrs.mstatus |= MSTATUS_MXR;
+        let retried = machine.run_slice(1);
+        assert_eq!(retried.instructions_retired, 1);
+        assert_eq!(machine.register(7), Some(0xfeed_face));
+    }
+
+    #[test]
+    fn sv39_superpages_canonicality_and_mprv_are_exact() {
+        let mut machine = paged_machine();
+        let virtual_address = 0x4000_0000;
+        let root = DRAM_BASE + 0x1000;
+        let level_one = DRAM_BASE + 0x2000;
+        let vpn2 = virtual_address >> 30 & 0x1ff;
+        let vpn1 = virtual_address >> 21 & 0x1ff;
+        assert!(machine.devices.write_ram(
+            root + vpn2 * 8,
+            ((level_one >> 12) << 10) | PTE_VALID,
+            8,
+        ));
+        assert!(machine.devices.write_ram(
+            level_one + vpn1 * 8,
+            ((DRAM_BASE >> 12) << 10) | PTE_VALID | PTE_READ | PTE_WRITE,
+            8,
+        ));
+        machine.csrs.write(
+            Csr::Satp,
+            (SATP_MODE_SV39 << SATP_MODE_SHIFT) | (root >> 12),
+        );
+        machine.cpu.privilege = Privilege::Supervisor;
+        assert_eq!(
+            machine.translate(virtual_address + 0x1234, AccessType::Load),
+            Ok(DRAM_BASE + 0x1234)
+        );
+        assert_eq!(
+            machine.translate(1 << 39, AccessType::Load),
+            Err(MachineTrap::LoadPageFault { address: 1 << 39 })
+        );
+
+        machine.cpu.privilege = Privilege::Machine;
+        machine.csrs.mstatus = MSTATUS_MPRV | (1 << MSTATUS_MPP_SHIFT);
+        assert_eq!(
+            machine.translate(virtual_address + 0x2345, AccessType::Load),
+            Ok(DRAM_BASE + 0x2345)
+        );
+    }
+
+    #[test]
+    fn sfence_vma_is_privileged_and_retires_without_a_software_tlb() {
+        let mut machine = paged_machine();
+        let virtual_address = 0x4000_0000;
+        let physical = DRAM_BASE + 0x4000;
+        let sfence_vma = 0x1200_0073_u32;
+        assert!(
+            machine
+                .devices
+                .write_ram(physical, u64::from(sfence_vma), 4)
+        );
+        let leaf = install_4k_mapping(
+            &mut machine,
+            virtual_address,
+            physical,
+            PTE_VALID | PTE_READ | PTE_EXECUTE,
+        );
+        machine.cpu.pc = virtual_address;
+        machine.cpu.privilege = Privilege::Supervisor;
+        let report = machine.run_slice(1);
+        assert_eq!(report.instructions_retired, 1);
+        assert_eq!(machine.pc(), virtual_address + 4);
+
+        let pte = machine.devices.read_ram(leaf, 8).expect("leaf PTE");
+        assert!(machine.devices.write_ram(leaf, pte | PTE_USER, 8));
+        machine.cpu.pc = virtual_address;
+        machine.cpu.privilege = Privilege::User;
+        let forbidden = machine.run_slice(1);
+        assert_eq!(forbidden.instructions_retired, 0);
+        assert_eq!(machine.csr(Csr::Mcause), 2);
+        assert_eq!(machine.csr(Csr::Mtval), u64::from(sfence_vma));
+    }
+
+    #[test]
+    fn sv39_sum_mxr_and_user_permissions_form_a_closed_matrix() {
+        let mut machine = paged_machine();
+        let user_read = PTE_VALID | PTE_USER | PTE_READ;
+        let supervisor_read = PTE_VALID | PTE_READ;
+        let execute_only = PTE_VALID | PTE_EXECUTE;
+
+        assert!(!machine.page_permissions_allow(
+            user_read,
+            AccessType::Load,
+            Privilege::Supervisor,
+        ));
+        machine.csrs.mstatus |= MSTATUS_SUM;
+        assert!(
+            machine.page_permissions_allow(user_read, AccessType::Load, Privilege::Supervisor,)
+        );
+        assert!(!machine.page_permissions_allow(
+            user_read | PTE_EXECUTE,
+            AccessType::Instruction,
+            Privilege::Supervisor,
+        ));
+        assert!(!machine.page_permissions_allow(
+            supervisor_read,
+            AccessType::Load,
+            Privilege::User,
+        ));
+        assert!(!machine.page_permissions_allow(
+            execute_only,
+            AccessType::Load,
+            Privilege::Supervisor,
+        ));
+        machine.csrs.mstatus |= MSTATUS_MXR;
+        assert!(machine.page_permissions_allow(
+            execute_only,
+            AccessType::Load,
+            Privilege::Supervisor,
+        ));
     }
 }

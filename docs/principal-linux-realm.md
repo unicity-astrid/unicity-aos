@@ -110,8 +110,8 @@ RV64I integer surface, a bounded 16550 UART subset, and the standard test finish
 `linux_realm_exec({"command":"rv64-smoke"})` executes 23 real RISC-V
 instructions, returns `AOS RV64\n` from virtual UART, and halts with the standard
 pass value. The result names `aos-rv64-interpreter` as its backend. Fuel exhaustion,
-illegal instructions, misalignment, RAM bounds, and serial-output exhaustion all
-return control to the outer Realm rather than escaping into host behavior.
+architectural traps, RAM bounds, and serial-output exhaustion all remain bounded
+by the outer Realm rather than escaping into host behavior.
 
 The second slice is pinned to the January 2026 ratified
 [RISC-V privileged release](https://docs.riscv.org/reference/isa/v20260120/priv/priv-index.html):
@@ -126,12 +126,19 @@ S-mode ECALL, prints `T` in the S-mode handler, advances `sepc`, returns to prin
 `R\n`, and halts from S-mode. It consumes 31 bounded execution steps and retires
 30 instructions because ECALL is architecturally non-retiring.
 
-This is not Linux yet. Exception delivery is intentionally limited to ECALL;
-unsupported instructions and physical access/alignment faults still return an
-exact outer Realm trap. `satp` is WARL Bare, interrupt state reads zero, and the
-machine does not yet implement Sv39 translation, atomics, compressed instructions,
-CLINT, PLIC, an SBI/boot handoff, a generated device tree, or virtio block. Those
-are measurable boot prerequisites, not implied scaffolding.
+The third slice makes the protection boundary Linux-shaped without claiming a
+Linux boot. Instruction, illegal, breakpoint, load, store, alignment, access, and
+page faults now enter the architecturally selected M/S vector and remain
+non-retiring but slice-charged. `satp` admits Bare and Sv39. Its bounded three-level
+walker rejects non-canonical addresses, invalid/reserved PTE encodings and
+misaligned superpages; enforces U/S, R/W/X, SUM, and MXR; translates MPRV data
+accesses; and updates A/D bits in admitted RAM. `sfence.vma` is privilege checked
+and retires as a no-op because the interpreter has no software TLB.
+
+This is not Linux yet. Interrupt state still reads zero, and the machine does not
+yet implement the M/A instruction extensions, counters, compressed instructions,
+a deterministic timer, PLIC, an SBI/boot handoff, a generated device tree, or
+virtio block. Those are measurable boot prerequisites, not implied scaffolding.
 
 ### 2.5 Privileged-machine component sketch and invariant ledger
 
@@ -141,10 +148,11 @@ subsystem names:
 ```text
 Realm adapter (program admission, outer fuel/output ceilings)
   -> Machine::run_slice (bounded scheduling and accounting)
-     -> instruction decode/commit (RV64I + Zicsr + xRET)
+     -> instruction decode/commit (RV64I + Zicsr + xRET + sfence.vma)
         -> Cpu (integer registers, PC, current privilege)
         -> CsrFile (typed implemented CSR set and WARL masks)
         -> exception entry (delegation and xstatus stack update)
+        -> Sv39 walk and permission check (virtual to admitted physical address)
         -> Devices (admitted RAM, UART, test finisher)
 ```
 
@@ -160,20 +168,22 @@ an implicit RISC-V device.
 | Reset | PC is `0x80000000`, registers/CSRs clear to the profile reset state, privilege is M | image reload/reset tests and both probes |
 | CSR address | Bits 9:8 impose minimum privilege; unsupported/reserved addresses fail before mutation | M CSR write attempted from S traps without retirement |
 | CSR write intent | CSRRW[I] writes even with zero source; CSRRS/CSRRC[I] with zero source do not write and may read a read-only CSR | all six operations checked against old values; `csrr mhartid` succeeds while a write traps |
-| WARL | Only implemented fields persist; reserved MPP is coerced; `satp`, interrupt enables/pending, and delegation bits without implementations remain zero | typed CSR reads and reserved-MPP regression |
+| WARL | Only implemented fields persist; reserved MPP is coerced; `satp` admits only Bare/Sv39; interrupt enables/pending remain zero | typed CSR reads, reserved-MPP regression, Sv39 setup tests |
 | ECALL | Cause is selected from the originating privilege; EPC points at ECALL; ECALL does not retire | S probe records `scause=9`, exact `sepc`, 31 steps/30 retired |
-| Delegation | Only traps originating below M consult `medeleg`; the current writable mask is U/S ECALL only | S ECALL enters `stvec`; M ECALL remains in M under repeated bounded delivery |
+| Delegation | Only traps originating below M consult `medeleg`; implemented synchronous causes can be delegated | S ECALL and load-page-fault cases enter `stvec`; M ECALL remains in M under repeated bounded delivery |
 | S trap entry | `SPP=origin`, `SPIE=SIE`, `SIE=0`; M trap state is untouched | midpoint assertions in the S probe |
 | M trap entry | `MPP=origin`, `MPIE=MIE`, `MIE=0`; S trap state is untouched | bounded M ECALL loop assertions |
 | xRET | Target alignment is checked before commit; xIE/xPIE and xPP are popped exactly; execution below x privilege fails closed | full MRET/SRET path plus U/S privilege-rejection regressions |
 | Trap vector | Direct and vectored encodings are admitted, reserved modes coerce to Direct; synchronous exceptions use BASE | S probe direct-vector address assertion |
-| Scheduling | Every successfully interpreted step, including a non-retiring architectural trap, spends one slice unit | a self-vectoring ECALL loop yields exactly at its seven-step budget |
-| Unimplemented fault path | Unsupported opcode and physical fetch/load/store/alignment failures remain exact terminal Realm traps until general exception delivery lands | existing non-retirement and no-partial-commit regressions |
+| Scheduling | Every interpreted attempt, including a non-retiring architectural trap, spends one slice unit | self-vectoring ECALL and fault cases yield exactly at their budgets |
+| Synchronous faults | Faulting instructions do not partially commit; cause/EPC/tval enter the selected architectural vector | illegal CSR, breakpoint, bad jump, misaligned store, and delegated page-fault regressions |
+| Sv39 | Walks are bounded to three levels; canonicality, leaf/superpage form, U/S and R/W/X permissions, SUM/MXR, MPRV, and A/D updates are exact | 4 KiB R/W/X, execute-only, 2 MiB superpage, non-canonical, and privilege-matrix regressions |
+| Translation fence | `sfence.vma` is illegal in U and retires in S/M; no cached translation survives because this implementation has no TLB | S retirement and U illegal-instruction regression |
 
 The table is also the review boundary: a checkmark for privileged mode does not
-mean Linux compatibility. The next increment must replace the last row with
-architectural exception entry and add an Sv39 matrix before a kernel image is
-admitted.
+mean Linux compatibility. The next increment must add the M/A instruction
+extensions, architectural counters, and deterministic interrupt delivery before a
+kernel image is admitted.
 
 ## 3. The system seen from each side
 
@@ -1190,8 +1200,8 @@ CE set rather than test-installed companions.
 - [x] add the first privileged boot spine: typed M/S CSRs, Zicsr read/write intent,
   M/S/U state, ECALL delegation, trap-vector entry, `mret`/`sret`, non-retirement
   accounting, and an installable Supervisor transition probe;
-- complete architectural delivery for instruction, load, and store faults, then
-  implement Sv39 translation and `sfence.vma` against adversarial page tables;
+- [x] complete architectural delivery for instruction, load, and store faults,
+  then implement Sv39 translation and `sfence.vma` against adversarial page tables;
 - add deterministic CLINT and PLIC models, boot ROM/SBI handoff, and a generated,
   versioned device tree;
 - boot signed Linux longterm 6.18.39 with a Buildroot 2026.05.1 initramfs to an
@@ -1456,14 +1466,11 @@ The first implementation must resolve these with executable evidence:
 - [ ] defer public WIT, Debian naming, arbitrary package claims, and native-kernel
     coupling until evidence requires them.
 
-The next Linux-bearing executable artifact is fault-complete Sv39: instruction,
-load, store, access, alignment, and page faults must enter the correct delegated
-vector; a bounded three-level page-table walk must enforce canonical addresses,
-PTE permissions, superpage alignment, A/D behavior, SUM/MXR, and physical RAM/MMIO
-admission; `sfence.vma` must have correct semantics even if the first interpreter
-does not cache translations. Deterministic timer/interrupt devices, boot handoff,
-and a generated device tree follow, then pinned Linux 6.18.39 plus Buildroot
-2026.05.1 serial boot to `/init`. Every artifact must run in bounded slices and
+The next Linux-bearing executable artifact is the Linux-required execution and
+interrupt surface: RV64IMA integer/atomic operations, architectural counters,
+deterministic timer interrupts, boot handoff, and a generated device tree. It is
+followed by pinned Linux 6.18.39 plus Buildroot 2026.05.1 serial boot to `/init`.
+Every artifact must run in bounded slices and
 fail with an exact architectural trap before virtio block, persistence,
 networking, or a shell are added. The parallel process track still needs
 guest-visible executable lookup, the realm-wide open-file-description table,
