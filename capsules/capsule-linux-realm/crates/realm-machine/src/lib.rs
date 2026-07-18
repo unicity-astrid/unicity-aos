@@ -8,6 +8,9 @@
 //! guest CPU state, admitted RAM, and virtual hardware. The outer Realm owns
 //! scheduling, authority, image admission, persistence, and all host effects.
 
+mod fdt;
+
+use fdt::{LinuxFdtConfig, build_linux_fdt};
 use std::{collections::VecDeque, fmt};
 
 /// Machine profile whose future device tree and Linux image are versioned together.
@@ -25,6 +28,12 @@ pub const TEST_FINISHER_BASE: u64 = 0x0010_0000;
 /// Guest physical base of the deterministic single-hart CLINT profile.
 pub const CLINT_BASE: u64 = 0x0200_0000;
 
+/// Standard 2 MiB-aligned entry address for a raw RV64 Linux `Image`.
+pub const LINUX_KERNEL_BASE: u64 = DRAM_BASE + 0x20_0000;
+
+/// Physical address of the generated Linux flattened device tree.
+pub const LINUX_FDT_BASE: u64 = DRAM_BASE + 0x1000;
+
 const UART_SIZE: u64 = 0x100;
 const TEST_FINISHER_SIZE: u64 = 0x1000;
 const CLINT_SIZE: u64 = 0x1_0000;
@@ -40,6 +49,9 @@ const UART_LINE_STATUS_TRANSMIT_EMPTY: u8 = (1 << 5) | (1 << 6);
 const MIN_RAM_BYTES: usize = 4096;
 const MAX_RAM_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CONSOLE_BYTES: usize = 16 * 1024 * 1024;
+const MIN_LINUX_RAM_BYTES: usize = 16 * 1024 * 1024;
+const MAX_BOOTARGS_BYTES: usize = 4096;
+const LINUX_FDT_MAX_BYTES: usize = 64 * 1024;
 
 const MSTATUS_SIE: u64 = 1 << 1;
 const MSTATUS_MIE: u64 = 1 << 3;
@@ -119,6 +131,17 @@ const MIP_MEIP: u64 = 1 << INTERRUPT_MACHINE_EXTERNAL;
 const INTERRUPT_SUPPORTED: u64 = MIP_SSIP | MIP_MSIP | MIP_STIP | MIP_MTIP | MIP_SEIP | MIP_MEIP;
 const MIDELEG_SUPPORTED: u64 = MIP_SSIP | MIP_STIP | MIP_SEIP;
 
+const SBI_EXT_BASE: u64 = 0x10;
+const SBI_EXT_TIME: u64 = 0x5449_4d45;
+const SBI_EXT_DBCN: u64 = 0x4442_434e;
+const SBI_EXT_SRST: u64 = 0x5352_5354;
+const SBI_SPEC_VERSION_3_0: u64 = 3 << 24;
+const SBI_AOS_PRIVATE_IMPL_ID: u64 = 0x414f_5300;
+const SBI_SUCCESS: u64 = 0;
+const SBI_ERR_NOT_SUPPORTED: u64 = (-2_i64) as u64;
+const SBI_ERR_INVALID_PARAM: u64 = (-3_i64) as u64;
+const SBI_ERR_INVALID_ADDRESS: u64 = (-5_i64) as u64;
+
 /// Explicit resource admission for one virtual machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MachineConfig {
@@ -147,6 +170,15 @@ pub enum MachineError {
     InvalidConsoleBytes(usize),
     /// A program image is empty or does not fit in admitted guest RAM.
     InvalidProgramBytes { image: usize, ram: usize },
+    /// The admitted RAM cannot contain the kernel, initramfs, and generated FDT
+    /// at their versioned machine-profile addresses.
+    InvalidLinuxImages {
+        kernel: usize,
+        initramfs: usize,
+        ram: usize,
+    },
+    /// Linux boot arguments exceed the deterministic FDT admission limit.
+    InvalidBootArgsBytes(usize),
 }
 
 impl fmt::Display for MachineError {
@@ -166,11 +198,40 @@ impl fmt::Display for MachineError {
                     "guest image is {image} bytes but admitted RAM is {ram} bytes"
                 )
             }
+            Self::InvalidLinuxImages {
+                kernel,
+                initramfs,
+                ram,
+            } => write!(
+                f,
+                "Linux kernel ({kernel} bytes), initramfs ({initramfs} bytes), and FDT do not fit in {ram} bytes of admitted RAM"
+            ),
+            Self::InvalidBootArgsBytes(bytes) => write!(
+                f,
+                "Linux boot arguments must be at most {MAX_BOOTARGS_BYTES} bytes, got {bytes}"
+            ),
         }
     }
 }
 
 impl std::error::Error for MachineError {}
+
+/// Exact admitted physical layout for one Linux boot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinuxBootLayout {
+    /// Raw kernel `Image` entry and load address.
+    pub kernel_start: u64,
+    /// First byte after the kernel image.
+    pub kernel_end: u64,
+    /// Initramfs start, absent when no initramfs was supplied.
+    pub initrd_start: Option<u64>,
+    /// First byte after the initramfs.
+    pub initrd_end: Option<u64>,
+    /// Generated flattened device-tree address.
+    pub fdt_start: u64,
+    /// Generated flattened device-tree byte length.
+    pub fdt_bytes: usize,
+}
 
 /// RISC-V privilege level retained as part of guest architectural state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -584,6 +645,11 @@ enum RunState {
     Trapped(MachineTrap),
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SbiFirmware {
+    enabled: bool,
+}
+
 #[derive(Debug)]
 struct Devices {
     ram: Vec<u8>,
@@ -754,12 +820,7 @@ impl Devices {
             if bytes != 1 || offset != UART_TRANSMIT {
                 return Err(MachineTrap::StoreAccessFault { address, bytes });
             }
-            if self.console_output.len() == self.max_console_bytes {
-                return Err(MachineTrap::ConsoleLimit {
-                    limit: self.max_console_bytes,
-                });
-            }
-            self.console_output.push(value as u8);
+            self.push_console_output(value as u8)?;
             return Ok(None);
         }
 
@@ -817,6 +878,31 @@ impl Devices {
         true
     }
 
+    fn ram_range_len(&self, address: u64, bytes: usize) -> Option<std::ops::Range<usize>> {
+        let offset = address.checked_sub(DRAM_BASE)?;
+        let start = usize::try_from(offset).ok()?;
+        let end = start.checked_add(bytes)?;
+        (end <= self.ram.len()).then_some(start..end)
+    }
+
+    fn write_ram_slice(&mut self, address: u64, bytes: &[u8]) -> bool {
+        let Some(range) = self.ram_range_len(address, bytes.len()) else {
+            return false;
+        };
+        self.ram[range].copy_from_slice(bytes);
+        true
+    }
+
+    fn push_console_output(&mut self, byte: u8) -> Result<(), MachineTrap> {
+        if self.console_output.len() == self.max_console_bytes {
+            return Err(MachineTrap::ConsoleLimit {
+                limit: self.max_console_bytes,
+            });
+        }
+        self.console_output.push(byte);
+        Ok(())
+    }
+
     fn tick(&mut self) {
         self.mtime = self.mtime.wrapping_add(1);
     }
@@ -846,6 +932,7 @@ pub struct Machine {
     cycle: u64,
     instret: u64,
     reservation: Option<(u64, u8)>,
+    firmware: SbiFirmware,
 }
 
 impl Machine {
@@ -870,6 +957,7 @@ impl Machine {
             cycle: 0,
             instret: 0,
             reservation: None,
+            firmware: SbiFirmware::default(),
         })
     }
 
@@ -891,12 +979,113 @@ impl Machine {
         self.cycle = 0;
         self.instret = 0;
         self.reservation = None;
+        self.firmware = SbiFirmware::default();
         Ok(())
+    }
+
+    /// Admit a raw RV64 Linux `Image`, optional initramfs, and deterministic
+    /// device tree, then enter the kernel in Supervisor mode.
+    pub fn boot_linux(
+        &mut self,
+        kernel: &[u8],
+        initramfs: &[u8],
+        bootargs: &str,
+    ) -> Result<LinuxBootLayout, MachineError> {
+        let invalid_images = || MachineError::InvalidLinuxImages {
+            kernel: kernel.len(),
+            initramfs: initramfs.len(),
+            ram: self.config.ram_bytes,
+        };
+        if kernel.is_empty() || self.config.ram_bytes < MIN_LINUX_RAM_BYTES {
+            return Err(invalid_images());
+        }
+        if bootargs.len() > MAX_BOOTARGS_BYTES || bootargs.as_bytes().contains(&0) {
+            return Err(MachineError::InvalidBootArgsBytes(bootargs.len()));
+        }
+        let kernel_end = LINUX_KERNEL_BASE
+            .checked_add(u64::try_from(kernel.len()).map_err(|_| invalid_images())?)
+            .ok_or_else(invalid_images)?;
+        let initrd_start = if initramfs.is_empty() {
+            None
+        } else {
+            Some(align_up(kernel_end, 4096).ok_or_else(invalid_images)?)
+        };
+        let initrd_end = initrd_start
+            .map(|start| {
+                start
+                    .checked_add(u64::try_from(initramfs.len()).map_err(|_| invalid_images())?)
+                    .ok_or_else(invalid_images)
+            })
+            .transpose()?;
+        let ram_end = DRAM_BASE
+            .checked_add(u64::try_from(self.config.ram_bytes).map_err(|_| invalid_images())?)
+            .ok_or_else(invalid_images)?;
+        if kernel_end > ram_end || initrd_end.is_some_and(|end| end > ram_end) {
+            return Err(invalid_images());
+        }
+
+        let fdt = build_linux_fdt(&LinuxFdtConfig {
+            dram_base: DRAM_BASE,
+            ram_bytes: self.config.ram_bytes as u64,
+            uart_base: UART_BASE,
+            uart_bytes: UART_SIZE,
+            bootargs,
+            initrd_start,
+            initrd_end,
+        });
+        let fdt_end = LINUX_FDT_BASE
+            .checked_add(u64::try_from(fdt.len()).map_err(|_| invalid_images())?)
+            .ok_or_else(invalid_images)?;
+        if fdt.len() > LINUX_FDT_MAX_BYTES || fdt_end > LINUX_KERNEL_BASE || fdt_end > ram_end {
+            return Err(invalid_images());
+        }
+
+        self.cpu.reset();
+        self.csrs.reset();
+        self.devices.reset();
+        if !self.devices.write_ram_slice(LINUX_KERNEL_BASE, kernel)
+            || !self.devices.write_ram_slice(LINUX_FDT_BASE, &fdt)
+            || initrd_start.is_some_and(|start| !self.devices.write_ram_slice(start, initramfs))
+        {
+            return Err(invalid_images());
+        }
+        self.cpu.pc = LINUX_KERNEL_BASE;
+        self.cpu.privilege = Privilege::Supervisor;
+        self.cpu.registers[10] = 0;
+        self.cpu.registers[11] = LINUX_FDT_BASE;
+        self.csrs.medeleg = MEDELEG_SUPPORTED;
+        self.csrs.mideleg = MIDELEG_SUPPORTED;
+        self.csrs.mcounteren = 0b111;
+        self.state = RunState::Runnable;
+        self.steps_executed = 0;
+        self.instructions_retired = 0;
+        self.cycle = 0;
+        self.instret = 0;
+        self.reservation = None;
+        self.firmware.enabled = true;
+
+        Ok(LinuxBootLayout {
+            kernel_start: LINUX_KERNEL_BASE,
+            kernel_end,
+            initrd_start,
+            initrd_end,
+            fdt_start: LINUX_FDT_BASE,
+            fdt_bytes: fdt.len(),
+        })
     }
 
     /// Add bytes that the guest may consume from the serial receive register.
     pub fn push_console_input(&mut self, bytes: &[u8]) {
         self.devices.console_input.extend(bytes.iter().copied());
+    }
+
+    /// Borrow an admitted physical RAM range for image measurement, snapshots,
+    /// or differential verification. MMIO is never exposed as memory.
+    #[must_use]
+    pub fn physical_ram(&self, address: u64, bytes: usize) -> Option<&[u8]> {
+        self.devices
+            .ram_range_len(address, bytes)
+            .map(|range| &self.devices.ram[range])
     }
 
     /// Read one architectural integer register. Register zero is always zero.
@@ -1096,6 +1285,16 @@ impl Machine {
                 } else {
                     match instruction {
                         0x0000_0073 => {
+                            if self.cpu.privilege == Privilege::Supervisor && self.firmware.enabled
+                            {
+                                halt = self.handle_sbi_call()?;
+                                self.cpu.pc = next_pc;
+                                self.cpu.registers[0] = 0;
+                                return Ok(StepEffect {
+                                    halt,
+                                    retired: false,
+                                });
+                            }
                             self.take_exception(ecall_cause(self.cpu.privilege), 0, pc);
                             self.cpu.registers[0] = 0;
                             return Ok(StepEffect::trapped_architecturally());
@@ -1383,8 +1582,105 @@ impl Machine {
     }
 
     fn refresh_hardware_interrupts(&mut self) {
-        self.csrs.mip =
-            (self.csrs.mip & !(MIP_MSIP | MIP_MTIP)) | self.devices.hardware_interrupts();
+        let mut hardware = self.devices.hardware_interrupts();
+        if self.firmware.enabled && hardware & MIP_MTIP != 0 {
+            hardware = (hardware & !MIP_MTIP) | MIP_STIP;
+        }
+        let hardware_mask = MIP_MSIP | MIP_MTIP | if self.firmware.enabled { MIP_STIP } else { 0 };
+        self.csrs.mip = (self.csrs.mip & !hardware_mask) | hardware;
+    }
+
+    fn handle_sbi_call(&mut self) -> Result<Option<HaltStatus>, MachineTrap> {
+        let extension = self.cpu.read(17);
+        let function = self.cpu.read(16);
+        let arguments = [
+            self.cpu.read(10),
+            self.cpu.read(11),
+            self.cpu.read(12),
+            self.cpu.read(13),
+            self.cpu.read(14),
+            self.cpu.read(15),
+        ];
+        let mut halt = None;
+        let (error, value) = match (extension, function) {
+            (SBI_EXT_BASE, 0) => (SBI_SUCCESS, SBI_SPEC_VERSION_3_0),
+            (SBI_EXT_BASE, 1) => (SBI_SUCCESS, SBI_AOS_PRIVATE_IMPL_ID),
+            (SBI_EXT_BASE, 2) => (SBI_SUCCESS, 1),
+            (SBI_EXT_BASE, 3) => (
+                SBI_SUCCESS,
+                u64::from(matches!(
+                    arguments[0],
+                    SBI_EXT_BASE | SBI_EXT_TIME | SBI_EXT_DBCN | SBI_EXT_SRST
+                )),
+            ),
+            (SBI_EXT_BASE, 4..=6) => (SBI_SUCCESS, 0),
+            (SBI_EXT_TIME, 0) => {
+                self.devices.mtimecmp = arguments[0];
+                self.csrs.mip &= !MIP_STIP;
+                (SBI_SUCCESS, 0)
+            }
+            (SBI_EXT_DBCN, 0) => self.sbi_debug_console_write(arguments)?,
+            (SBI_EXT_DBCN, 1) => self.sbi_debug_console_read(arguments),
+            (SBI_EXT_DBCN, 2) => {
+                self.devices.push_console_output(arguments[0] as u8)?;
+                (SBI_SUCCESS, 0)
+            }
+            (SBI_EXT_SRST, 0) if arguments[0] <= 2 && arguments[1] <= 1 => {
+                halt = Some(HaltStatus {
+                    passed: arguments[0] == 0 && arguments[1] == 0,
+                    code: ((arguments[0] as u32) << 16) | arguments[1] as u32,
+                });
+                (SBI_SUCCESS, 0)
+            }
+            (SBI_EXT_SRST, 0) => (SBI_ERR_INVALID_PARAM, 0),
+            _ => (SBI_ERR_NOT_SUPPORTED, 0),
+        };
+        self.cpu.write(10, error);
+        self.cpu.write(11, value);
+        Ok(halt)
+    }
+
+    fn sbi_debug_console_write(&mut self, arguments: [u64; 6]) -> Result<(u64, u64), MachineTrap> {
+        let Ok(bytes) = usize::try_from(arguments[0]) else {
+            return Ok((SBI_ERR_INVALID_ADDRESS, 0));
+        };
+        if arguments[2] != 0 {
+            return Ok((SBI_ERR_INVALID_ADDRESS, 0));
+        }
+        let Some(range) = self.devices.ram_range_len(arguments[1], bytes) else {
+            return Ok((SBI_ERR_INVALID_ADDRESS, 0));
+        };
+        let remaining = self
+            .devices
+            .max_console_bytes
+            .saturating_sub(self.devices.console_output.len());
+        let written = bytes.min(remaining);
+        let output = self.devices.ram[range.start..range.start + written].to_vec();
+        for byte in output {
+            self.devices.push_console_output(byte)?;
+        }
+        Ok((SBI_SUCCESS, written as u64))
+    }
+
+    fn sbi_debug_console_read(&mut self, arguments: [u64; 6]) -> (u64, u64) {
+        let Ok(bytes) = usize::try_from(arguments[0]) else {
+            return (SBI_ERR_INVALID_ADDRESS, 0);
+        };
+        if arguments[2] != 0 {
+            return (SBI_ERR_INVALID_ADDRESS, 0);
+        }
+        let Some(range) = self.devices.ram_range_len(arguments[1], bytes) else {
+            return (SBI_ERR_INVALID_ADDRESS, 0);
+        };
+        let read = bytes.min(self.devices.console_input.len());
+        for offset in 0..read {
+            self.devices.ram[range.start + offset] = self
+                .devices
+                .console_input
+                .pop_front()
+                .expect("length checked console input");
+        }
+        (SBI_SUCCESS, read as u64)
     }
 
     fn take_pending_interrupt(&mut self) -> bool {
@@ -1813,6 +2109,13 @@ const fn is_sv39_canonical(address: u64) -> bool {
     } else {
         upper == (1 << 25) - 1
     }
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    debug_assert!(alignment.is_power_of_two());
+    value
+        .checked_add(alignment - 1)
+        .map(|rounded| rounded & !(alignment - 1))
 }
 
 const fn ecall_cause(privilege: Privilege) -> u64 {
@@ -2885,5 +3188,118 @@ mod tests {
                 bytes: 4,
             })
         );
+    }
+
+    #[test]
+    fn linux_boot_places_images_builds_fdt_and_enters_exact_s_mode_state() {
+        let mut machine = Machine::new(MachineConfig {
+            ram_bytes: MIN_LINUX_RAM_BYTES,
+            max_console_bytes: 64,
+        })
+        .expect("valid Linux machine");
+        let kernel = words(&[0x0000_0073; 4]);
+        let initramfs = b"070701aos-initramfs";
+        let layout = machine
+            .boot_linux(&kernel, initramfs, "earlycon=sbi console=ttyS0 init=/init")
+            .expect("admit Linux boot");
+
+        assert_eq!(layout.kernel_start, LINUX_KERNEL_BASE);
+        assert_eq!(layout.kernel_end, LINUX_KERNEL_BASE + kernel.len() as u64);
+        assert_eq!(layout.fdt_start, LINUX_FDT_BASE);
+        assert!(layout.fdt_bytes > 256);
+        assert_eq!(machine.pc(), LINUX_KERNEL_BASE);
+        assert_eq!(machine.privilege(), Privilege::Supervisor);
+        assert_eq!(machine.register(10), Some(0));
+        assert_eq!(machine.register(11), Some(LINUX_FDT_BASE));
+        assert_eq!(machine.csr(Csr::Satp), 0);
+        assert_eq!(machine.csr(Csr::Mcounteren), 0b111);
+        assert_eq!(machine.csr(Csr::Mideleg), MIDELEG_SUPPORTED);
+        assert_eq!(
+            machine
+                .devices
+                .ram_range_len(LINUX_FDT_BASE, 4)
+                .map(|range| machine.devices.ram[range].to_vec()),
+            Some(vec![0xd0, 0x0d, 0xfe, 0xed])
+        );
+        assert_eq!(
+            machine
+                .devices
+                .ram_range_len(layout.initrd_start.expect("initrd start"), initramfs.len())
+                .map(|range| machine.devices.ram[range].to_vec()),
+            Some(initramfs.to_vec())
+        );
+    }
+
+    #[test]
+    fn sbi_3_base_dbcn_time_and_reset_are_bounded_platform_services() {
+        let mut machine = Machine::new(MachineConfig {
+            ram_bytes: MIN_LINUX_RAM_BYTES,
+            max_console_bytes: 64,
+        })
+        .expect("valid Linux machine");
+        machine
+            .boot_linux(&words(&[0x0000_0073; 4]), &[], "earlycon=sbi")
+            .expect("admit Linux boot");
+
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_BASE;
+        let base = machine.run_slice(1);
+        assert_eq!(base.instructions_retired, 0);
+        assert_eq!(machine.register(10), Some(SBI_SUCCESS));
+        assert_eq!(machine.register(11), Some(SBI_SPEC_VERSION_3_0));
+
+        let message_address = DRAM_BASE + 0x1_0000;
+        assert!(machine.devices.write_ram_slice(message_address, b"LINUX"));
+        machine.cpu.registers[10] = 5;
+        machine.cpu.registers[11] = message_address;
+        machine.cpu.registers[12] = 0;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_DBCN;
+        let console = machine.run_slice(1);
+        assert_eq!(console.console, b"LINUX");
+        assert_eq!(machine.register(10), Some(SBI_SUCCESS));
+        assert_eq!(machine.register(11), Some(5));
+
+        let deadline = machine.csr(Csr::Time) + 10;
+        machine.cpu.registers[10] = deadline;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_TIME;
+        assert_eq!(machine.run_slice(1).instructions_retired, 0);
+        assert_eq!(machine.devices.mtimecmp, deadline);
+        assert_eq!(machine.csr(Csr::Mip) & MIP_STIP, 0);
+
+        machine.cpu.registers[10] = 0;
+        machine.cpu.registers[11] = 0;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_SRST;
+        assert_eq!(
+            machine.run_slice(1).outcome,
+            SliceOutcome::Halted(HaltStatus {
+                passed: true,
+                code: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn linux_boot_admission_rejects_small_ram_oversize_images_and_bootargs() {
+        let mut small = machine(8);
+        assert!(matches!(
+            small.boot_linux(&[1], &[], ""),
+            Err(MachineError::InvalidLinuxImages { .. })
+        ));
+        let mut admitted = Machine::new(MachineConfig {
+            ram_bytes: MIN_LINUX_RAM_BYTES,
+            max_console_bytes: 8,
+        })
+        .expect("valid Linux machine");
+        assert_eq!(
+            admitted.boot_linux(&[1], &[], &"x".repeat(MAX_BOOTARGS_BYTES + 1)),
+            Err(MachineError::InvalidBootArgsBytes(MAX_BOOTARGS_BYTES + 1))
+        );
+        assert!(matches!(
+            admitted.boot_linux(&vec![0; MIN_LINUX_RAM_BYTES], &[], ""),
+            Err(MachineError::InvalidLinuxImages { .. })
+        ));
     }
 }

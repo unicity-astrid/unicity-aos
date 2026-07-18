@@ -148,9 +148,26 @@ once per charged machine step rather than from ambient host wall time. M/S
 interrupt CSRs, delegation, global enables, direct/vectored entry, and bounded
 `wfi` are live; machine and supervisor timer-interrupt paths have executable tests.
 
-This is not Linux yet. The machine does not yet provide SBI firmware, a generated
-device tree, Linux image placement, a PLIC, compressed instructions, or virtio
-block. Those are measurable boot prerequisites, not implied scaffolding.
+The fifth slice defines the boot firmware contract. `Machine::boot_linux` admits
+a raw RV64 `Image` at the standard 2 MiB boundary, page-aligns the initramfs after
+the image, writes a deterministic FDT at `0x80001000`, and enters S-mode with
+`a0=0`, `a1=FDT`, and address translation disabled. The generated
+`aos-rv64-virt-v0` tree describes the exact CPU ISA, Sv39, admitted RAM, timebase,
+CPU interrupt controller, UART, boot arguments, and initramfs range without
+invoking `dtc` at build or runtime. Its bytes have also been independently parsed
+by DTC 1.8.1.
+
+The private firmware implements the SBI 3.0 Base, TIME, DBCN, and SRST subsets.
+Debug-console buffers are accepted only when their complete physical range lies
+in admitted RAM; timer requests map the machine timer into the delegated
+Supervisor timer line; a successful reset halts the bounded machine. The
+`0x414f5300` implementation value is a private, unregistered profile value, not a
+claim to an assigned RISC-V SBI implementation ID.
+
+This is not Linux yet. No pinned Linux image has reached `/init` inside this
+machine. A PLIC, compressed instructions, and virtio block also remain absent and
+will be added only if the selected kernel/device profile requires them. Those are
+measurable boot facts, not implied scaffolding.
 
 ### 2.5 Privileged-machine component sketch and invariant ledger
 
@@ -165,7 +182,9 @@ Realm adapter (program admission, outer fuel/output ceilings)
         -> CsrFile (typed implemented CSR set and WARL masks)
         -> exception entry (delegation and xstatus stack update)
         -> Sv39 walk and permission check (virtual to admitted physical address)
+        -> SbiFirmware (Base/TIME/DBCN/SRST; no outer authority)
         -> Devices (admitted RAM, deterministic CLINT, UART, test finisher)
+  -> boot_linux (image/initramfs admission, generated FDT, exact S-mode handoff)
 ```
 
 Exception entry is a private machine operation rather than a pluggable object:
@@ -195,11 +214,12 @@ an implicit RISC-V device.
 | RV64A | LR/SC uses a physical single-hart reservation; overlapping writes and traps invalidate it; W/D AMOs return the old value exactly | successful and failed LR/SC plus AMOSWAP/AMOADD regressions |
 | Counters | Architectural counters are deterministic and guest-writable machine counters cannot rewrite outer Realm accounting | cycle/time/instret reads and M/S/U counter-enable matrix |
 | Interrupts | Pending/enable/delegation/global-enable selection precedes fetch; entry preserves the interrupted PC and vectors only interrupts | CLINT M-timer vectored entry and delegated S-timer/WFI regressions |
+| Linux placement | Kernel, initramfs, and FDT ranges are checked before mutation; Linux receives the standard RV64 register handoff in S-mode | exact RAM-byte, FDT-header, layout, register, CSR, and privilege assertions |
+| SBI boundary | Firmware sees only admitted RAM, deterministic time, and bounded console/reset devices; unsupported extensions fail closed | Base 3.0 probe, DBCN write, TIME interrupt, SRST halt, and invalid-address regressions |
 
 The table is also the review boundary: a checkmark for privileged mode does not
-mean Linux compatibility. The next increment must define the firmware boundary,
-SBI calls, Linux image placement, and generated device tree before a kernel image
-is admitted.
+mean Linux compatibility. The next increment must run the exact pinned kernel and
+initramfs to an AOS-controlled `/init` and retain its serial evidence.
 
 ## 3. The system seen from each side
 
@@ -1220,7 +1240,8 @@ CE set rather than test-installed companions.
   then implement Sv39 translation and `sfence.vma` against adversarial page tables;
 - [x] add RV64M, RV64A, architectural counters, deterministic CLINT time, interrupt
   CSR/delegation/global-enable behavior, vectored entry, and bounded `wfi`;
-- add the boot ROM/SBI handoff and a generated, versioned device tree;
+- [x] add exact Linux image/initramfs placement, generated versioned FDT bytes,
+  S-mode handoff, and bounded SBI 3.0 Base/TIME/DBCN/SRST firmware;
 - add a PLIC when an admitted interrupting device requires it;
 - boot signed Linux longterm 6.18.39 with a Buildroot 2026.05.1 initramfs to an
   AOS-controlled `/init`, and retain an exact serial trace as an executable test;
@@ -1484,10 +1505,10 @@ The first implementation must resolve these with executable evidence:
 - [ ] defer public WIT, Debian naming, arbitrary package claims, and native-kernel
     coupling until evidence requires them.
 
-The next Linux-bearing executable artifact is the firmware contract: exact Linux
-image/initramfs placement, generated FDT bytes, S-mode register state, and bounded
-SBI base/time/debug-console/reset handling. It is followed by pinned Linux 6.18.39
-plus Buildroot 2026.05.1 serial boot to `/init`.
+The next Linux-bearing executable artifact is pinned Linux 6.18.39 plus Buildroot
+2026.05.1 serial boot to an AOS-controlled `/init`. The firmware contract beneath
+it is now executable: exact image/initramfs placement, generated FDT bytes, S-mode
+register state, and bounded SBI 3.0 Base/TIME/DBCN/SRST handling.
 Every artifact must run in bounded slices and
 fail with an exact architectural trap before virtio block, persistence,
 networking, or a shell are added. The parallel process track still needs

@@ -126,15 +126,21 @@ under the ratified RISC-V Machine and Supervisor ISA 1.13. The page walker is
 bounded and checks canonicality, PTE/superpage form, U/S and R/W/X permissions,
 SUM/MXR, MPRV, and A/D updates against admitted RAM. It also owns independent
 architectural counters, the deterministic single-hart CLINT, interrupt selection
-and vector entry, and bounded `wfi`. It has
+and vector entry, and bounded `wfi`. The Linux boot contract loads a raw RV64
+`Image` at the standard 2 MiB boundary, page-aligns an admitted initramfs after
+it, generates the versioned `aos-rv64-virt-v0` FDT without a host tool, and
+enters the kernel in S-mode with `a0=hartid` and `a1=FDT`. Its private firmware
+implements the SBI 3.0 Base, TIME, DBCN, and SRST subsets needed by this
+single-hart profile. The private implementation ID is deliberately unregistered;
+it is not presented as an assigned RISC-V SBI implementation ID. The machine has
 no browser, JavaScript, JIT, host process, host filesystem, or network dependency
 and compiles for the capsule's `wasm32-unknown-unknown` target.
 
-Those probes are architectural boundary tests, not Linux claims. SBI/boot handoff,
-a generated device tree, Linux image placement, and an admitted initramfs still
-have to land before a Linux kernel can boot. Compressed instructions, PLIC, and
-virtio block are deliberately deferred until the selected kernel/device profile
-requires them.
+Those probes and firmware tests are architectural boundary evidence, not a Linux
+boot claim. A pinned kernel and AOS-controlled `/init` must produce a retained
+serial trace inside this machine before that claim is made. Compressed
+instructions, PLIC, and virtio block are deliberately deferred until the selected
+kernel/device profile requires them.
 
 The private ABI exposes bounded `pipe`, compatibility `spawn-signed`, record-based
 `spawn-signed-record`, `wait`, and `signal` operations. The record form selects an
