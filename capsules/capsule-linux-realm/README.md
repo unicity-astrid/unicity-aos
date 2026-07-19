@@ -281,6 +281,31 @@ storage separately from `linux_rootfs_persistent=false`. `/workspace` has
 Astrid's outer COW and promotion semantics; it is not evidence of a durable
 Linux root filesystem.
 
+Resource authority is hierarchical. Astrid's admin-owned principal profile is
+the outer CPU, linear-memory, storage, process, and timeout boundary. The capsule
+then resolves a smaller inner Linux envelope from the invoking principal's
+per-capsule configuration on every operation:
+
+| Config key | Default | Admitted range | Meaning |
+| --- | ---: | ---: | --- |
+| `linux_memory_bytes` | 33554432 | 33554432–268435456, 4 KiB aligned | Guest-visible RV64 RAM |
+| `linux_max_steps` | 50000000 | 1–50000000 | Guest steps admitted per invocation |
+| `linux_max_output_bytes` | 65536 | 1–65536 | Captured Linux output per invocation |
+
+The effective boundary is the intersection of the Astrid principal profile, the
+capsule hard maximum, this configured envelope, and any lower per-command request.
+The guest cannot raise any of them. RAM above the proven 32 MiB default requires
+the administrator to raise that principal's outer Wasmtime memory quota enough
+to contain both guest RAM and the capsule itself.
+
+Changing the inner envelope never retargets a Store to another principal. On the
+next mutating execution the capsule discards that principal's warm Linux RAM and
+9P sessions, retains the actor boot identity, and remounts the same durable home
+and invocation workspace under the new limits. Read-only status reports both the
+configured and active envelopes plus whether that cold reconfiguration is
+pending. The current contract deliberately does not bind guest RAM to all
+available host memory; allocation is explicit, bounded, and auditable.
+
 Astrid Runtime now has the experimental primitive required to make this boundary
 honest: an opt-in Store permanently keyed by `(capsule, component, verified
 principal)`, with per-call fuel charging, exact aggregate resident-memory

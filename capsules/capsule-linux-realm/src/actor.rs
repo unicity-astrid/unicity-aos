@@ -12,21 +12,29 @@ thread_local! {
     static RESIDENT_REALM: RefCell<ResidentRealm> = RefCell::new(ResidentRealm::default());
 }
 
-pub(crate) fn execute_resident(principal: &str, args: ExecArgs) -> Result<String, SysError> {
+pub(crate) fn execute_resident(
+    principal: &str,
+    args: ExecArgs,
+    resources: RealmResources,
+) -> Result<String, SysError> {
     RESIDENT_REALM.with(|state| {
         state
             .try_borrow_mut()
             .map_err(|_| SysError::ApiError("principal-affine Realm was re-entered".to_string()))?
-            .execute(principal, args)
+            .execute(principal, args, resources)
     })
 }
 
-pub(crate) fn status_resident(principal: &str, args: StatusArgs) -> Result<String, SysError> {
+pub(crate) fn status_resident(
+    principal: &str,
+    args: StatusArgs,
+    resources: RealmResources,
+) -> Result<String, SysError> {
     RESIDENT_REALM.with(|state| {
         state
             .try_borrow_mut()
             .map_err(|_| SysError::ApiError("principal-affine Realm was re-entered".to_string()))?
-            .status(principal, args)
+            .status(principal, args, resources)
     })
 }
 
@@ -35,15 +43,17 @@ struct PrincipalRealm {
     commands_completed: u64,
     machine: RealmMachine,
     linux: LinuxActivity,
+    resources: RealmResources,
 }
 
 impl PrincipalRealm {
-    fn new(boot_sequence: u64) -> Self {
+    fn new(boot_sequence: u64, resources: RealmResources) -> Self {
         Self {
             boot_sequence,
             commands_completed: 0,
             machine: RealmMachine::with_generation(boot_sequence),
             linux: LinuxActivity::default(),
+            resources,
         }
     }
 
@@ -54,7 +64,16 @@ impl PrincipalRealm {
             commands_completed: self.commands_completed,
             machine: self.machine.status(),
             linux: self.linux.snapshot(),
+            resources: Some(self.resources),
         }
+    }
+
+    fn apply_resources(&mut self, resources: RealmResources) {
+        if self.resources == resources {
+            return;
+        }
+        self.linux.discard_for_resource_change();
+        self.resources = resources;
     }
 }
 
@@ -72,6 +91,16 @@ struct LinuxActivity {
 }
 
 impl LinuxActivity {
+    fn discard_for_resource_change(&mut self) {
+        let was_running = self.machine.take().is_some();
+        self.home_9p = None;
+        self.workspace_9p = None;
+        if was_running {
+            self.last_outcome = Some("resource-policy-changed");
+            self.last_exit_status = None;
+        }
+    }
+
     fn execute(
         &mut self,
         args: ExecArgs,
@@ -79,6 +108,7 @@ impl LinuxActivity {
         boot_sequence: u64,
         next_process_id: Option<u64>,
         home_generation: u64,
+        resources: RealmResources,
     ) -> Result<ExecResponse, SysError> {
         let selected = select_program(&args)?;
         let SelectedExecution::Linux(action) = selected.execution else {
@@ -88,14 +118,15 @@ impl LinuxActivity {
         };
         let requested_cwd = args.cwd.clone();
         let cwd = linux_effective_cwd(action, requested_cwd.as_deref())?;
-        let hard_fuel = selected.execution.hard_fuel();
+        let hard_fuel = selected.execution.hard_fuel(resources);
+        let output_ceiling = selected.execution.output_bytes(resources);
         let limits = RunLimits {
             fuel: args.fuel.unwrap_or(hard_fuel).min(hard_fuel),
-            memory_bytes: selected.execution.memory_bytes(),
+            memory_bytes: selected.execution.memory_bytes(resources),
             output_bytes: args
                 .max_output_bytes
-                .unwrap_or(HARD_MAX_OUTPUT_BYTES)
-                .min(HARD_MAX_OUTPUT_BYTES),
+                .unwrap_or(output_ceiling)
+                .min(output_ceiling),
         };
         let command = selected.argv.get(1).map(String::as_str);
         let report = execute_linux_resident(
@@ -156,6 +187,7 @@ impl LinuxActivity {
             realm_boot_sequence: boot_sequence,
             process_ids: Vec::new(),
             next_process_id,
+            resources,
         })
     }
 
@@ -204,16 +236,20 @@ impl ResidentRealm {
     fn realm_with_boot(
         &mut self,
         principal: &str,
+        resources: RealmResources,
         load_boot: impl FnOnce() -> Result<u64, SysError>,
     ) -> Result<&mut PrincipalRealm, SysError> {
         self.bind_owner(principal)?;
         if self.realm.is_none() {
             let boot_sequence = load_boot()?;
-            self.realm = Some(PrincipalRealm::new(boot_sequence));
+            self.realm = Some(PrincipalRealm::new(boot_sequence, resources));
         }
-        self.realm
+        let realm = self
+            .realm
             .as_mut()
-            .ok_or_else(|| SysError::ApiError("resident Realm state disappeared".to_string()))
+            .ok_or_else(|| SysError::ApiError("resident Realm state disappeared".to_string()))?;
+        realm.apply_resources(resources);
+        Ok(realm)
     }
 
     fn execute_with_boot(
@@ -222,17 +258,19 @@ impl ResidentRealm {
         args: ExecArgs,
         realm_host: Box<dyn RealmHost>,
         home_generation: u64,
+        resources: RealmResources,
         load_boot: impl FnOnce() -> Result<u64, SysError>,
     ) -> Result<ExecResponse, SysError> {
-        let realm = self.realm_with_boot(principal, load_boot)?;
+        let realm = self.realm_with_boot(principal, resources, load_boot)?;
         let selected = select_program(&args)?;
-        let response = if matches!(selected.execution, SelectedExecution::Linux(_)) {
+        let mut response = if matches!(selected.execution, SelectedExecution::Linux(_)) {
             realm.linux.execute(
                 args,
                 principal,
                 realm.boot_sequence,
                 realm.machine.status().next_process_id.map(|id| id.get()),
                 home_generation,
+                realm.resources,
             )?
         } else {
             run_command_in_machine(
@@ -244,6 +282,7 @@ impl ResidentRealm {
                 home_generation,
             )?
         };
+        response.resources = realm.resources;
         realm.commands_completed = realm.commands_completed.saturating_add(1);
         Ok(response)
     }
@@ -252,9 +291,10 @@ impl ResidentRealm {
     fn snapshot_with_boot(
         &mut self,
         principal: &str,
+        resources: RealmResources,
         load_boot: impl FnOnce() -> Result<u64, SysError>,
     ) -> Result<ActorSnapshot, SysError> {
-        self.realm_with_boot(principal, load_boot)
+        self.realm_with_boot(principal, resources, load_boot)
             .map(|realm| realm.snapshot())
     }
 
@@ -269,7 +309,12 @@ impl ResidentRealm {
         }
     }
 
-    pub(crate) fn execute(&mut self, principal: &str, args: ExecArgs) -> Result<String, SysError> {
+    pub(crate) fn execute(
+        &mut self,
+        principal: &str,
+        args: ExecArgs,
+        resources: RealmResources,
+    ) -> Result<String, SysError> {
         self.bind_owner(principal)?;
         ensure_layout()?;
         let selected = select_program(&args)?;
@@ -285,6 +330,7 @@ impl ResidentRealm {
             args,
             Box::<AstridRealmHost>::default(),
             home_generation,
+            resources,
             next_boot_sequence,
         )?;
         response.home_generation_after = home_status()?.generation;
@@ -295,6 +341,7 @@ impl ResidentRealm {
         &mut self,
         principal: &str,
         _args: StatusArgs,
+        resources: RealmResources,
     ) -> Result<String, SysError> {
         self.bind_owner(principal)?;
         let layout = layout_state()?;
@@ -303,7 +350,7 @@ impl ResidentRealm {
         // that has not executed must not allocate a machine or advance its
         // durable boot sequence.
         let actor = self.snapshot(principal);
-        let response = status_response(principal.to_string(), layout, filesystem, actor);
+        let response = status_response(principal.to_string(), layout, filesystem, actor, resources);
         serde_json::to_string(&response).map_err(|error| SysError::ApiError(error.to_string()))
     }
 }
@@ -366,19 +413,34 @@ mod tests {
     fn one_resident_store_keeps_monotonic_pids_and_rejects_retargeting() {
         let mut alice = ResidentRealm::default();
         let alice_first = alice
-            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), 0, || {
-                Ok(7)
-            })
+            .execute_with_boot(
+                "alice",
+                echo("one"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || Ok(7),
+            )
             .expect("alice first command");
         let alice_second = alice
-            .execute_with_boot("alice", echo("two"), Box::<TestHost>::default(), 0, || {
-                panic!("existing principal must not allocate another boot")
-            })
+            .execute_with_boot(
+                "alice",
+                echo("two"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || panic!("existing principal must not allocate another boot"),
+            )
             .expect("alice second command");
         let error = alice
-            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), 0, || {
-                Ok(11)
-            })
+            .execute_with_boot(
+                "bob",
+                echo("other"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || Ok(11),
+            )
             .expect_err("a resident Store cannot cross principals");
 
         assert_eq!(alice_first.realm_boot_sequence, 7);
@@ -393,14 +455,24 @@ mod tests {
         let mut alice = ResidentRealm::default();
         let mut bob = ResidentRealm::default();
         let alice_first = alice
-            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), 0, || {
-                Ok(7)
-            })
+            .execute_with_boot(
+                "alice",
+                echo("one"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || Ok(7),
+            )
             .expect("alice command");
         let bob_first = bob
-            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), 0, || {
-                Ok(11)
-            })
+            .execute_with_boot(
+                "bob",
+                echo("other"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || Ok(11),
+            )
             .expect("bob command");
 
         assert_eq!(alice_first.realm_boot_sequence, 7);
@@ -413,9 +485,14 @@ mod tests {
     fn pipeline_ids_share_the_principals_monotonic_boot_namespace() {
         let mut actor = ResidentRealm::default();
         let first = actor
-            .execute_with_boot("alice", echo("seed"), Box::<TestHost>::default(), 0, || {
-                Ok(3)
-            })
+            .execute_with_boot(
+                "alice",
+                echo("seed"),
+                Box::<TestHost>::default(),
+                0,
+                RealmResources::default(),
+                || Ok(3),
+            )
             .expect("first command");
         let pipeline = actor
             .execute_with_boot(
@@ -427,11 +504,14 @@ mod tests {
                 },
                 Box::<TestHost>::default(),
                 0,
+                RealmResources::default(),
                 || panic!("boot is already allocated"),
             )
             .expect("pipeline command");
         let snapshot = actor
-            .snapshot_with_boot("alice", || panic!("boot is already allocated"))
+            .snapshot_with_boot("alice", RealmResources::default(), || {
+                panic!("boot is already allocated")
+            })
             .expect("actor snapshot");
 
         assert_eq!(first.process_ids, vec![1]);
@@ -473,8 +553,8 @@ mod tests {
 
     #[test]
     fn linux_activity_is_principal_local() {
-        let mut alice = PrincipalRealm::new(7);
-        let bob = PrincipalRealm::new(11);
+        let mut alice = PrincipalRealm::new(7, RealmResources::default());
+        let bob = PrincipalRealm::new(11, RealmResources::default());
         alice.linux.boot_executions = 1;
         alice.linux.commands_completed = 2;
         alice.linux.clean_shutdowns = 1;
@@ -492,5 +572,46 @@ mod tests {
         assert_eq!(snapshot.last_exit_status, Some(0));
         assert_eq!(bob.linux.snapshot().boot_executions, 0);
         assert_eq!(bob.linux.snapshot().guest_steps, 0);
+    }
+
+    #[test]
+    fn resource_change_discards_only_the_principals_warm_machine() {
+        let mut actor = ResidentRealm::default();
+        let default = RealmResources::default();
+        let expanded = RealmResources {
+            linux_memory_bytes: 64 * 1024 * 1024,
+            ..default
+        };
+
+        {
+            let realm = actor
+                .realm_with_boot("alice", default, || Ok(7))
+                .expect("bind Alice");
+            realm.linux.machine = Some(
+                Rv64Machine::new(Rv64MachineConfig {
+                    ram_bytes: HARD_MEMORY_BYTES,
+                    max_console_bytes: HARD_MAX_OUTPUT_BYTES,
+                })
+                .expect("test machine"),
+            );
+        }
+
+        let realm = actor
+            .realm_with_boot("alice", expanded, || {
+                panic!("resource changes retain the actor boot identity")
+            })
+            .expect("apply Alice's new envelope");
+
+        assert_eq!(realm.resources, expanded);
+        assert!(realm.linux.machine.is_none());
+        assert!(realm.linux.home_9p.is_none());
+        assert!(realm.linux.workspace_9p.is_none());
+        assert_eq!(realm.linux.last_outcome, Some("resource-policy-changed"));
+
+        let error = match actor.realm_with_boot("bob", default, || Ok(11)) {
+            Ok(_) => panic!("Alice's Store cannot be reused for Bob"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("belongs to `alice`, not `bob`"));
     }
 }

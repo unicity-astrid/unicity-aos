@@ -8,6 +8,7 @@
 mod actor;
 mod host;
 mod paths;
+mod resources;
 
 use aos_realm_9p::Session as Plan9Session;
 use aos_realm_machine::{
@@ -35,16 +36,14 @@ use paths::{
     MountContext, MountRole, PATH_CONTRACT_VERSION, PathConsumer, ProjectionState,
     ReferenceStability,
 };
+use resources::RealmResources;
+#[cfg(test)]
+use resources::{DEFAULT_LINUX_MAX_STEPS, DEFAULT_LINUX_MEMORY_BYTES};
 use serde::{Deserialize, Serialize};
 
 const HARD_MAX_FUEL: u64 = 100_000;
-const HARD_MAX_LINUX_STEPS: u64 = 50_000_000;
 const HARD_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const HARD_MEMORY_BYTES: usize = 64 * 1024;
-// The enclosing Astrid component has a 64 MiB linear-memory ceiling. Keep the
-// guest at 32 MiB so its RAM, embedded Image, interpreter state, and component
-// stack all fit inside that independently enforced outer limit.
-const HARD_LINUX_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const LINUX_SLICE_STEPS: u64 = 100_000;
 #[cfg(test)]
 const LINUX_INIT_MARKER: &[u8] = b"AOS LINUX /init";
@@ -161,6 +160,7 @@ struct ExecResponse {
     realm_boot_sequence: u64,
     process_ids: Vec<u64>,
     next_process_id: Option<u64>,
+    resources: RealmResources,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -234,6 +234,17 @@ struct StatusResponse {
     linux_outer_wasm_metering: &'static str,
     component_residency: &'static str,
     component_state_durability: &'static str,
+    resources: ResourceStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceStatus {
+    configured: RealmResources,
+    active: Option<RealmResources>,
+    reconfigure_on_next_exec: bool,
+    configuration_scope: &'static str,
+    outer_enforcement: &'static str,
+    allocation_behavior: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -243,6 +254,7 @@ struct ActorSnapshot {
     commands_completed: u64,
     machine: RealmMachineStatus,
     linux: LinuxSnapshot,
+    resources: Option<RealmResources>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -278,6 +290,7 @@ impl ActorSnapshot {
             commands_completed: 0,
             machine: RealmMachine::default().status(),
             linux: LinuxSnapshot::cold(),
+            resources: None,
         }
     }
 }
@@ -318,17 +331,24 @@ impl SelectedExecution {
         }
     }
 
-    const fn hard_fuel(self) -> u64 {
+    const fn hard_fuel(self, resources: RealmResources) -> u64 {
         match self {
-            Self::Linux(_) => HARD_MAX_LINUX_STEPS,
+            Self::Linux(_) => resources.linux_max_steps,
             _ => HARD_MAX_FUEL,
         }
     }
 
-    const fn memory_bytes(self) -> usize {
+    const fn memory_bytes(self, resources: RealmResources) -> usize {
         match self {
-            Self::Linux(_) => HARD_LINUX_MEMORY_BYTES,
+            Self::Linux(_) => resources.linux_memory_bytes,
             _ => HARD_MEMORY_BYTES,
+        }
+    }
+
+    const fn output_bytes(self, resources: RealmResources) -> usize {
+        match self {
+            Self::Linux(_) => resources.linux_max_output_bytes,
+            _ => HARD_MAX_OUTPUT_BYTES,
         }
     }
 
@@ -355,7 +375,7 @@ impl LinuxRealm {
     #[astrid::tool("linux_realm_exec", mutable)]
     pub fn exec(&self, args: ExecArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
-        actor::execute_resident(&principal, args)
+        actor::execute_resident(&principal, args, RealmResources::load()?)
     }
 
     /// Discover the per-consumer CWD and mount projections without exposing
@@ -363,7 +383,7 @@ impl LinuxRealm {
     #[astrid::tool("linux_realm_status")]
     pub fn status(&self, args: StatusArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
-        actor::status_resident(&principal, args)
+        actor::status_resident(&principal, args, RealmResources::load()?)
     }
 }
 
@@ -395,14 +415,16 @@ fn run_command_in_machine(
     let selected = select_program(&args)?;
     let requested_cwd = args.cwd.clone();
     let cwd = args.cwd.clone().unwrap_or_else(|| DEFAULT_CWD.to_string());
-    let hard_fuel = selected.execution.hard_fuel();
+    let resources = RealmResources::default();
+    let hard_fuel = selected.execution.hard_fuel(resources);
+    let output_ceiling = selected.execution.output_bytes(resources);
     let limits = RunLimits {
         fuel: args.fuel.unwrap_or(hard_fuel).min(hard_fuel),
-        memory_bytes: selected.execution.memory_bytes(),
+        memory_bytes: selected.execution.memory_bytes(resources),
         output_bytes: args
             .max_output_bytes
-            .unwrap_or(HARD_MAX_OUTPUT_BYTES)
-            .min(HARD_MAX_OUTPUT_BYTES),
+            .unwrap_or(output_ceiling)
+            .min(output_ceiling),
     };
     let (report, mut process_ids) = execute_selected(&selected, &cwd, limits, realm_host, machine)?;
     process_ids.sort_unstable();
@@ -443,6 +465,7 @@ fn run_command_in_machine(
         realm_boot_sequence: boot_sequence,
         process_ids,
         next_process_id: machine_status.next_process_id.map(|process| process.get()),
+        resources,
     })
 }
 
@@ -1384,7 +1407,9 @@ fn status_response(
     state: &'static str,
     home_status: FsStatus,
     actor: ActorSnapshot,
+    configured_resources: RealmResources,
 ) -> StatusResponse {
+    let active_resources = actor.resources;
     StatusResponse {
         realm: REALM_NAME,
         owner_principal: principal,
@@ -1496,6 +1521,15 @@ fn status_response(
         linux_outer_wasm_metering: "principal-affine-invocation",
         component_residency: "principal-affine-store",
         component_state_durability: "evictable-cache+durable-home",
+        resources: ResourceStatus {
+            configured: configured_resources,
+            active: active_resources,
+            reconfigure_on_next_exec: active_resources
+                .is_some_and(|active| active != configured_resources),
+            configuration_scope: "principal-capsule-config",
+            outer_enforcement: "astrid-principal-profile+wasmtime-store-limiter",
+            allocation_behavior: "explicit-bounded-no-host-max-autobind",
+        },
     }
 }
 
@@ -1686,8 +1720,8 @@ mod tests {
     #[test]
     fn linux_boot_and_console_preserve_userspace_across_invocations() {
         let limits = RunLimits {
-            fuel: HARD_MAX_LINUX_STEPS,
-            memory_bytes: HARD_LINUX_MEMORY_BYTES,
+            fuel: DEFAULT_LINUX_MAX_STEPS,
+            memory_bytes: DEFAULT_LINUX_MEMORY_BYTES,
             output_bytes: HARD_MAX_OUTPUT_BYTES,
         };
         let mut machine = None;
@@ -1717,7 +1751,7 @@ mod tests {
         assert!(stdout.contains("Run /init as init process"));
         assert!(contains_bytes(&boot.stdout, LINUX_INIT_MARKER));
         assert!(contains_bytes(&boot.stdout, LINUX_READY_MARKER));
-        assert!(boot.fuel_consumed < HARD_MAX_LINUX_STEPS);
+        assert!(boot.fuel_consumed < DEFAULT_LINUX_MAX_STEPS);
         assert!(boot.suspensions > 100);
 
         let first = execute_linux_resident_cooperatively(
@@ -1923,7 +1957,7 @@ mod tests {
             None,
             RunLimits {
                 fuel: LINUX_SLICE_STEPS * 2,
-                memory_bytes: HARD_LINUX_MEMORY_BYTES,
+                memory_bytes: DEFAULT_LINUX_MEMORY_BYTES,
                 output_bytes: HARD_MAX_OUTPUT_BYTES,
             },
             || {
@@ -1952,8 +1986,8 @@ mod tests {
             LINUX_DEFAULT_CWD,
             None,
             RunLimits {
-                fuel: HARD_MAX_LINUX_STEPS,
-                memory_bytes: HARD_LINUX_MEMORY_BYTES,
+                fuel: DEFAULT_LINUX_MAX_STEPS,
+                memory_bytes: DEFAULT_LINUX_MEMORY_BYTES,
                 output_bytes: HARD_MAX_OUTPUT_BYTES,
             },
             || Ok(()),
@@ -1998,8 +2032,8 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
             LINUX_DEFAULT_CWD,
             None,
             RunLimits {
-                fuel: HARD_MAX_LINUX_STEPS,
-                memory_bytes: HARD_LINUX_MEMORY_BYTES,
+                fuel: DEFAULT_LINUX_MAX_STEPS,
+                memory_bytes: DEFAULT_LINUX_MEMORY_BYTES,
                 output_bytes: HARD_MAX_OUTPUT_BYTES,
             },
             || Err(SysError::ApiError("cooperation failed".to_string())),
@@ -2296,7 +2330,9 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
                     last_exit_status: Some(0),
                     commands_completed: 3,
                 },
+                resources: Some(RealmResources::default()),
             },
+            RealmResources::default(),
         ))
         .expect("status serializes");
 
@@ -2314,6 +2350,13 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains("\"linux_guest_steps_this_actor_boot\":25000000"));
         assert!(json.contains("\"linux_outer_wasm_metering\":\"principal-affine-invocation\""));
         assert!(json.contains("\"component_residency\":\"principal-affine-store\""));
+        assert!(json.contains("\"configuration_scope\":\"principal-capsule-config\""));
+        assert!(
+            json.contains(
+                "\"outer_enforcement\":\"astrid-principal-profile+wasmtime-store-limiter\""
+            )
+        );
+        assert!(json.contains("\"reconfigure_on_next_exec\":false"));
         assert!(json.contains("\"path_contract_version\":2"));
         assert!(json.contains("\"physical_host_paths_visible\":false"));
         assert!(json.contains(
@@ -2327,6 +2370,38 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains("outer-astrid-promotion-required"));
         assert!(!json.contains("/Users/"));
         assert!(!json.contains(".astrid/home"));
+    }
+
+    #[test]
+    fn status_reports_resource_reconfiguration_without_mutating_the_actor() {
+        let active = RealmResources::default();
+        let configured = RealmResources {
+            linux_memory_bytes: 64 * 1024 * 1024,
+            ..active
+        };
+        let response = status_response(
+            "alice".to_string(),
+            "ready",
+            FsStatus {
+                format: aos_realm_vfs::FORMAT_VERSION,
+                generation: 0,
+                files: 0,
+                manifest: None,
+            },
+            ActorSnapshot {
+                state: "running",
+                boot_sequence: 1,
+                commands_completed: 0,
+                machine: RealmMachine::default().status(),
+                linux: LinuxSnapshot::cold(),
+                resources: Some(active),
+            },
+            configured,
+        );
+
+        assert_eq!(response.resources.active, Some(active));
+        assert_eq!(response.resources.configured, configured);
+        assert!(response.resources.reconfigure_on_next_exec);
     }
 
     #[test]
@@ -2348,6 +2423,14 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert_eq!(
             manifest["package"]["metadata"]["astrid-runtime"]["component-residency"].as_str(),
             Some("principal")
+        );
+        assert_eq!(
+            manifest["env"]["linux_memory_bytes"]["default"].as_str(),
+            Some("33554432")
+        );
+        assert_eq!(
+            manifest["env"]["linux_max_steps"]["default"].as_str(),
+            Some("50000000")
         );
         assert!(capabilities.contains_key("fs_read"));
         assert!(capabilities.contains_key("fs_write"));

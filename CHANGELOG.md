@@ -63,6 +63,10 @@
   commands across separately metered tool invocations, preserves userspace state,
   shuts down cleanly through SBI, and restarts lazily without host-process
   authority.
+- Principal-resolved AOS Realm resource envelopes for guest RAM, interpreted
+  steps, and captured output, bounded by Astrid's admin-owned principal profile;
+  status distinguishes configured and active limits, while a changed envelope
+  cold-reconfigures only that principal's warm Linux machine.
 - A reproducibly pinned Buildroot 2026.05.1, static musl, and BusyBox `ash`
   workbench for the resident Linux guest, with an unprivileged `agent` shell,
   token-bound command framing, bounded process resources, descendant cleanup,

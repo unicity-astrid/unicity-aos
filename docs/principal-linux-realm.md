@@ -932,13 +932,38 @@ machine and every CPU, memory, storage, network, and device charge rolls up to
 that owner.
 
 The current Linux adapter is lazy and principal-resident. The affined Store owns
-one optional 32 MiB single-hart machine. `linux-boot`, `linux-console`, or
+one optional single-hart machine with a proven 32 MiB default and an explicitly
+configured 32–256 MiB guest-RAM envelope. `linux-boot`, `linux-console`, or
 `linux-sh` creates it when cold, advances Linux in bounded 100,000-step slices
 until the controlled `/init` reports ready, and retains its CPU and RAM for later
 invocations. A `counter` probe reaches 1 and then 2 across separate calls, and a
 file written by UID 1000 under `/home/agent` is readable by a later shell call.
 No CPU runs while the Store is idle: every guest step occurs inside an admitted
 outer tool invocation and is charged to the verified principal.
+
+Resource admission is a strict intersection rather than an ambient host query:
+
+```text
+Astrid administrator's principal profile
+∩ capsule hard maximum
+∩ invoking principal's per-capsule Realm configuration
+∩ optional lower per-command request
+```
+
+The outer principal profile remains authoritative for Wasmtime memory, CPU rate,
+storage, processes, and timeout. The inner configuration currently selects guest
+RAM, interpreted steps, and captured output. It is read for every invocation and
+never cached across principals. A changed envelope destroys only that
+principal's warm RAM before the next execution; durable home and workspace
+authority are reattached, and another principal's Store is untouched. Status is
+read-only and reports configured versus active values plus a pending-change bit.
+
+The capsule cannot yet read the exact enclosing Store ceiling through the frozen
+host ABI, so it does not pretend to derive RAM automatically from the physical
+machine or consume the maximum. A future versioned host resource-admission query
+may turn `auto` into a concrete audited allocation. Until then, the administrator
+sets the outer principal quota and the Realm's guest-RAM request separately; an
+undersized outer quota fails closed at the existing Wasmtime limiter.
 
 Every non-boot command uses a fresh 128-bit host-CSPRNG token. PID 1 disables
 console echo and emits token-bound begin/end frames; the host accepts the final
@@ -1660,6 +1685,10 @@ CE set rather than test-installed companions.
 - [x] keep one RV64 machine in the affined Store, leave PID 1 alive, and add a
   bounded framed console command transport with cross-invocation userspace-state
   proof, clean shutdown, restart, and fail-closed RAM destruction;
+- [x] resolve a bounded inner Linux resource envelope per principal invocation,
+  expose configured versus active values, and cold-reconfigure only that
+  principal's warm machine while retaining Astrid's principal profile as the
+  outer authority;
 - [x] replace the proof initramfs with pinned Buildroot 2026.05.1, static musl
   1.2.6 and BusyBox 1.38.0; execute `ash` as UID 1000 through token-bound
   frames, strip privilege bits, close console input, bound descendants and prove
@@ -1799,12 +1828,13 @@ system also exposes structured truth that a shell traditionally hides:
 - package hooks execute in disposable attenuated child realms rather than gaining
   the authority of the interactive workbench.
 
-Possible profiles are:
-
-- `aos-realm-minimal`: shell, files, pipes, core utilities;
-- `aos-realm-python`: Python plus pinned package tooling;
-- `aos-realm-rust`: Rust toolchain, linker, and `astrid-build`;
-- `aos-realm-agent`: supported agent CLI runtime and exact dependencies.
+There is one supported distribution: `AOS Realm`. Its minimal Linux, musl,
+BusyBox, AOS init, verifier, and content-store client form the permanent trusted
+bootstrap and recovery system. Bash, Git, Python, Rust, Node, Astrid build tools,
+and agent applications become signed packages or selected system generations
+inside that distribution, not separately branded distros. The minimal system
+must remain capable of verifying and selecting a repaired generation even when a
+larger toolchain generation does not boot.
 
 Every image is immutable and identified by its manifest and block hashes. Package
 installation mutates only a realm overlay. Reproducible jobs name an exact base and

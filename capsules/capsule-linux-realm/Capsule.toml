@@ -23,6 +23,14 @@ kv = []
 fs_read = ["cwd://", "home://.local/share/aos-realm/", "home://.local/tmp/aos-realm/"]
 fs_write = ["cwd://", "home://.local/share/aos-realm/", "home://.local/tmp/aos-realm/"]
 
+# Principal-resolved inner Realm admission. Astrid's admin-owned principal
+# profile remains the outer CPU, memory, storage, and timeout authority; these
+# values cannot enlarge the enclosing Wasmtime Store or bypass its meter.
+[env]
+linux_memory_bytes = { type = "integer", default = "33554432", request = "AOS Realm guest RAM in bytes (32 MiB to 256 MiB; requires a sufficient Astrid principal memory quota)" }
+linux_max_steps = { type = "integer", default = "50000000", request = "Maximum interpreted Linux guest steps per invocation (1 to 50000000)" }
+linux_max_output_bytes = { type = "integer", default = "65536", request = "Maximum Linux command output bytes per invocation (1 to 65536)" }
+
 [publish]
 "tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
 "tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
