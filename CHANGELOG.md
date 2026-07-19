@@ -19,19 +19,23 @@
 - Runtime import holds the standalone daemon's existing singleton lock without
   changing the source, and interrupted unreceipted cutovers always roll back
   before recopying the current locked source.
-- A signed release path for the 18 installable `aos-*` artifacts
+- A signed release path for the 19 installable `aos-*` artifacts
   built from this source tree and selected locally by Community Edition, with
   exact source/manifest identity checks, product-archive inclusion, offline
   provisioning, archive safety validation, BLAKE3 checksums, SHA-256
   compatibility checksums, Sigstore bundles, and provenance.
 - Host-target unit-test coverage for the capsule workspace.
+- Forge in the default Community Edition distribution, including a discoverable
+  meta-harness bootstrap and skill that teach fresh agents to supervise
+  platform-scoped workers, resolve capability gaps, and quarantine generated
+  capabilities until independent verification and approval.
 - Homebrew formula updates initiated by the tap's authenticated stable-release
   poll, eliminating the cross-repository dispatch credential.
 - Strict, signed stable/dev/nightly channel and immutable release metadata
   contracts with exact workflow identities, expiry, replay-resistant generation
   state, and fail-closed direct installer resolution.
 - A native release gate that initializes a clean AOS home, verifies the exact
-  18-capsule CE lock, grants, and ready set, repeats initialization without
+  19-capsule CE lock, grants, and ready set, repeats initialization without
   changing runtime state, and proves clean daemon shutdown before publication.
 - Native `aos status` output for authenticated running state and verified
   stopped state without invoking the runtime CLI.
@@ -42,6 +46,8 @@
 
 ### Changed
 
+- Target the Telegram capsule's actual `aos-telegram` package name in CI so the
+  WASI job and target-specific workspace exclusions run as intended.
 - Parse AOS-owned commands with Clap-generated validation and help while
   preserving byte-for-byte delegation of inherited runtime commands and their
   help surfaces.

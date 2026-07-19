@@ -1,0 +1,4 @@
+interface:
+  display_name: "Meta Harness"
+  short_description: "Build governed capabilities for Unicity AOS"
+  default_prompt: "Use $meta-harness to connect a platform, supervise its worker, and safely fill any missing capability."

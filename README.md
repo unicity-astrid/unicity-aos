@@ -19,7 +19,7 @@ docs/         Product and operator documentation
 ## Install
 
 The supported installer installs the `aos` product command, its pinned runtime,
-and the exact 18 Community Edition capsules built from this source tree under
+and the exact 19 Community Edition capsules built from this source tree under
 the product-owned `~/.aos` root:
 
 ```sh
@@ -63,6 +63,18 @@ Use the standalone runtime CLI when the raw command is required:
 astrid status
 astrid init --help
 ```
+
+## Meta harness
+
+Unicity AOS is the governed harness around its agents. Community Edition ships
+Forge as its capability-construction arm: a fresh agent can inspect the running
+system, learn the capsule model, identify a real capability gap, and build and
+verify a least-privilege capsule. Forge also installs the `meta-harness` skill,
+which defines platform-scoped background workers and prevents generated
+capabilities from granting or promoting themselves.
+
+See [Meta-harness architecture](docs/meta-harness.md) for the worker lifecycle,
+Forge boundary, safety gates, and representative user experiences.
 
 Provisioning another principal keeps the authenticated operator separate from
 the target environment:

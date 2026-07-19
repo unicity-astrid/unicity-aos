@@ -85,13 +85,15 @@ class CapsuleReleaseTests(unittest.TestCase):
             write_fixture(directory / spec.asset, spec)
 
     def test_source_contract_has_exact_community_set(self) -> None:
-        self.assertEqual(len(self.specs), 18)
-        self.assertEqual(len({spec.asset for spec in self.specs}), 18)
-        self.assertNotIn("aos-telegram.capsule", {spec.asset for spec in self.specs})
+        self.assertEqual(len(self.specs), 19)
+        self.assertEqual(len({spec.asset for spec in self.specs}), 19)
+        assets = {spec.asset for spec in self.specs}
+        self.assertIn("aos-forge.capsule", assets)
+        self.assertNotIn("aos-telegram.capsule", assets)
         distro = Path(__file__).resolve().parent.parent / "distros/community/unicity-ce/Distro.toml"
         text = distro.read_text(encoding="utf-8")
         self.assertNotIn("@unicity-aos/", text)
-        self.assertEqual(text.count('source = "capsules/'), 18)
+        self.assertEqual(text.count('source = "capsules/'), 19)
         for spec in self.specs:
             self.assertIn(f'source = "capsules/{spec.asset}"', text)
 

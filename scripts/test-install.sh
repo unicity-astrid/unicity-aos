@@ -251,7 +251,7 @@ release_dir="$work/home/.aos/releases/2026.1.1"
 test -f "$release_dir/release-manifest.json"
 test -f "$release_dir/Distro.toml"
 test -f "$release_dir/capsule-assets.txt"
-test "$(find "$release_dir/capsules" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 18
+test "$(find "$release_dir/capsules" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 19
 while IFS= read -r capsule; do
   cmp "$work/capsules/$capsule" "$release_dir/capsules/$capsule"
 done < "$release_dir/capsule-assets.txt"
@@ -608,7 +608,7 @@ for binary in aos astrid astrid-daemon astrid-build astrid-emit; do
   test "$("$destination")" = "old-$binary"
 done
 test "$(cat "$release_dir/release-manifest.json")" = old-release-manifest
-test "$(find "$release_dir/capsules" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 18
+test "$(find "$release_dir/capsules" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 19
 while IFS= read -r capsule; do
   cmp "$work/capsules/$capsule" "$release_dir/capsules/$capsule"
 done < "$release_dir/capsule-assets.txt"

@@ -843,10 +843,15 @@ the above without leaving the chat:
 | Tool | Use it when |
 |---|---|
 | `forge_quickstart` | You want the condensed build-your-first-capsule guide inline. |
+| `meta_harness_quickstart` | You need to supervise platform workers or fill a capability gap without allowing generated code to self-promote. |
 | `scaffold_capsule { name }` | You want a complete compiling skeleton as `path -> content` JSON to write out. |
 | `explain_interface { name }` | You need to read a WIT contract (e.g. `tool`, `llm`, `session`) plus a plain-English summary. |
 | `suggest_capabilities { intent }` | You describe what the capsule should do and get the exact manifest lines (incl. real LLM-provider topics). |
 | `validate_manifest { toml }` | You want your `Capsule.toml` linted for the common mistakes before you build. |
 | `capsule_doctor { name }` | A capsule loaded but its tools don't appear, or an import is unsatisfied — diagnose it. |
+
+Load the `meta-harness` skill before building a capability on an agent's own
+initiative. It defines the evidence, quarantine, evaluation, approval, and
+rollback gates around this authoring loop.
 
 Welcome to capsule authoring. Scaffold one and ship it.

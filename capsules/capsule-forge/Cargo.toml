@@ -2,7 +2,7 @@
 name = "aos-forge"
 version = "0.1.0"
 edition = "2024"
-description = "Capsule-authoring forge for Unicity AOS components"
+description = "Meta-harness construction arm for inspecting and extending Unicity AOS safely"
 license = "MIT OR Apache-2.0"
 publish = false
 

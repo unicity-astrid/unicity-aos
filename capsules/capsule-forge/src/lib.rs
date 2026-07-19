@@ -5,10 +5,10 @@
 
 //! Capsule-authoring forge for Unicity AOS.
 //!
-//! Gives a fresh LLM the tools and a Skill to build capsules from zero
-//! knowledge: scaffold a compiling skeleton, read WIT contracts, map an intent
-//! to the exact manifest capabilities, validate a `Capsule.toml`, and diagnose a
-//! capsule that loaded but whose tools don't appear.
+//! Gives a fresh LLM the tools and Skills to understand Unicity AOS, build
+//! capsules from zero knowledge, and participate safely in the AOS meta-harness:
+//! inspect contracts, scaffold a compiling skeleton, map an intent to manifest
+//! capabilities, validate a `Capsule.toml`, and diagnose an installation.
 //!
 //! All operations go through the kernel's VFS and capability system — the
 //! capsule cannot bypass sandbox boundaries.
@@ -16,6 +16,7 @@
 //! # Tools
 //!
 //! - `forge_quickstart` — the inline build-your-first-capsule guide
+//! - `meta_harness_quickstart` — the governed capability-acquisition loop
 //! - `scaffold_capsule` — a complete compiling tool-capsule skeleton as JSON
 //! - `explain_interface` — read a WIT contract + a prose summary
 //! - `suggest_capabilities` — map an intent to the exact manifest lines
@@ -41,8 +42,14 @@ const WIT_DIR: &str = "home://wit";
 /// the skill the system capsule already ships.
 const CAPSULE_FORGE_SKILL: &str = include_str!("skills/capsule-forge/SKILL.md");
 
+/// Skill installed to `home://skills/meta-harness/SKILL.md` on install.
+const META_HARNESS_SKILL: &str = include_str!("skills/meta-harness/SKILL.md");
+
 /// Inline quickstart returned by `forge_quickstart` — the condensed front door.
 const QUICKSTART_MD: &str = include_str!("quickstart.md");
+
+/// Inline meta-harness bootstrap returned by `meta_harness_quickstart`.
+const META_HARNESS_QUICKSTART_MD: &str = include_str!("meta_harness_quickstart.md");
 
 /// Guidance appended to every `capsule_doctor` result. The describe fan-out
 /// race (incomplete on first prompt after boot) is fixed in the current kernel,
@@ -134,8 +141,8 @@ fn list_entries(path: &str) -> Result<Vec<String>, SysError> {
 
 #[capsule]
 impl ForgeTools {
-    /// Write the capsule-forge Skill to `home://skills/capsule-forge/SKILL.md`
-    /// so the skills capsule can surface it to the LLM.
+    /// Write the Forge and meta-harness Skills under `home://skills/` so the
+    /// skills capsule can surface them to the LLM.
     #[astrid::install]
     pub fn on_install(&self) -> Result<(), SysError> {
         // home:// may be unavailable during lifecycle dispatch when installing
@@ -146,6 +153,11 @@ impl ForgeTools {
             "home://skills/capsule-forge/SKILL.md",
             CAPSULE_FORGE_SKILL.as_bytes(),
         );
+        let _ = astrid_sdk::fs::create_dir_all("home://skills/meta-harness");
+        let _ = astrid_sdk::fs::write(
+            "home://skills/meta-harness/SKILL.md",
+            META_HARNESS_SKILL.as_bytes(),
+        );
         Ok(())
     }
 
@@ -154,6 +166,13 @@ impl ForgeTools {
     #[astrid::tool("forge_quickstart")]
     pub fn forge_quickstart(&self, _args: EmptyArgs) -> Result<String, SysError> {
         Ok(QUICKSTART_MD.to_string())
+    }
+
+    /// Explain how AOS supervises platform workers, handles capability gaps,
+    /// and uses Forge without allowing generated code to self-promote.
+    #[astrid::tool("meta_harness_quickstart")]
+    pub fn meta_harness_quickstart(&self, _args: EmptyArgs) -> Result<String, SysError> {
+        Ok(META_HARNESS_QUICKSTART_MD.to_string())
     }
 
     /// Scaffold a complete, compiling tool-capsule skeleton. Returns a JSON
@@ -508,6 +527,44 @@ fn collect_export_keys(map: &serde_json::Map<String, Value>, out: &mut Vec<Strin
             for name in obj.keys() {
                 out.push(format!("{ns}:{name}"));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{META_HARNESS_QUICKSTART_MD, META_HARNESS_SKILL};
+
+    #[test]
+    fn meta_harness_bootstrap_preserves_authority_boundaries() {
+        for required in [
+            "Forge is part of the meta harness",
+            "(principal, platform, account)",
+            "Do not invent scopes, permissions, numeric budgets",
+            "A shell process is not an agent",
+            "The proposer never promotes its own capability",
+        ] {
+            assert!(
+                META_HARNESS_QUICKSTART_MD.contains(required),
+                "meta-harness quickstart lost required boundary: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn meta_harness_skill_teaches_discovery_before_generation() {
+        for required in [
+            "name: meta-harness",
+            "Forge is the construction arm, not the supervisor",
+            "Reuse an installed tool or capsule",
+            "Do not invent repository/account scope",
+            "Never let a candidate capability promote itself",
+            "Definition of done",
+        ] {
+            assert!(
+                META_HARNESS_SKILL.contains(required),
+                "meta-harness skill lost required instruction: {required}"
+            );
         }
     }
 }

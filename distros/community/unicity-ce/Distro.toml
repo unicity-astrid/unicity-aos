@@ -125,6 +125,11 @@ name = "aos-system"
 source = "capsules/aos-system.capsule"
 version = "0.2.0"
 
+[[capsule]]
+name = "aos-forge"
+source = "capsules/aos-forge.capsule"
+version = "0.1.0"
+
 # ---------------------------------------------------------------------------
 # Extensions
 # ---------------------------------------------------------------------------

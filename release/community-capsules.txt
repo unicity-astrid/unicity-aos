@@ -17,6 +17,7 @@ capsule-shell
 capsule-http
 capsule-fs
 capsule-system
+capsule-forge
 capsule-skills
 capsule-agents
 capsule-memory
