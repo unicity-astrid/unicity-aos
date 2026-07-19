@@ -1591,12 +1591,12 @@ mod tests {
         write(
             &source,
             "home/bob/.config/distro.lock",
-            b"[distro]\nid = \"aos-ce\"\nversion = \"2026.1.1\"\n",
+            b"[distro]\nid = \"aos-ce\"\nversion = \"2026.1.2\"\n",
         );
         write(
             &source,
             "home/carol/.config/distro.lock",
-            b"[distro]\nid = \"unicity-ce\"\nversion = \"2026.1.1\"\n",
+            b"[distro]\nid = \"unicity-ce\"\nversion = \"2026.1.2\"\n",
         );
         write(
             &source,
@@ -1989,13 +1989,13 @@ mod tests {
         write(&source, "keys/runtime.key", b"runtime-key");
         install_product_runtime(&product);
         let astralis = b"[distro]\nid = \"astralis\"\nversion = \"0.2.2\"\n";
-        let aos_ce = b"[distro]\nid = \"aos-ce\"\nversion = \"2026.1.1\"\n";
+        let aos_ce = b"[distro]\nid = \"aos-ce\"\nversion = \"2026.1.2\"\n";
         write(&source, "home/alice/.config/distro.lock", astralis);
         write(&source, "home/bob/.config/distro.lock", aos_ce);
         write(
             &source,
             "home/carol/.config/distro.lock",
-            b"[distro]\nid = \"unicity-ce\"\nversion = \"2026.1.1\"\n",
+            b"[distro]\nid = \"unicity-ce\"\nversion = \"2026.1.2\"\n",
         );
         write(&source, "home/dan/.config/distro.lock", b"not toml");
 
@@ -2011,7 +2011,7 @@ mod tests {
                 super::LegacyDistro {
                     principal: "bob".into(),
                     id: "aos-ce".into(),
-                    version: "2026.1.1".into()
+                    version: "2026.1.2".into()
                 },
             ]
         );

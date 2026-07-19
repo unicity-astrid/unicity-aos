@@ -680,7 +680,7 @@ exit 23
     for args in [
         vec!["update", "--version", "2026.01.0"],
         vec!["update", "--version", "2025.9.0"],
-        vec!["update", "--channel", "dev", "--version", "2026.1.1"],
+        vec!["update", "--channel", "dev", "--version", "2026.1.2"],
     ] {
         assert!(
             !fixture
@@ -755,7 +755,7 @@ fn native_status_reports_stopped_without_invoking_the_runtime_cli() {
         assert!(output.stderr.is_empty());
         let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
         assert!(stdout.contains("stopped"));
-        assert!(stdout.contains("0.10.1"));
+        assert!(stdout.contains("0.10.2"));
     }
 }
 

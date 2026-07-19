@@ -128,7 +128,7 @@ snapshot_imported_directories() {
 snapshot_shipped_assets() {
   local home=$1
   local output=$2
-  local release=$home/releases/2026.1.1
+  local release=$home/releases/2026.1.2
   : > "$output"
   printf '%s|bin/aos\n' "$(b3sum -- "$home/bin/aos" | awk '{print $1}')" >> "$output"
   for name in astrid astrid-daemon astrid-build astrid-emit; do
@@ -137,7 +137,7 @@ snapshot_shipped_assets() {
       "$name" >> "$output"
   done
   while IFS= read -r capsule; do
-    printf '%s|releases/2026.1.1/capsules/%s\n' \
+    printf '%s|releases/2026.1.2/capsules/%s\n' \
       "$(b3sum -- "$release/capsules/$capsule" | awk '{print $1}')" \
       "$capsule" >> "$output"
   done < "$release/capsule-assets.txt"
@@ -162,7 +162,7 @@ python3 "$repo_root/scripts/create-astrid-094-fixture.py" "$legacy"
 
 cargo build --locked -p unicity-aos-bootstrap --bin aos
 product_binary=$repo_root/target/debug/aos
-test "$($product_binary --version)" = 'Unicity AOS 2026.1.1'
+test "$($product_binary --version)" = 'Unicity AOS 2026.1.2'
 
 PYTHONPATH="$repo_root/scripts" python3 - "$capsules" <<'PY'
 import pathlib
@@ -231,7 +231,7 @@ bash "$repo_root/scripts/package-release.sh" \
   "$capsules" \
   "$fixture" >/dev/null
 
-asset=$fixture/unicity-aos-2026.1.1-$target.tar.gz
+asset=$fixture/unicity-aos-2026.1.2-$target.tar.gz
 bundle=$asset.sigstore.json
 cp "$asset" "$fixture/signed-asset.tar.gz"
 printf 'valid Sigstore fixture\n' > "$fixture/valid.sigstore.json"
@@ -239,16 +239,16 @@ cp "$fixture/valid.sigstore.json" "$bundle"
 asset_sha256=$(shasum -a 256 "$asset" | awk '{print $1}')
 asset_blake3=$(b3sum "$asset" | awk '{print $1}')
 asset_size=$(wc -c < "$asset" | tr -d ' ')
-release_metadata=$fixture/unicity-aos-2026.1.1-release.toml
+release_metadata=$fixture/unicity-aos-2026.1.2-release.toml
 cat > "$release_metadata" <<EOF
 schema-version = 1
 kind = "aos-release"
 product = "unicity-aos-ce"
-version = "2026.1.1"
-tag = "2026.1.1"
+version = "2026.1.2"
+tag = "2026.1.2"
 source-commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 published-at = "2026-07-16T10:00:00Z"
-release-workflow-identity = "https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/2026.1.1"
+release-workflow-identity = "https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/2026.1.2"
 
 [runtime]
 repository = "astrid-runtime/astrid"
@@ -271,7 +271,7 @@ release-ready = false
 upgrade-self-heal-ready = false
 EOF
 for metadata_target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-  metadata_asset="unicity-aos-2026.1.1-${metadata_target}.tar.gz"
+  metadata_asset="unicity-aos-2026.1.2-${metadata_target}.tar.gz"
   cat >> "$release_metadata" <<EOF
 
 [targets.${metadata_target}]
@@ -342,7 +342,7 @@ install_candidate() {
   PATH="$fake_bin:$PATH" \
   HOME="$home" \
   AOS_TEST_FIXTURE="$fixture" \
-  AOS_VERSION=2026.1.1 \
+  AOS_VERSION=2026.1.2 \
   sh "$repo_root/install.sh" --yes --no-migrate-prompt >/dev/null
 }
 
@@ -419,16 +419,16 @@ for name in aos astrid astrid-daemon astrid-build astrid-emit; do
   chmod 755 "$destination"
 done
 while IFS= read -r capsule; do
-  printf 'tampered capsule\n' > "$aos_home/releases/2026.1.1/capsules/$capsule"
-done < "$aos_home/releases/2026.1.1/capsule-assets.txt"
+  printf 'tampered capsule\n' > "$aos_home/releases/2026.1.2/capsules/$capsule"
+done < "$aos_home/releases/2026.1.2/capsule-assets.txt"
 chmod 755 \
   "$aos_home" \
   "$aos_home/bin" \
   "$aos_home/runtime" \
   "$aos_home/runtime/bin" \
   "$aos_home/releases" \
-  "$aos_home/releases/2026.1.1" \
-  "$aos_home/releases/2026.1.1/capsules"
+  "$aos_home/releases/2026.1.2" \
+  "$aos_home/releases/2026.1.2/capsules"
 
 install_candidate
 assert_imported_activation_layout "$aos_home/runtime"
@@ -440,8 +440,8 @@ for directory in \
   "$aos_home/runtime" \
   "$aos_home/runtime/bin" \
   "$aos_home/releases" \
-  "$aos_home/releases/2026.1.1" \
-  "$aos_home/releases/2026.1.1/capsules"; do
+  "$aos_home/releases/2026.1.2" \
+  "$aos_home/releases/2026.1.2/capsules"; do
   test "$(mode_of "$directory")" = 700
 done
 

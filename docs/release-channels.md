@@ -11,8 +11,8 @@ curl --proto '=https' --tlsv1.2 -fsSL https://aos.unicity.ai/install.sh | sh -s 
 An exact release is a separate, mutually exclusive operation:
 
 ```sh
-sh install.sh --version 2026.1.1
-sh install.sh --version 2026.1.1-nightly.20260717.g<40-character-source-commit>
+sh install.sh --version 2026.1.2
+sh install.sh --version 2026.1.2-nightly.20260719.g<40-character-source-commit>
 ```
 
 An exact nightly pin is deliberate and bypasses the moving channel pointer. It

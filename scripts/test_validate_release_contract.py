@@ -129,11 +129,11 @@ class ReleaseReadinessTests(unittest.TestCase):
             )
 
     def test_nightly_product_version_requires_a_real_date(self) -> None:
-        valid = "2026.1.1-nightly.20260717.g" + "a" * 40
+        valid = "2026.1.2-nightly.20260717.g" + "a" * 40
         VALIDATOR.validate_product_version(valid, allow_nightly=True)
         with self.assertRaisesRegex(ValueError, "invalid date"):
             VALIDATOR.validate_product_version(
-                "2026.1.1-nightly.20260230.g" + "a" * 40,
+                "2026.1.2-nightly.20260230.g" + "a" * 40,
                 allow_nightly=True,
             )
         with self.assertRaisesRegex(ValueError, "allowed calendar"):
