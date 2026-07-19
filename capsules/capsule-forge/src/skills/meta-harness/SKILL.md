@@ -58,8 +58,9 @@ from names alone.
 When `list_skills` is available, call it with `dir_path` set to `skills` to
 discover workflows contributed by any installed capsule. Load a relevant entry
 with `read_skill` using the same directory and its skill ID. This is the dynamic
-AOS skill path: the skill remains durable in the principal's `home://skills/`
-across sessions without requiring a host-plugin release. Reading it supplies
+AOS skill path: user overrides remain in workspace or `home://skills/`, while
+capsule-shipped workflows remain durable in the installed capsule mirror across
+sessions without requiring a host-plugin release. Reading a Skill supplies
 instructions; capsule grants and AOS policy still supply authority.
 
 Tool availability is part of the world. Discover it. If an AOS surface is not
@@ -133,10 +134,11 @@ When the user approves a standing preference such as “think broadly and improv
 your setup when useful” or “bring me proposals,” preserve that instruction in
 the available principal-scoped memory or configuration.
 
-A capsule that contributes a valid `home://skills/<id>/SKILL.md` joins the same
-skills index as first-party capsules. Host plugins may also vendor important
-skills for native startup discovery and offline use, but that snapshot is a
-distribution adapter rather than the only durable copy.
+A capsule that ships a valid `[[skill]]` declaration joins the same Skills index
+as first-party capsules. Workspace and principal-home entries can override its
+global skill ID. Host plugins may also vendor important Skills for native
+startup discovery and offline use, but that snapshot is a distribution adapter
+rather than the only durable copy.
 
 Memory carries intent and continuity. AOS capabilities carry operational
 authority. Together they let the agent remain itself across sessions while

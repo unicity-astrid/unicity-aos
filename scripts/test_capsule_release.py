@@ -73,6 +73,14 @@ def write_fixture(path: Path, spec: CapsuleSpec, *, mutation: Optional[str] = No
             if mutation == "missing-component" and component == spec.components[0]:
                 continue
             add_bytes(archive, component, b"\x00asm")
+        for skill in spec.skills:
+            if mutation == "missing-skill" and skill == spec.skills[0]:
+                continue
+            add_bytes(
+                archive,
+                skill,
+                b"---\nname: fixture\ndescription: Release contract fixture\n---\n",
+            )
 
 
 class CapsuleReleaseTests(unittest.TestCase):
@@ -143,6 +151,23 @@ class CapsuleReleaseTests(unittest.TestCase):
 
     def test_rejects_missing_component(self) -> None:
         self.assert_mutation_rejected("missing-component")
+
+    def test_accepts_declared_skill_assets(self) -> None:
+        skill_specs = [spec for spec in self.specs if spec.skills]
+        self.assertTrue(skill_specs)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            self.fixture_set(directory)
+            validate_artifacts(directory, self.specs)
+
+    def test_rejects_missing_declared_skill_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            self.fixture_set(directory)
+            spec = next(spec for spec in self.specs if spec.skills)
+            write_fixture(directory / spec.asset, spec, mutation="missing-skill")
+            with self.assertRaises(ContractError):
+                validate_artifacts(directory, self.specs)
 
     def test_rejects_unexpected_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

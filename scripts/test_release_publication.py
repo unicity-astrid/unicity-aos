@@ -42,6 +42,8 @@ class ReleasePublicationTests(unittest.TestCase):
                 add_file(archive, "Capsule.toml", spec.manifest.read_bytes())
                 for component in spec.components:
                     add_file(archive, component, b"\0asm")
+                for skill in spec.skills:
+                    add_file(archive, skill, (spec.manifest.parent / skill).read_bytes())
 
         for target in release_metadata.TARGETS:
             (artifacts / f"unicity-aos-{VERSION}-{target}.tar.gz").write_bytes(

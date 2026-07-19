@@ -37,14 +37,6 @@ const CAPSULES_DIR: &str = "home://.local/capsules";
 /// Standard WIT interface directory — per-principal, accessible via `home://wit/`.
 const WIT_DIR: &str = "home://wit";
 
-/// Skill installed to `home://skills/capsule-forge/SKILL.md` on install.
-/// Named `capsule-forge` (not `capsule-development`) to avoid colliding with
-/// the skill the system capsule already ships.
-const CAPSULE_FORGE_SKILL: &str = include_str!("skills/capsule-forge/SKILL.md");
-
-/// Skill installed to `home://skills/meta-harness/SKILL.md` on install.
-const META_HARNESS_SKILL: &str = include_str!("skills/meta-harness/SKILL.md");
-
 /// Inline quickstart returned by `forge_quickstart` — the condensed front door.
 const QUICKSTART_MD: &str = include_str!("quickstart.md");
 
@@ -141,26 +133,6 @@ fn list_entries(path: &str) -> Result<Vec<String>, SysError> {
 
 #[capsule]
 impl ForgeTools {
-    /// Write the Forge and meta-harness Skills under `home://skills/` so the
-    /// skills capsule can surface them to the LLM.
-    #[astrid::install]
-    pub fn on_install(&self) -> Result<(), SysError> {
-        // home:// may be unavailable during lifecycle dispatch when installing
-        // without a running daemon; ignore host errors so the skill is written
-        // on the next full boot once the principal home is mounted.
-        let _ = astrid_sdk::fs::create_dir_all("home://skills/capsule-forge");
-        let _ = astrid_sdk::fs::write(
-            "home://skills/capsule-forge/SKILL.md",
-            CAPSULE_FORGE_SKILL.as_bytes(),
-        );
-        let _ = astrid_sdk::fs::create_dir_all("home://skills/meta-harness");
-        let _ = astrid_sdk::fs::write(
-            "home://skills/meta-harness/SKILL.md",
-            META_HARNESS_SKILL.as_bytes(),
-        );
-        Ok(())
-    }
-
     /// Get the build-your-first-capsule guide: the minimal file set, the
     /// build→install→verify loop, and the top footguns. Start here.
     #[astrid::tool("forge_quickstart")]
@@ -357,8 +329,11 @@ fn suggest_from_intent(intent: &str) -> Vec<Value> {
         ));
     }
     if any(&["write file", "write files", "save file", "write to disk"]) {
-        out.push(cap("write files", "[capabilities]\nfs_write = [\"home://data/\"]",
-            "Write under a narrow prefix. fs_write to home://skills/ is how a capsule ships a Skill."));
+        out.push(cap(
+            "write files",
+            "[capabilities]\nfs_write = [\"home://data/\"]",
+            "Write under the narrowest prefix that contains the capsule's mutable data.",
+        ));
     }
     if any(&[
         "http",
@@ -533,7 +508,9 @@ fn collect_export_keys(map: &serde_json::Map<String, Value>, out: &mut Vec<Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{META_HARNESS_QUICKSTART_MD, META_HARNESS_SKILL};
+    use super::META_HARNESS_QUICKSTART_MD;
+
+    const META_HARNESS_SKILL: &str = include_str!("skills/meta-harness/SKILL.md");
 
     #[test]
     fn meta_harness_bootstrap_teaches_proactive_world_extension() {

@@ -12,7 +12,16 @@ type = "executable"
 
 [capabilities]
 fs_read  = ["home://"]
-fs_write = ["home://skills/"]
+
+[[skill]]
+name = "capsule-forge"
+description = "Build and diagnose current Unicity AOS capsules and harnesses"
+file = "src/skills/capsule-forge/SKILL.md"
+
+[[skill]]
+name = "meta-harness"
+description = "Proactively improve an agent's user-space world on Unicity AOS"
+file = "src/skills/meta-harness/SKILL.md"
 
 # Publish ACL: the [publish] keys are the only IPC-publish declaration.
 # These two are the mandatory tool-bus boilerplate — without them tool

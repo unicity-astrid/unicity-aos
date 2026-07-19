@@ -119,8 +119,9 @@ aos status                                      # confirm the daemon is healthy
 3. **No checked-in `wit/`** — the WIT is generated at build time.
 4. **Install via `aos capsule install`**, never hand-copy the `.wasm` — install is
    content-addressed.
-5. **A Skill needs an `#[astrid::install]` hook** (`include_str!` + `fs::write`) to land;
-   the static engine is a no-op.
+5. **Declare shipped Skills with `[[skill]]`** and a relative file path. The
+   builder packages the asset and AOS indexes it from the installed capsule;
+   do not copy it from an install hook.
 6. **No hot-reload** — rebuild and reinstall to iterate.
 7. **`tool_describe` must publish, not return** — handled for you by depending on
    `astrid-sdk = "0.7"` (0.7.1+). If a tool is in the manifest but the model can't see it,

@@ -48,6 +48,8 @@ while IFS=$'\t' read -r directory package; do
   test -f "$output_dir/$package.capsule"
 done < "$plan"
 
+python3 "$repo_root/scripts/validate_capsule_skills.py" "$output_dir"
+
 if ! cmp -s "$lock_snapshot" "$repo_root/Cargo.lock"; then
   echo "capsule builds changed Cargo.lock; release builds must use the committed lock" >&2
   exit 1

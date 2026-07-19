@@ -117,6 +117,21 @@ fs_write = ["home://data/my-capsule/"]
 "tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
 ```
 
+To ship a reusable Skill with the capsule, keep the file inside the capsule
+source tree and declare it in the same manifest:
+
+```toml
+[[skill]]
+name = "my-capsule-workflow"
+description = "Use my capsule for its supported workflow"
+file = "skills/my-capsule-workflow/SKILL.md"
+```
+
+The capsule builder packages the declared file. AOS Skills discovers it from
+the installed capsule mirror for each materialized agent principal. An install
+hook and `fs_write = ["home://skills/"]` are not required for distribution;
+workspace and principal-home Skills remain higher-priority user overrides.
+
 The published `@unicity-astrid/wit/...` strings and `astrid:*` WIT namespaces
 are stable runtime identifiers. Keep them exact even though the product CLI is
 `aos`.

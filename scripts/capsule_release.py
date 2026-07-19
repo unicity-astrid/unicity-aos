@@ -13,6 +13,8 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from validate_capsule_skills import safe_relative_asset
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 and older
@@ -34,6 +36,7 @@ class CapsuleSpec:
     package: str
     version: str
     components: tuple[str, ...]
+    skills: tuple[str, ...]
     manifest: Path
 
     @property
@@ -130,6 +133,21 @@ def source_contract() -> list[CapsuleSpec]:
         if len(components) != len(set(components)):
             raise ContractError(f"{manifest_path}: duplicate component filename")
 
+        skill_entries = manifest.get("skill", [])
+        if not isinstance(skill_entries, list):
+            raise ContractError(f"{manifest_path}: [[skill]] entries must be an array")
+        skills: list[str] = []
+        for skill in skill_entries:
+            filename = skill.get("file") if isinstance(skill, dict) else None
+            if not isinstance(filename, str) or not safe_relative_asset(filename):
+                raise ContractError(f"{manifest_path}: unsafe skill asset path {filename!r}")
+            skills.append(filename)
+        if len(skills) != len(set(skills)):
+            raise ContractError(f"{manifest_path}: duplicate skill asset path")
+        reserved_members = {"Capsule.toml", *components}
+        if reserved_members.intersection(skills):
+            raise ContractError(f"{manifest_path}: skill asset collides with a reserved member")
+
         distro_entry = distro_by_name.get(cargo_name)
         if distro_entry is None:
             raise ContractError(f"{member}: {cargo_name} is not selected by Unicity CE")
@@ -150,6 +168,7 @@ def source_contract() -> list[CapsuleSpec]:
                 package=cargo_name,
                 version=cargo_version,
                 components=tuple(components),
+                skills=tuple(skills),
                 manifest=manifest_path,
             )
         )
@@ -215,7 +234,7 @@ def validate_archive(asset: Path, spec: CapsuleSpec) -> None:
             names[canonical_name] = member
             portability_names[portability_name] = canonical_name
 
-        expected_members = {"Capsule.toml", *spec.components}
+        expected_members = {"Capsule.toml", *spec.components, *spec.skills}
         if set(names) != expected_members:
             raise ContractError(
                 f"{asset}: archive member set differs; "
@@ -248,6 +267,19 @@ def validate_archive(asset: Path, spec: CapsuleSpec) -> None:
             member = names.get(component)
             if member is None or not member.isfile():
                 raise ContractError(f"{asset}: component {component} is missing")
+
+        embedded_skills = embedded.get("skill", [])
+        if not isinstance(embedded_skills, list):
+            raise ContractError(f"{asset}: embedded [[skill]] entries are invalid")
+        skill_files = tuple(
+            skill.get("file") for skill in embedded_skills if isinstance(skill, dict)
+        )
+        if skill_files != spec.skills:
+            raise ContractError(f"{asset}: embedded skill asset list does not match source manifest")
+        for skill in spec.skills:
+            member = names.get(skill)
+            if member is None or not member.isfile():
+                raise ContractError(f"{asset}: skill asset {skill} is missing")
 
 
 def validate_artifacts(directory: Path, specs: list[CapsuleSpec]) -> None:

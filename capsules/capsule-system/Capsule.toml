@@ -12,7 +12,11 @@ type = "executable"
 
 [capabilities]
 fs_read  = ["home://"]
-fs_write = ["home://skills/"]
+
+[[skill]]
+name = "capsule-development"
+description = "Build, test, package, install, and debug a current Unicity AOS capsule"
+file = "src/skills/capsule-development/SKILL.md"
 
 # Publish ACL: the [publish] keys are the only IPC-publish declaration.
 [publish]

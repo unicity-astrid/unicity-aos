@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 astrid-sdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }

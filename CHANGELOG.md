@@ -31,6 +31,10 @@
   tools, capsules, traces, and evaluations as an improvable world. Agents reach
   for Forge proactively when real work reveals a useful new capability, while
   optional workers remain a use-case choice rather than a prerequisite.
+- Generic capsule-contributed Skill discovery from installed `[[skill]]`
+  declarations. Workspace and principal-home Skills remain higher-priority
+  overrides, while Forge and System ship declarative assets instead of relying
+  on one-shot install-hook writes. Closes #43.
 - Homebrew formula updates initiated by the tap's authenticated stable-release
   poll, eliminating the cross-repository dispatch credential.
 - Strict, signed stable/dev/nightly channel and immutable release metadata

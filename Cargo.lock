@@ -244,6 +244,7 @@ dependencies = [
  "astrid-sdk 0.7.1",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
