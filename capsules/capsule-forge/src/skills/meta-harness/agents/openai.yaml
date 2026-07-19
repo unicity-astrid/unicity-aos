@@ -1,0 +1,4 @@
+interface:
+  display_name: "Meta Harness"
+  short_description: "Proactively extend your AOS agent world"
+  default_prompt: "Use $meta-harness to notice and build useful extensions to this AOS agent world while completing the work."

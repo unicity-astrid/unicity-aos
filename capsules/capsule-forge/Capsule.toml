@@ -1,7 +1,7 @@
 [package]
 name = "aos-forge"
 version = "0.1.0"
-description = "Capsule-authoring forge for Unicity AOS components"
+description = "Agent-facing construction tooling for building Unicity AOS capsules and harnesses"
 authors = ["Joshua J. Bouw <dev@joshuajbouw.com>", "Unicity Labs <info@unicity-labs.com>"]
 astrid-version = ">=0.7.0"
 
@@ -27,6 +27,7 @@ fs_write = ["home://skills/"]
 # #[astrid::tool] annotations — declared here but never hand-written.
 [subscribe]
 "tool.v1.execute.forge_quickstart" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_forge_quickstart" }
+"tool.v1.execute.meta_harness_quickstart" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_meta_harness_quickstart" }
 "tool.v1.execute.scaffold_capsule" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_scaffold_capsule" }
 "tool.v1.execute.explain_interface" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_explain_interface" }
 "tool.v1.execute.suggest_capabilities" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_suggest_capabilities" }

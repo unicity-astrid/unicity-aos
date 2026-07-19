@@ -19,7 +19,7 @@ docs/         Product and operator documentation
 ## Install
 
 The supported installer installs the `aos` product command, its pinned runtime,
-and the exact 18 Community Edition capsules built from this source tree under
+and the exact 19 Community Edition capsules built from this source tree under
 the product-owned `~/.aos` root:
 
 ```sh
@@ -63,6 +63,24 @@ Use the standalone runtime CLI when the raw command is required:
 astrid status
 astrid init --help
 ```
+
+## Build on AOS
+
+Unicity AOS is the operating system in which agents and agent-native software
+run. Capsules are general user-space building blocks: users can compose them
+into harnesses, meta-harnesses, connectors, services, or other systems.
+Community Edition ships Forge as OS construction tooling so a fresh agent can
+inspect the running system, learn the capsule model, identify a real capability
+gap, and build and verify a least-privilege capsule. Forge also installs the
+`meta-harness` skill, which teaches an agent how to build a governed
+meta-harness on AOS by treating its instructions, memory, skills, harness code,
+tools, capsules, traces, and evaluations as an improvable user-space world. The
+agent is instructed to notice useful extensions during real work and reach for
+Forge proactively when new code is the right way to improve that world.
+
+See [Extending an agent's world on AOS](docs/meta-harness.md) for the world
+model, research loop, Forge boundary, optional worker pattern, and
+representative user experiences.
 
 Provisioning another principal keeps the authenticated operator separate from
 the target environment:

@@ -470,7 +470,7 @@ jobs:
 
           This product release bundles Astrid Runtime ${RUNTIME_TAG}. The exact runtime release identity, WIT commit, and compatibility pins are published in \`runtime-compatibility.toml\` and in every archive's \`release-manifest.json\`.
 
-          The release also contains the 18 signed, installable capsule artifacts selected by Community Edition. Published \`astrid-capsule-*\` identities remain unchanged.
+          The release also contains the 19 signed, installable capsule artifacts selected by Community Edition. Published \`astrid-capsule-*\` identities remain unchanged.
 
           Install this exact release:
 
