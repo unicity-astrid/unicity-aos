@@ -7,6 +7,7 @@
 
 mod actor;
 mod host;
+mod paths;
 
 use aos_realm_machine::{
     Machine as Rv64Machine, MachineConfig as Rv64MachineConfig, RV64_SMOKE_PROGRAM,
@@ -22,8 +23,12 @@ use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
 use host::{
-    AstridRealmHost, DEFAULT_CWD, REALM_NAME, ensure_layout, home_status, layout_state,
-    validate_cwd,
+    AstridRealmHost, DEFAULT_CWD, REALM_HOME, REALM_NAME, REALM_TMP, ensure_layout, home_status,
+    layout_state, validate_cwd,
+};
+use paths::{
+    MountContext, MountRole, PATH_CONTRACT_VERSION, PathConsumer, ProjectionState,
+    ReferenceStability,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +50,7 @@ const LINUX_PROTOCOL_PREFIX: &str = "AOS/1 ";
 const LINUX_FRAME_TOKEN_BYTES: usize = 16;
 const LINUX_FRAME_TOKEN_HEX_BYTES: usize = LINUX_FRAME_TOKEN_BYTES * 2;
 const MAX_LINUX_COMMAND_BYTES: usize = 1024;
+const LINUX_DEFAULT_CWD: &str = "/home/agent";
 #[cfg(target_arch = "wasm32")]
 const LINUX_COOPERATE_TOPIC: &str = "realm.v1.linux.cooperate";
 const AOS_LINUX_IMAGE: &[u8] = include_bytes!("../linux/Image");
@@ -88,6 +94,8 @@ pub struct ExecArgs {
     #[serde(default)]
     pub args: Vec<String>,
     /// Guest-visible CWD beneath `/workspace`, `/home/agent`, or `/tmp`.
+    /// The current Linux shell accepts only `/home/agent` until its workspace
+    /// projection is mounted; other Realm programs use `/workspace` by default.
     pub cwd: Option<String>,
     /// Optional lower fuel ceiling. It can never raise the capsule hard limit.
     pub fuel: Option<u64>,
@@ -102,7 +110,9 @@ struct ExecResponse {
     program: String,
     execution_backend: &'static str,
     argv: Vec<String>,
+    requested_cwd: Option<String>,
     cwd: String,
+    path_context: MountContext,
     outcome: &'static str,
     exit_status: Option<i32>,
     fault: Option<String>,
@@ -123,10 +133,22 @@ pub struct StatusArgs {}
 
 #[derive(Debug, Serialize)]
 struct MountStatus {
+    role: MountRole,
     guest_path: &'static str,
     source: &'static str,
+    declared_resource_root: &'static str,
+    display_name: &'static str,
     mode: &'static str,
     durable: bool,
+    reference_stability: ReferenceStability,
+    nested_wasm_projection: ProjectionState,
+    linux_projection: ProjectionState,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsumerCwdStatus {
+    consumer: PathConsumer,
+    cwd: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,7 +156,10 @@ struct StatusResponse {
     realm: &'static str,
     owner_principal: String,
     state: &'static str,
+    /// Kept as the nested-WASM default for compatibility. New consumers should
+    /// select from `cwd_defaults` by execution consumer.
     default_cwd: &'static str,
+    cwd_defaults: [ConsumerCwdStatus; 3],
     home: &'static str,
     home_storage: &'static str,
     home_format: u32,
@@ -142,6 +167,8 @@ struct StatusResponse {
     home_files: usize,
     home_manifest: Option<String>,
     mounts: Vec<MountStatus>,
+    path_contract_version: u32,
+    physical_host_paths_visible: bool,
     commands: [&'static str; 14],
     workspace_commit: &'static str,
     host_process: bool,
@@ -266,23 +293,35 @@ impl SelectedExecution {
             _ => HARD_MEMORY_BYTES,
         }
     }
+
+    const fn path_consumer(self) -> PathConsumer {
+        match self {
+            Self::Single(_) | Self::EchoPipeline | Self::GuestPipeline | Self::MiniShell => {
+                PathConsumer::NestedCoreWasm
+            }
+            Self::Rv64(_) => PathConsumer::BareRv64,
+            Self::Linux(_) => PathConsumer::LinuxGuest,
+        }
+    }
 }
 
 #[capsule]
 impl LinuxRealm {
     /// Run one signed command in the caller's principal-scoped AOS Realm.
     ///
-    /// `/workspace` maps to the invocation's confined Astrid copy-on-write
-    /// `cwd://` mount; its changes require an outer Astrid promotion.
-    /// `/home/agent` maps to durable principal-owned realm storage. Commands are
-    /// nested core WebAssembly modules and cannot invoke a host shell or process.
+    /// Nested core-WASM programs can use the confined `/workspace`, durable
+    /// `/home/agent`, and ephemeral `/tmp` Astrid projections. The Linux shell
+    /// currently runs in a separate RAM-only `/home/agent`; it rejects
+    /// `/workspace` until a real guest file transport mounts that projection.
+    /// The response describes the selected consumer and projection state.
     #[astrid::tool("linux_realm_exec", mutable)]
     pub fn exec(&self, args: ExecArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
         actor::execute_resident(&principal, args)
     }
 
-    /// Inspect the initialized realm without exposing physical host paths.
+    /// Discover the per-consumer CWD and mount projections without exposing
+    /// physical host paths. Call this before selecting a path for a Realm job.
     #[astrid::tool("linux_realm_status")]
     pub fn status(&self, args: StatusArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
@@ -304,7 +343,7 @@ fn run_command(
     realm_host: Box<dyn RealmHost>,
 ) -> Result<ExecResponse, SysError> {
     let mut machine = RealmMachine::default();
-    run_command_in_machine(args, principal, realm_host, &mut machine, 0)
+    run_command_in_machine(args, principal, realm_host, &mut machine, 0, 0)
 }
 
 fn run_command_in_machine(
@@ -313,8 +352,10 @@ fn run_command_in_machine(
     realm_host: Box<dyn RealmHost>,
     machine: &mut RealmMachine,
     boot_sequence: u64,
+    home_generation: u64,
 ) -> Result<ExecResponse, SysError> {
     let selected = select_program(&args)?;
+    let requested_cwd = args.cwd.clone();
     let cwd = args.cwd.clone().unwrap_or_else(|| DEFAULT_CWD.to_string());
     let hard_fuel = selected.execution.hard_fuel();
     let limits = RunLimits {
@@ -329,13 +370,27 @@ fn run_command_in_machine(
     process_ids.sort_unstable();
     let machine_status = machine.status();
     let (outcome, exit_status, fault) = outcome_fields(&report.outcome);
+    let path_context = MountContext::for_execution(
+        selected.execution.path_consumer(),
+        &cwd,
+        Some(home_generation),
+        boot_sequence,
+    )
+    .map_err(|error| {
+        SysError::ApiError(format!(
+            "failed to describe Realm path context: {}",
+            io_error_name(error)
+        ))
+    })?;
     Ok(ExecResponse {
         realm: REALM_NAME,
         owner_principal: principal,
         program: selected.name.to_string(),
         execution_backend: selected.execution.backend(),
         argv: selected.argv,
+        requested_cwd,
         cwd,
+        path_context,
         outcome,
         exit_status,
         fault,
@@ -1143,6 +1198,27 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
     })
 }
 
+fn linux_effective_cwd(
+    action: LinuxAction,
+    requested_cwd: Option<&str>,
+) -> Result<&'static str, SysError> {
+    if action != LinuxAction::Shell {
+        if requested_cwd.is_some() {
+            return Err(SysError::ApiError(
+                "cwd applies to linux-sh, not Linux lifecycle or diagnostic actions".to_string(),
+            ));
+        }
+        return Ok(LINUX_DEFAULT_CWD);
+    }
+
+    match requested_cwd {
+        None | Some(LINUX_DEFAULT_CWD) => Ok(LINUX_DEFAULT_CWD),
+        Some(path) => Err(SysError::ApiError(format!(
+            "linux-sh cannot use cwd `{path}` yet: /workspace is declared but not mounted into the Linux guest; use /home/agent until the file transport lands"
+        ))),
+    }
+}
+
 fn require_arity(command: &str, args: &[String], expected: usize) -> Result<(), SysError> {
     if args.len() == expected {
         Ok(())
@@ -1165,6 +1241,20 @@ fn status_response(
         owner_principal: principal,
         state,
         default_cwd: DEFAULT_CWD,
+        cwd_defaults: [
+            ConsumerCwdStatus {
+                consumer: PathConsumer::NestedCoreWasm,
+                cwd: Some(DEFAULT_CWD),
+            },
+            ConsumerCwdStatus {
+                consumer: PathConsumer::LinuxGuest,
+                cwd: Some(LINUX_DEFAULT_CWD),
+            },
+            ConsumerCwdStatus {
+                consumer: PathConsumer::BareRv64,
+                cwd: None,
+            },
+        ],
         home: "/home/agent",
         home_storage: "kv-cas-head+content-addressed-file-blobs",
         home_format: home_status.format,
@@ -1175,24 +1265,44 @@ fn status_response(
             .map(|digest| digest.as_str().to_string()),
         mounts: vec![
             MountStatus {
+                role: MountRole::AgentHome,
                 guest_path: "/home/agent",
                 source: "principal-home",
+                declared_resource_root: REALM_HOME,
+                display_name: "Agent Home",
                 mode: "rw",
                 durable: true,
+                reference_stability: ReferenceStability::PrincipalGeneration,
+                nested_wasm_projection: ProjectionState::Mounted,
+                linux_projection: ProjectionState::GuestRamOnly,
             },
             MountStatus {
+                role: MountRole::Workspace,
                 guest_path: "/workspace",
                 source: "invocation-cwd",
+                declared_resource_root: "cwd://",
+                display_name: "Workspace",
                 mode: "rw",
                 durable: false,
+                reference_stability: ReferenceStability::Invocation,
+                nested_wasm_projection: ProjectionState::Mounted,
+                linux_projection: ProjectionState::NotMounted,
             },
             MountStatus {
+                role: MountRole::Temporary,
                 guest_path: "/tmp",
                 source: "principal-tmp",
+                declared_resource_root: REALM_TMP,
+                display_name: "Temporary Files",
                 mode: "rw",
                 durable: false,
+                reference_stability: ReferenceStability::RealmBoot,
+                nested_wasm_projection: ProjectionState::Mounted,
+                linux_projection: ProjectionState::GuestRamOnly,
             },
         ],
+        path_contract_version: PATH_CONTRACT_VERSION,
+        physical_host_paths_visible: false,
         commands: [
             "pwd",
             "echo",
@@ -1324,6 +1434,45 @@ mod tests {
         assert_eq!(response.outcome, "exited");
         assert_eq!(response.exit_status, Some(0));
         assert_eq!(response.stdout, "/workspace/project\n");
+        assert_eq!(
+            response.requested_cwd.as_deref(),
+            Some("/workspace/project")
+        );
+        assert_eq!(response.cwd, "/workspace/project");
+        let json = serde_json::to_string(&response).expect("response serializes");
+        assert!(json.contains("\"consumer\":\"nested-core-wasm\""));
+        assert!(json.contains("\"resource_uri\":\"cwd://project\""));
+        assert!(json.contains("\"display_path\":\"Workspace/project\""));
+        assert!(json.contains("\"reference_stability\":\"invocation\""));
+    }
+
+    #[test]
+    fn linux_cwd_is_honest_until_the_file_transport_is_mounted() {
+        assert_eq!(
+            linux_effective_cwd(LinuxAction::Shell, None).expect("default Linux cwd"),
+            LINUX_DEFAULT_CWD
+        );
+        assert_eq!(
+            linux_effective_cwd(LinuxAction::Shell, Some(LINUX_DEFAULT_CWD))
+                .expect("explicit Linux home"),
+            LINUX_DEFAULT_CWD
+        );
+
+        let workspace_error = linux_effective_cwd(LinuxAction::Shell, Some("/workspace"))
+            .expect_err("an unmounted workspace cannot be selected");
+        assert!(
+            workspace_error
+                .to_string()
+                .contains("declared but not mounted")
+        );
+
+        let lifecycle_error = linux_effective_cwd(LinuxAction::Console, Some(LINUX_DEFAULT_CWD))
+            .expect_err("diagnostic actions do not accept a cwd");
+        assert!(
+            lifecycle_error
+                .to_string()
+                .contains("cwd applies to linux-sh")
+        );
     }
 
     #[test]
@@ -1927,6 +2076,13 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains("\"linux_guest_steps_this_actor_boot\":25000000"));
         assert!(json.contains("\"linux_outer_wasm_metering\":\"principal-affine-invocation\""));
         assert!(json.contains("\"component_residency\":\"principal-affine-store\""));
+        assert!(json.contains("\"path_contract_version\":1"));
+        assert!(json.contains("\"physical_host_paths_visible\":false"));
+        assert!(json.contains(
+            "\"cwd_defaults\":[{\"consumer\":\"nested-core-wasm\",\"cwd\":\"/workspace\"},{\"consumer\":\"linux-guest\",\"cwd\":\"/home/agent\"},{\"consumer\":\"bare-rv64\",\"cwd\":null}]"
+        ));
+        assert!(json.contains("\"linux_projection\":\"not-mounted\""));
+        assert!(json.contains("\"linux_projection\":\"guest-ram-only\""));
         assert!(json.contains("outer-astrid-promotion-required"));
         assert!(!json.contains("/Users/"));
         assert!(!json.contains(".astrid/home"));

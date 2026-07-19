@@ -28,6 +28,10 @@
 - The installable `aos-linux-realm` seed: principal-owned durable home storage,
   an Astrid copy-on-write workspace projection, and bounded nested-WASM `pwd`,
   `echo`, `write-file`, and `cat` commands with no host-process authority.
+- A versioned Linux Realm path-identity contract separating semantic mount IDs,
+  guest paths, Astrid resource URIs, and human display paths. Execution and
+  status responses now distinguish mounted nested-WASM projections from the
+  Linux guest's current RAM-only home and unmounted workspace.
 - Crash-consistent `aos-linux-realm` home generations: a principal-scoped atomic
   KV head selects immutable BLAKE3-addressed file and manifest blobs, with
   concurrent-writer retry, corruption checks, daemon-restart recovery, and lazy

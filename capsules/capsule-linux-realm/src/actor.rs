@@ -76,6 +76,7 @@ impl LinuxActivity {
         principal: &str,
         boot_sequence: u64,
         next_process_id: Option<u64>,
+        home_generation: u64,
     ) -> Result<ExecResponse, SysError> {
         let selected = select_program(&args)?;
         let SelectedExecution::Linux(action) = selected.execution else {
@@ -83,6 +84,8 @@ impl LinuxActivity {
                 "non-Linux command reached the Linux supervisor".to_string(),
             ));
         };
+        let requested_cwd = args.cwd.clone();
+        let cwd = linux_effective_cwd(action, requested_cwd.as_deref())?.to_string();
         let hard_fuel = selected.execution.hard_fuel();
         let limits = RunLimits {
             fuel: args.fuel.unwrap_or(hard_fuel).min(hard_fuel),
@@ -107,6 +110,18 @@ impl LinuxActivity {
         self.guest_steps = self.guest_steps.saturating_add(report.fuel_consumed);
         self.last_outcome = Some(report.outcome);
         self.last_exit_status = report.exit_status;
+        let path_context = MountContext::for_execution(
+            selected.execution.path_consumer(),
+            &cwd,
+            Some(home_generation),
+            boot_sequence,
+        )
+        .map_err(|error| {
+            SysError::ApiError(format!(
+                "failed to describe Linux path context: {}",
+                io_error_name(error)
+            ))
+        })?;
 
         Ok(ExecResponse {
             realm: REALM_NAME,
@@ -114,7 +129,9 @@ impl LinuxActivity {
             program: selected.name.to_string(),
             execution_backend: selected.execution.backend(),
             argv: selected.argv,
-            cwd: args.cwd.unwrap_or_else(|| DEFAULT_CWD.to_string()),
+            requested_cwd,
+            cwd,
+            path_context,
             outcome: report.outcome,
             exit_status: report.exit_status,
             fault: report.fault,
@@ -192,6 +209,7 @@ impl ResidentRealm {
         principal: &str,
         args: ExecArgs,
         realm_host: Box<dyn RealmHost>,
+        home_generation: u64,
         load_boot: impl FnOnce() -> Result<u64, SysError>,
     ) -> Result<ExecResponse, SysError> {
         let realm = self.realm_with_boot(principal, load_boot)?;
@@ -202,6 +220,7 @@ impl ResidentRealm {
                 principal,
                 realm.boot_sequence,
                 realm.machine.status().next_process_id.map(|id| id.get()),
+                home_generation,
             )?
         } else {
             run_command_in_machine(
@@ -210,6 +229,7 @@ impl ResidentRealm {
                 realm_host,
                 &mut realm.machine,
                 realm.boot_sequence,
+                home_generation,
             )?
         };
         realm.commands_completed = realm.commands_completed.saturating_add(1);
@@ -240,11 +260,19 @@ impl ResidentRealm {
     pub(crate) fn execute(&mut self, principal: &str, args: ExecArgs) -> Result<String, SysError> {
         self.bind_owner(principal)?;
         ensure_layout()?;
-        validate_cwd(args.cwd.as_deref().unwrap_or(DEFAULT_CWD))?;
+        let selected = select_program(&args)?;
+        match selected.execution {
+            SelectedExecution::Linux(action) => {
+                let _ = linux_effective_cwd(action, args.cwd.as_deref())?;
+            }
+            _ => validate_cwd(args.cwd.as_deref().unwrap_or(DEFAULT_CWD))?,
+        }
+        let home_generation = home_status()?.generation;
         let response = self.execute_with_boot(
             principal,
             args,
             Box::<AstridRealmHost>::default(),
+            home_generation,
             next_boot_sequence,
         )?;
         serde_json::to_string(&response).map_err(|error| SysError::ApiError(error.to_string()))
@@ -325,15 +353,19 @@ mod tests {
     fn one_resident_store_keeps_monotonic_pids_and_rejects_retargeting() {
         let mut alice = ResidentRealm::default();
         let alice_first = alice
-            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), || Ok(7))
+            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), 0, || {
+                Ok(7)
+            })
             .expect("alice first command");
         let alice_second = alice
-            .execute_with_boot("alice", echo("two"), Box::<TestHost>::default(), || {
+            .execute_with_boot("alice", echo("two"), Box::<TestHost>::default(), 0, || {
                 panic!("existing principal must not allocate another boot")
             })
             .expect("alice second command");
         let error = alice
-            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), || Ok(11))
+            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), 0, || {
+                Ok(11)
+            })
             .expect_err("a resident Store cannot cross principals");
 
         assert_eq!(alice_first.realm_boot_sequence, 7);
@@ -348,10 +380,14 @@ mod tests {
         let mut alice = ResidentRealm::default();
         let mut bob = ResidentRealm::default();
         let alice_first = alice
-            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), || Ok(7))
+            .execute_with_boot("alice", echo("one"), Box::<TestHost>::default(), 0, || {
+                Ok(7)
+            })
             .expect("alice command");
         let bob_first = bob
-            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), || Ok(11))
+            .execute_with_boot("bob", echo("other"), Box::<TestHost>::default(), 0, || {
+                Ok(11)
+            })
             .expect("bob command");
 
         assert_eq!(alice_first.realm_boot_sequence, 7);
@@ -364,7 +400,9 @@ mod tests {
     fn pipeline_ids_share_the_principals_monotonic_boot_namespace() {
         let mut actor = ResidentRealm::default();
         let first = actor
-            .execute_with_boot("alice", echo("seed"), Box::<TestHost>::default(), || Ok(3))
+            .execute_with_boot("alice", echo("seed"), Box::<TestHost>::default(), 0, || {
+                Ok(3)
+            })
             .expect("first command");
         let pipeline = actor
             .execute_with_boot(
@@ -375,6 +413,7 @@ mod tests {
                     ..ExecArgs::default()
                 },
                 Box::<TestHost>::default(),
+                0,
                 || panic!("boot is already allocated"),
             )
             .expect("pipeline command");

@@ -64,17 +64,20 @@ accounting. Linux-specific fields state whether the one-vCPU guest is cold or
 running, whether RAM is currently resident, the number of boots, completed
 commands, clean shutdowns, and exact guest-step totals for the current
 principal-affine Store. Outer Wasm metering is charged to the verified invoking
-principal. The separate Realm home is durable but does not become a Linux mount
-until the virtio-block/COW path exists. Every execution result identifies the
-kernel-stamped owner principal and exact execution backend, and includes the
-outcome, exit status, stdout, stderr, fuel or instruction accounting, memory
-ceiling, and process identifiers where the semantic process kernel allocated
-them.
+principal. The response's versioned path contract reports the semantic mount,
+guest path, Astrid resource URI where one really exists, human display path,
+reference lifetime, and the projection state for nested WASM and Linux. The
+separate Realm home is durable but does not become a Linux mount until the file
+transport exists. Every execution result identifies the kernel-stamped owner
+principal and exact execution backend, and includes the requested and effective
+CWD, path context, outcome, exit status, stdout, stderr, fuel or instruction
+accounting, memory ceiling, and process identifiers where the semantic process
+kernel allocated them.
 
-The first execution call lazily creates this layout and its in-memory Realm
-machine for the invoking principal. Status reports `uninitialized` and an idle
-actor before that point without allocating a machine or advancing durable boot
-state:
+The first execution call lazily creates the declared Realm layout and its
+in-memory machine for the invoking principal. Status reports `uninitialized` and
+an idle actor before that point without allocating a machine or advancing durable
+boot state:
 
 ```text
 /home/agent   durable realm home
@@ -82,18 +85,62 @@ state:
 /tmp          principal-private temporary subtree
 ```
 
-`/home/agent` is a versioned filesystem. One principal-scoped KV value atomically
-selects its current generation; immutable manifests and file contents are stored
-as BLAKE3-addressed blobs beneath the caller's private realm store. It survives
-daemon restart. `/workspace` is deliberately transactional: writes enter
+The nested core-WASM lane can use all three projections today. Its `/home/agent`
+is a versioned filesystem. One principal-scoped KV value atomically selects its
+current generation; immutable manifests and file contents are stored as
+BLAKE3-addressed blobs beneath the caller's private realm store. It survives
+daemon restart. Its `/workspace` is deliberately transactional: writes enter
 Astrid's copy-on-write view and do not change the source workspace until the
 outer Astrid workflow promotes them. An unpromoted workspace overlay is
 discarded on daemon restart. `/tmp` is not durable state.
+
+The Linux lane does not claim those projections prematurely. Its current
+`/home/agent` and `/tmp` are guest RAM, preserved only while that principal's
+Linux machine remains warm, and `/workspace` is not mounted. Consequently
+`linux-sh` runs in `/home/agent`, rejects a requested `/workspace` CWD, and cannot
+yet see files written through the nested-WASM lane. `linux_realm_status` exposes
+these states as `guest-ram-only` and `not-mounted` rather than treating the
+declared layout as completed transport.
 
 The default realm name is `default`, giving one durable home per principal. The
 principal is never accepted from tool input. It comes from the kernel-stamped
 invocation, so two principals using the same capsule bytes receive different
 KV heads and different blob namespaces.
+
+## Path identity contract
+
+A path has three audience-specific spellings, but one typed identity:
+
+| Audience | Example | Purpose |
+| --- | --- | --- |
+| Agent shell | `/workspace/src/lib.rs` | Path passed to a program inside the Realm |
+| Astrid runtime | `cwd://src/lib.rs` | Capability-checked resource, never a physical host path |
+| Person | `Workspace/src/lib.rs` | Stable display label that makes the mounted root explicit |
+
+`PathRef` carries the mount role and optional mount ID, relative path, guest
+spelling, optional Astrid resource URI, display path, reference lifetime, and the
+home generation or Realm boot observed when the call was admitted.
+`MountContext` adds the consumer (`nested-core-wasm`, `linux-guest`, or
+`bare-rv64`), all declared mount projections, and an explicit
+`physical_host_paths_visible=false` invariant.
+
+The enclosing execution response supplies the verified owner principal. A durable
+home reference is therefore identified by owner, Realm home ID, relative path,
+and admitted generation. A Linux RAM path instead carries the `linux-rootfs`
+mount ID and the admitting Realm boot sequence. Workspace references are
+currently invocation-scoped and have `mount_id=null`: the `cwd://` host import
+does not yet supply a stable
+attachment ID or generation, and the capsule does not invent one. Bare RV64
+diagnostics have no active path.
+
+A client may show a person a local path such as `/Users/me/project`, but that
+string is not sent into the guest or exposed by status. The client/runtime must
+first attach the selected directory as a workspace and translate a child to
+`Workspace/<relative>` for conversation and `/workspace/<relative>` for guest
+execution. If no attachment exists, the correct result is an unresolved-path
+error, not a guessed rewrite. When a person and agent mention different
+spellings, receipts and UI should show both the display path and guest path while
+retaining the typed reference underneath.
 
 ## Durable home format
 

@@ -79,11 +79,15 @@ pub(crate) fn validate_cwd(cwd: &str) -> Result<(), SysError> {
 
 /// Map a guest path to an Astrid VFS path without revealing a host path.
 pub(crate) fn resolve_guest_path(cwd: &str, requested: &str) -> Result<String, RealmIoError> {
-    let absolute = normalize_guest_path(cwd, requested)?;
+    let absolute = canonical_guest_path(cwd, requested)?;
     map_absolute_path(&absolute)
 }
 
-fn normalize_guest_path(cwd: &str, requested: &str) -> Result<String, RealmIoError> {
+/// Normalize one guest-visible path without converting it into an Astrid URI.
+///
+/// Presentation code uses this to retain the guest spelling and mount identity;
+/// authority is still decided separately by `resolve_guest_path`.
+pub(crate) fn canonical_guest_path(cwd: &str, requested: &str) -> Result<String, RealmIoError> {
     if cwd.is_empty()
         || !cwd.starts_with('/')
         || requested.is_empty()

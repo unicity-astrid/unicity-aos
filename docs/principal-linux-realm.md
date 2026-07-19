@@ -430,22 +430,22 @@ realm. `/home/agent` is a dedicated namespace backed by principal-scoped storage
 A workspace mount is separately granted so a destructive command in the Linux home
 cannot silently reach unrelated Astrid state.
 
-The executable seed uses the same shape with a deliberately narrower guarantee:
+The executable seed uses that shape through two different consumers. They must
+not be described as one mount namespace before the transport exists:
 
-- `/home/agent` is a principal-scoped versioned filesystem: KV atomically selects
-  one immutable content-addressed manifest, while file and manifest blobs live in
-  the principal's private realm file store. It has been verified across daemon
-  restart;
-- `/workspace` is the invocation's Astrid `cwd://` copy-on-write view. Its writes
-  remain staged until the outer Astrid workflow promotes them, and an unpromoted
-  view is discarded on daemon restart;
-- `/tmp` maps to the invoking principal's `.local/tmp` namespace and is not part of
-  the durable realm contract.
+- nested core-WASM programs see the principal-scoped versioned `/home/agent`, the
+  invocation's Astrid `cwd://` copy-on-write `/workspace`, and the principal's
+  ephemeral `/tmp` through audited host imports;
+- Linux currently sees an initramfs `/home/agent` and `/tmp`, preserved only in
+  its warm guest RAM, and no `/workspace`. The durable home and COW workspace are
+  declared targets, not mounted Linux storage.
 
 That distinction is intentional. A command running inside the realm cannot silently
 commit source-tree changes merely because it can write its projected workspace.
 Promotion is an outer authority decision and must produce an audit record. The
-current seed does not yet expose a realm-side commit tool.
+current seed does not yet expose a realm-side commit tool. It also rejects a
+Linux `/workspace` CWD until the file transport is real; sharing the spelling
+without sharing the object would be worse than an explicit missing mount.
 
 The storage identity should be:
 
@@ -461,7 +461,120 @@ base image digest
 The host should hold encryption keys and derive or unwrap them only for the bound
 principal and realm. Guest root never receives an Astrid storage key.
 
-### 6.1 Selected seed representation
+### 6.1 Path identity and translation contract
+
+Path strings are presentation, not authority. The system needs a typed reference
+that survives translation between a person's computer, an Astrid resource, and a
+Realm program without pretending those namespaces are identical.
+
+The first internal contract is:
+
+```text
+PathRef {
+  mount: Workspace | AgentHome | Temporary
+  mount_id: Optional<String>
+  relative_path: String
+  guest_path: String
+  resource_uri: Optional<String>
+  display_path: String
+  reference_stability: Invocation | PrincipalGeneration | RealmBoot
+  generation_at_admission: Optional<u64>
+  realm_boot_sequence_at_admission: Optional<u64>
+}
+
+MountContext {
+  version: 1
+  consumer: NestedCoreWasm | LinuxGuest | BareRv64
+  active_cwd: Optional<PathRef>
+  mounts: [MountDescriptor]
+  physical_host_paths_visible: false
+}
+```
+
+The execution envelope supplies the kernel-stamped owner principal. The semantic
+identity is therefore the owner, Realm, mount ID, relative path, stability scope,
+and home generation or Realm boot sequence where applicable. `guest_path`, `resource_uri`, and
+`display_path` are derived views of that identity. They are never used to infer
+the owner.
+
+The current projection matrix is deliberately candid:
+
+| Role | Person display | Guest spelling | Astrid resource | Nested WASM | Linux now | Stability |
+| --- | --- | --- | --- | --- | --- | --- |
+| Workspace | `Workspace/src/lib.rs` | `/workspace/src/lib.rs` | `cwd://src/lib.rs` | mounted COW | not mounted | invocation |
+| Agent home | `Agent Home/.config/aos` | `/home/agent/.config/aos` | principal Realm home URI | mounted durable generation | guest RAM only | principal generation or Linux boot |
+| Temporary | `Temporary Files/job.log` | `/tmp/job.log` | principal Realm temp URI | mounted ephemeral | guest RAM only | Realm boot |
+
+The identical `/home/agent` spelling in the two consumers does not currently
+name the same storage object. Every response therefore names its consumer and
+projection. A Linux path has no Astrid `resource_uri` or durable generation until
+the guest file transport mounts one. Bare RV64 diagnostic programs have no active
+filesystem path.
+
+The Realm home ID is stable only inside the verified owner and Realm. The current
+`cwd://` import exposes neither a stable workspace attachment ID nor a generation,
+so workspace `mount_id` is null and its reference expires with the invocation.
+Inventing an ID from the host pathname, display label, or CWD bytes would create
+incorrect links and leak implementation details. The runtime should eventually
+supply a random, opaque attachment ID and epoch when it admits a workspace.
+
+Translation is a boundary protocol:
+
+```text
+person selects a local folder
+  -> client/runtime creates an admitted workspace attachment
+  -> attachment yields opaque mount identity plus relative path
+  -> conversation renders Workspace/<relative>
+  -> Realm command receives /workspace/<relative>
+  -> consumer adapter verifies that projection is mounted
+  -> result/receipt returns typed PathRef plus both audience spellings
+```
+
+A physical client path such as `/Users/alice/code/astrid` may be visible to the
+person's client. It is never a guest argument, resource URI, mount ID, or status
+field. If the client has not attached it, the path is unresolved. The agent must
+not guess that a pathname mentioned in prose is the current workspace. Conversely,
+when an agent says `/workspace/src/lib.rs`, the person-facing UI should lead with
+`Workspace/src/lib.rs` and offer the guest spelling as copyable technical detail.
+
+The ambiguity rules are:
+
+| Case | Required behavior |
+| --- | --- |
+| Person names an attached local child | Translate through the attachment and retain the typed reference |
+| Person names an unattached physical path | Ask the client to attach/select it or fail explicitly |
+| Agent names `/workspace/x` | Resolve only against this invocation's workspace attachment |
+| Agent names `/home/agent/x` | Resolve against the selected consumer; never silently cross from Linux RAM to the durable nested-WASM home |
+| Two mounts contain `src/lib.rs` | Display the mount name; never return only the ambiguous relative path |
+| An invocation-scoped reference is reused later | Reject it unless the runtime rebinds the same attachment explicitly |
+| A durable-home generation changed | Treat the captured generation as admission evidence, not an assertion about the latest head |
+| A path escapes every admitted root, uses an unmounted root, or has a physical host prefix | Reject before any storage operation |
+| A symlink would escape a mount | Resolve beneath the mount in the transport and reject the escape |
+| Principal B replays principal A's reference | Reject at the stamped-principal and mount-ownership boundary |
+| Linux requests `/workspace` before transport | Reject; do not chdir into an empty lookalike directory |
+
+The tool response remains additive: `requested_cwd` preserves what the caller
+asked for, `cwd` reports the effective guest CWD, and `path_context` is the
+authoritative interpretation. Status reports both nested-WASM and Linux
+projections plus a consumer-indexed CWD table: nested WASM defaults to
+`/workspace`, Linux defaults to `/home/agent`, and bare RV64 has no CWD. The old
+single `default_cwd` remains the nested-WASM value for compatibility. A future
+tool input may accept a typed `PathRef`, but the contract should remain
+capsule-private until at least two consumers require a shared WIT surface.
+
+The next transport increment needs three separate pieces:
+
+1. a runtime-supplied workspace attachment ID and epoch, without physical paths;
+2. a read/write guest file transport such as bounded 9P or virtio-fs, connected
+   to the existing principal VFS and COW workspace adapters;
+3. admission and receipt plumbing that carries the same typed reference across
+   UI, agent, capsule, transport, and audit boundaries.
+
+Transport choice does not change path identity. It only changes a mount
+descriptor from `not-mounted` or `guest-ram-only` to `mounted` after the backing
+object and durability semantics are proven.
+
+### 6.2 Selected seed representation
 
 The seed deliberately uses both Astrid storage mechanisms, each for the property
 it is good at:
@@ -507,7 +620,7 @@ directory metadata, no links, no guest flush instruction, no named checkpoint,
 and no garbage collection. These omissions are reported as remaining work rather
 than implied POSIX behavior.
 
-### 6.2 Base and overlay
+### 6.3 Base and overlay
 
 - The base image is immutable, signed, content-addressed, and globally cacheable.
 - The overlay contains only blocks or files changed by the principal.
@@ -517,7 +630,7 @@ than implied POSIX behavior.
   require explicit tests. The seed currently proves only bounded file replacement
   and atomic selected-home generations over real Astrid storage.
 
-### 6.3 Persistence levels
+### 6.4 Persistence levels
 
 The first guarantee is durable filesystem state across realm restart. It does not
 include a live RAM or process checkpoint.
@@ -1331,7 +1444,11 @@ CE set rather than test-installed companions.
 
 - [x] implement normalized, non-escaping path resolution;
 - [x] mount a principal-private durable home, projected COW workspace, and
-  principal-private temporary namespace;
+  principal-private temporary namespace for nested core-WASM programs;
+- [x] define a versioned typed path context that distinguishes guest, Astrid, and
+  person-facing paths and reports Linux's unmounted/guest-RAM projections honestly;
+- [ ] obtain a stable workspace attachment ID/epoch from the runtime and mount the
+  admitted home and workspace into Linux through a bounded file transport;
 - [x] implement bounded sequential open/read/write/close using whole-file Astrid
   VFS calls;
 - implement seek/stat/rename/unlink and a real flush barrier;
@@ -1612,7 +1729,12 @@ explicit restart.
   principal input;
 - [x] deliver structured command/argv/CWD execution for `pwd`, `echo`,
   `write-file`, and `cat` without a host shell;
-- [x] add normalized `/home/agent`, `/workspace`, and `/tmp` projections;
+- [x] add normalized `/home/agent`, `/workspace`, and `/tmp` projections for the
+  nested core-WASM lane;
+- [x] return versioned `PathRef`/`MountContext` data, requested and effective CWD,
+  audience-specific renderings, and projection state without physical host paths;
+- [ ] carry an opaque workspace attachment ID and epoch from runtime admission to
+  Realm receipts, then use the same identity for the Linux file transport;
 - [x] verify principal-scoped home persistence across daemon restart and reject a
   second principal's read of those bytes;
 - [x] invoke the packaged capsule through a live Astrid 0.10.1 daemon and MCP
