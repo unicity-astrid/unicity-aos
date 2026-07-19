@@ -1,0 +1,15 @@
+[package]
+name = "aos-realm-9p"
+version = "0.1.0"
+edition = "2024"
+authors = [
+    "Joshua J. Bouw <dev@joshuajbouw.com>",
+    "Unicity Labs <info@unicity-labs.com>",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/unicity-aos/aos-ce"
+description = "Bounded 9P2000.L server for AOS Linux Realm filesystem exports"
+publish = false
+
+[lib]
+path = "src/lib.rs"

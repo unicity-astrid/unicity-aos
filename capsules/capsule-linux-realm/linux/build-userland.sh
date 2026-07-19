@@ -21,7 +21,7 @@ if [ "$#" -eq 3 ]; then
 else
     output_cpio=$script_dir/rootfs.cpio
 fi
-expected_cpio=84d4edfc386be77369121f109ce180566f02393f8a314c8054787a27071a7bee
+expected_cpio=0877c008ec43627d9aeefc30c4e09412ceeb6aefb25b799b2365d002261b891b
 record_userland=${AOS_RECORD_USERLAND:-0}
 downloads_dir=${BR2_DL_DIR:-"$build_dir.downloads"}
 

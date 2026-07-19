@@ -135,12 +135,23 @@ const SBI_EXT_BASE: u64 = 0x10;
 const SBI_EXT_TIME: u64 = 0x5449_4d45;
 const SBI_EXT_DBCN: u64 = 0x4442_434e;
 const SBI_EXT_SRST: u64 = 0x5352_5354;
+/// Private AOS 9P transport in the SBI experimental extension range.
+///
+/// The low 24 bits spell `AOS`; this is not a vendor extension or an assigned
+/// standard extension ID. The interface is versioned with [`MACHINE_MODEL`].
+pub const SBI_EXT_AOS_9P: u64 = 0x0841_4f53;
+/// Maximum complete 9P message accepted in either transport direction.
+pub const MAX_9P_MESSAGE_BYTES: usize = 64 * 1024;
+const MIN_9P_MESSAGE_BYTES: usize = 7;
 const SBI_SPEC_VERSION_3_0: u64 = 3 << 24;
 const SBI_AOS_PRIVATE_IMPL_ID: u64 = 0x414f_5300;
 const SBI_SUCCESS: u64 = 0;
+const SBI_ERR_FAILED: u64 = (-1_i64) as u64;
 const SBI_ERR_NOT_SUPPORTED: u64 = (-2_i64) as u64;
 const SBI_ERR_INVALID_PARAM: u64 = (-3_i64) as u64;
+const SBI_ERR_DENIED: u64 = (-4_i64) as u64;
 const SBI_ERR_INVALID_ADDRESS: u64 = (-5_i64) as u64;
+const SBI_ERR_ALREADY_AVAILABLE: u64 = (-6_i64) as u64;
 
 /// Explicit resource admission for one virtual machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -438,6 +449,95 @@ pub struct HaltStatus {
     pub code: u32,
 }
 
+/// Machine-local identity for one host-mediated request.
+///
+/// IDs remain monotonic across guest image reloads so a late completion cannot
+/// accidentally complete the first request made by a replacement guest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostRequestId(u64);
+
+impl HostRequestId {
+    /// Raw identity for logs and outer scheduler correlation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One complete 9P request copied out of admitted guest RAM.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan9Request {
+    /// Unique identity required when completing or failing this request.
+    pub id: HostRequestId,
+    /// Guest-selected mount channel whose FID and tag space is isolated from
+    /// every other 9P mount in this machine.
+    pub channel: u32,
+    /// Complete size-prefixed 9P request message.
+    pub message: Vec<u8>,
+    /// Maximum complete response message admitted by the guest buffer.
+    pub max_response_bytes: usize,
+}
+
+/// Transport-level host failure returned to the guest SBI caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostRequestFailure {
+    /// The admitted host operation failed without a more specific boundary result.
+    Failed,
+    /// The outer Realm denied the requested host operation.
+    Denied,
+}
+
+/// Rejected attempt to complete a pending host request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostCompletionError {
+    /// The machine has no request awaiting a host response.
+    NoPendingRequest,
+    /// The response belongs to a different request.
+    RequestIdMismatch {
+        /// Identity currently awaited by the machine.
+        expected: HostRequestId,
+        /// Identity supplied by the host.
+        actual: HostRequestId,
+    },
+    /// A successful 9P response is smaller than its mandatory message header.
+    InvalidResponseBytes(usize),
+    /// The response exceeds the capacity admitted by the guest request.
+    ResponseTooLarge {
+        /// Supplied response byte length.
+        response: usize,
+        /// Admitted guest response capacity.
+        capacity: usize,
+    },
+    /// The previously admitted response range is no longer writable guest RAM.
+    ResponseAddressUnavailable,
+}
+
+impl fmt::Display for HostCompletionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoPendingRequest => write!(f, "machine has no pending host request"),
+            Self::RequestIdMismatch { expected, actual } => write!(
+                f,
+                "host response request {} does not match pending request {}",
+                actual.get(),
+                expected.get()
+            ),
+            Self::InvalidResponseBytes(bytes) => {
+                write!(f, "9P response must contain at least 7 bytes, got {bytes}")
+            }
+            Self::ResponseTooLarge { response, capacity } => write!(
+                f,
+                "9P response is {response} bytes but guest admitted {capacity} bytes"
+            ),
+            Self::ResponseAddressUnavailable => {
+                write!(f, "pending 9P response buffer is no longer admitted RAM")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HostCompletionError {}
+
 /// Result of one bounded scheduling slice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SliceOutcome {
@@ -445,6 +545,8 @@ pub enum SliceOutcome {
     Yielded,
     /// The guest wrote a terminal value to the standard finisher.
     Halted(HaltStatus),
+    /// The guest is paused until the outer Realm completes this request.
+    HostRequest(Plan9Request),
     /// The guest crossed a non-architectural Realm resource boundary.
     Trapped(MachineTrap),
 }
@@ -643,6 +745,12 @@ enum RunState {
     Runnable,
     Halted(HaltStatus),
     Trapped(MachineTrap),
+}
+
+#[derive(Clone, Debug)]
+struct PendingPlan9Request {
+    request: Plan9Request,
+    response_address: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -928,6 +1036,8 @@ pub struct Machine {
     instret: u64,
     reservation: Option<(u64, u8)>,
     firmware: SbiFirmware,
+    next_host_request_id: u64,
+    pending_9p_request: Option<PendingPlan9Request>,
 }
 
 impl Machine {
@@ -953,6 +1063,8 @@ impl Machine {
             instret: 0,
             reservation: None,
             firmware: SbiFirmware::default(),
+            next_host_request_id: 1,
+            pending_9p_request: None,
         })
     }
 
@@ -975,6 +1087,7 @@ impl Machine {
         self.instret = 0;
         self.reservation = None;
         self.firmware = SbiFirmware::default();
+        self.pending_9p_request = None;
         Ok(())
     }
 
@@ -1058,6 +1171,7 @@ impl Machine {
         self.instret = 0;
         self.reservation = None;
         self.firmware.enabled = true;
+        self.pending_9p_request = None;
 
         Ok(LinuxBootLayout {
             kernel_start: LINUX_KERNEL_BASE,
@@ -1081,6 +1195,68 @@ impl Machine {
         self.devices
             .ram_range_len(address, bytes)
             .map(|range| &self.devices.ram[range])
+    }
+
+    /// Copy a successful 9P response into the buffer admitted by the pending
+    /// guest request and make the guest runnable again.
+    pub fn complete_9p_request(
+        &mut self,
+        id: HostRequestId,
+        response: &[u8],
+    ) -> Result<(), HostCompletionError> {
+        let Some(pending) = self.pending_9p_request.as_ref() else {
+            return Err(HostCompletionError::NoPendingRequest);
+        };
+        if pending.request.id != id {
+            return Err(HostCompletionError::RequestIdMismatch {
+                expected: pending.request.id,
+                actual: id,
+            });
+        }
+        if response.len() < MIN_9P_MESSAGE_BYTES {
+            return Err(HostCompletionError::InvalidResponseBytes(response.len()));
+        }
+        if response.len() > pending.request.max_response_bytes {
+            return Err(HostCompletionError::ResponseTooLarge {
+                response: response.len(),
+                capacity: pending.request.max_response_bytes,
+            });
+        }
+        let response_address = pending.response_address;
+        if !self.devices.write_ram_slice(response_address, response) {
+            return Err(HostCompletionError::ResponseAddressUnavailable);
+        }
+        self.cpu.write(10, SBI_SUCCESS);
+        self.cpu.write(11, response.len() as u64);
+        self.pending_9p_request = None;
+        Ok(())
+    }
+
+    /// Fail a pending 9P exchange without writing a guest response buffer.
+    pub fn fail_9p_request(
+        &mut self,
+        id: HostRequestId,
+        failure: HostRequestFailure,
+    ) -> Result<(), HostCompletionError> {
+        let Some(pending) = self.pending_9p_request.as_ref() else {
+            return Err(HostCompletionError::NoPendingRequest);
+        };
+        if pending.request.id != id {
+            return Err(HostCompletionError::RequestIdMismatch {
+                expected: pending.request.id,
+                actual: id,
+            });
+        }
+        self.cpu.write(
+            10,
+            match failure {
+                HostRequestFailure::Failed => SBI_ERR_FAILED,
+                HostRequestFailure::Denied => SBI_ERR_DENIED,
+            },
+        );
+        self.cpu.write(11, 0);
+        self.pending_9p_request = None;
+        Ok(())
     }
 
     /// Read one architectural integer register. Register zero is always zero.
@@ -1111,7 +1287,10 @@ impl Machine {
     pub fn run_slice(&mut self, instruction_budget: u64) -> SliceReport {
         let mut steps = 0_u64;
         let mut retired = 0_u64;
-        while steps < instruction_budget && matches!(self.state, RunState::Runnable) {
+        while steps < instruction_budget
+            && matches!(self.state, RunState::Runnable)
+            && self.pending_9p_request.is_none()
+        {
             match self.step() {
                 Ok(effect) => {
                     steps = steps.saturating_add(1);
@@ -1142,10 +1321,11 @@ impl Machine {
             }
         }
 
-        let outcome = match &self.state {
-            RunState::Runnable => SliceOutcome::Yielded,
-            RunState::Halted(status) => SliceOutcome::Halted(*status),
-            RunState::Trapped(trap) => SliceOutcome::Trapped(trap.clone()),
+        let outcome = match (&self.pending_9p_request, &self.state) {
+            (Some(pending), _) => SliceOutcome::HostRequest(pending.request.clone()),
+            (None, RunState::Runnable) => SliceOutcome::Yielded,
+            (None, RunState::Halted(status)) => SliceOutcome::Halted(*status),
+            (None, RunState::Trapped(trap)) => SliceOutcome::Trapped(trap.clone()),
         };
         SliceReport {
             outcome,
@@ -1597,42 +1777,92 @@ impl Machine {
             self.cpu.read(15),
         ];
         let mut halt = None;
-        let (error, value) = match (extension, function) {
-            (SBI_EXT_BASE, 0) => (SBI_SUCCESS, SBI_SPEC_VERSION_3_0),
-            (SBI_EXT_BASE, 1) => (SBI_SUCCESS, SBI_AOS_PRIVATE_IMPL_ID),
-            (SBI_EXT_BASE, 2) => (SBI_SUCCESS, 1),
-            (SBI_EXT_BASE, 3) => (
+        let response = match (extension, function) {
+            (SBI_EXT_BASE, 0) => Some((SBI_SUCCESS, SBI_SPEC_VERSION_3_0)),
+            (SBI_EXT_BASE, 1) => Some((SBI_SUCCESS, SBI_AOS_PRIVATE_IMPL_ID)),
+            (SBI_EXT_BASE, 2) => Some((SBI_SUCCESS, 1)),
+            (SBI_EXT_BASE, 3) => Some((
                 SBI_SUCCESS,
                 u64::from(matches!(
                     arguments[0],
-                    SBI_EXT_BASE | SBI_EXT_TIME | SBI_EXT_DBCN | SBI_EXT_SRST
+                    SBI_EXT_BASE | SBI_EXT_TIME | SBI_EXT_DBCN | SBI_EXT_SRST | SBI_EXT_AOS_9P
                 )),
-            ),
-            (SBI_EXT_BASE, 4..=6) => (SBI_SUCCESS, 0),
+            )),
+            (SBI_EXT_BASE, 4..=6) => Some((SBI_SUCCESS, 0)),
             (SBI_EXT_TIME, 0) => {
                 self.devices.mtimecmp = arguments[0];
                 self.csrs.mip &= !MIP_STIP;
-                (SBI_SUCCESS, 0)
+                Some((SBI_SUCCESS, 0))
             }
-            (SBI_EXT_DBCN, 0) => self.sbi_debug_console_write(arguments)?,
-            (SBI_EXT_DBCN, 1) => self.sbi_debug_console_read(arguments),
+            (SBI_EXT_DBCN, 0) => Some(self.sbi_debug_console_write(arguments)?),
+            (SBI_EXT_DBCN, 1) => Some(self.sbi_debug_console_read(arguments)),
             (SBI_EXT_DBCN, 2) => {
                 self.devices.push_console_output(arguments[0] as u8)?;
-                (SBI_SUCCESS, 0)
+                Some((SBI_SUCCESS, 0))
             }
             (SBI_EXT_SRST, 0) if arguments[0] <= 2 && arguments[1] <= 1 => {
                 halt = Some(HaltStatus {
                     passed: arguments[0] == 0 && arguments[1] == 0,
                     code: ((arguments[0] as u32) << 16) | arguments[1] as u32,
                 });
-                (SBI_SUCCESS, 0)
+                Some((SBI_SUCCESS, 0))
             }
-            (SBI_EXT_SRST, 0) => (SBI_ERR_INVALID_PARAM, 0),
-            _ => (SBI_ERR_NOT_SUPPORTED, 0),
+            (SBI_EXT_SRST, 0) => Some((SBI_ERR_INVALID_PARAM, 0)),
+            (SBI_EXT_AOS_9P, 0) => self.sbi_9p_exchange(arguments),
+            _ => Some((SBI_ERR_NOT_SUPPORTED, 0)),
         };
-        self.cpu.write(10, error);
-        self.cpu.write(11, value);
+        if let Some((error, value)) = response {
+            self.cpu.write(10, error);
+            self.cpu.write(11, value);
+        }
         Ok(halt)
+    }
+
+    fn sbi_9p_exchange(&mut self, arguments: [u64; 6]) -> Option<(u64, u64)> {
+        if self.pending_9p_request.is_some() {
+            return Some((SBI_ERR_ALREADY_AVAILABLE, 0));
+        }
+        let Ok(channel) = u32::try_from(arguments[4]) else {
+            return Some((SBI_ERR_INVALID_PARAM, 0));
+        };
+        if channel == 0 || arguments[5] != 0 {
+            return Some((SBI_ERR_INVALID_PARAM, 0));
+        }
+        let (Ok(request_bytes), Ok(response_bytes)) =
+            (usize::try_from(arguments[1]), usize::try_from(arguments[3]))
+        else {
+            return Some((SBI_ERR_INVALID_PARAM, 0));
+        };
+        if !(MIN_9P_MESSAGE_BYTES..=MAX_9P_MESSAGE_BYTES).contains(&request_bytes)
+            || !(MIN_9P_MESSAGE_BYTES..=MAX_9P_MESSAGE_BYTES).contains(&response_bytes)
+        {
+            return Some((SBI_ERR_INVALID_PARAM, 0));
+        }
+        let Some(request_range) = self.devices.ram_range_len(arguments[0], request_bytes) else {
+            return Some((SBI_ERR_INVALID_ADDRESS, 0));
+        };
+        if self
+            .devices
+            .ram_range_len(arguments[2], response_bytes)
+            .is_none()
+        {
+            return Some((SBI_ERR_INVALID_ADDRESS, 0));
+        }
+        let Some(next_id) = self.next_host_request_id.checked_add(1) else {
+            return Some((SBI_ERR_FAILED, 0));
+        };
+        let id = HostRequestId(self.next_host_request_id);
+        self.next_host_request_id = next_id;
+        self.pending_9p_request = Some(PendingPlan9Request {
+            request: Plan9Request {
+                id,
+                channel,
+                message: self.devices.ram[request_range].to_vec(),
+                max_response_bytes: response_bytes,
+            },
+            response_address: arguments[2],
+        });
+        None
     }
 
     fn sbi_debug_console_write(&mut self, arguments: [u64; 6]) -> Result<(u64, u64), MachineTrap> {
@@ -3233,7 +3463,7 @@ mod tests {
         })
         .expect("valid Linux machine");
         machine
-            .boot_linux(&words(&[0x0000_0073; 4]), &[], "earlycon=sbi")
+            .boot_linux(&words(&[0x0000_0073; 5]), &[], "earlycon=sbi")
             .expect("admit Linux boot");
 
         machine.cpu.registers[16] = 0;
@@ -3242,6 +3472,13 @@ mod tests {
         assert_eq!(base.instructions_retired, 0);
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
         assert_eq!(machine.register(11), Some(SBI_SPEC_VERSION_3_0));
+
+        machine.cpu.registers[10] = SBI_EXT_AOS_9P;
+        machine.cpu.registers[16] = 3;
+        machine.cpu.registers[17] = SBI_EXT_BASE;
+        assert_eq!(machine.run_slice(1).instructions_retired, 0);
+        assert_eq!(machine.register(10), Some(SBI_SUCCESS));
+        assert_eq!(machine.register(11), Some(1));
 
         let message_address = DRAM_BASE + 0x1_0000;
         assert!(machine.devices.write_ram_slice(message_address, b"LINUX"));
@@ -3274,6 +3511,155 @@ mod tests {
                 code: 0,
             })
         );
+    }
+
+    #[test]
+    fn sbi_9p_exchange_pauses_until_the_exact_bounded_response_arrives() {
+        let mut machine = Machine::new(MachineConfig {
+            ram_bytes: MIN_LINUX_RAM_BYTES,
+            max_console_bytes: 64,
+        })
+        .expect("valid Linux machine");
+        machine
+            .boot_linux(&words(&[0x0000_0073; 2]), &[], "earlycon=sbi")
+            .expect("admit Linux boot");
+
+        let request_address = DRAM_BASE + 0x1_0000;
+        let response_address = DRAM_BASE + 0x1_1000;
+        let request = [7, 0, 0, 0, 100, 1, 0];
+        let response = [7, 0, 0, 0, 101, 1, 0];
+        assert!(machine.devices.write_ram_slice(request_address, &request));
+        machine.cpu.registers[10] = request_address;
+        machine.cpu.registers[11] = request.len() as u64;
+        machine.cpu.registers[12] = response_address;
+        machine.cpu.registers[13] = 32;
+        machine.cpu.registers[14] = 7;
+        machine.cpu.registers[15] = 0;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_AOS_9P;
+
+        let first = machine.run_slice(10);
+        let SliceOutcome::HostRequest(host_request) = first.outcome.clone() else {
+            panic!("expected 9P host request, got {:?}", first.outcome);
+        };
+        assert_eq!(first.steps_executed, 1);
+        assert_eq!(first.instructions_retired, 0);
+        assert_eq!(host_request.message, request);
+        assert_eq!(host_request.channel, 7);
+        assert_eq!(host_request.max_response_bytes, 32);
+        assert_eq!(machine.pc(), LINUX_KERNEL_BASE + 4);
+
+        let repeated = machine.run_slice(10);
+        assert_eq!(repeated.outcome, first.outcome);
+        assert_eq!(repeated.steps_executed, 0);
+        assert_eq!(repeated.total_steps_executed, first.total_steps_executed);
+        assert_eq!(machine.pc(), LINUX_KERNEL_BASE + 4);
+
+        assert_eq!(
+            machine.complete_9p_request(HostRequestId(host_request.id.get() + 1), &response),
+            Err(HostCompletionError::RequestIdMismatch {
+                expected: host_request.id,
+                actual: HostRequestId(host_request.id.get() + 1),
+            })
+        );
+        assert_eq!(
+            machine.complete_9p_request(host_request.id, &[0; 6]),
+            Err(HostCompletionError::InvalidResponseBytes(6))
+        );
+        assert_eq!(
+            machine.complete_9p_request(host_request.id, &[0; 33]),
+            Err(HostCompletionError::ResponseTooLarge {
+                response: 33,
+                capacity: 32,
+            })
+        );
+
+        machine
+            .complete_9p_request(host_request.id, &response)
+            .expect("complete admitted 9P request");
+        assert_eq!(machine.register(10), Some(SBI_SUCCESS));
+        assert_eq!(machine.register(11), Some(response.len() as u64));
+        assert_eq!(
+            machine.physical_ram(response_address, response.len()),
+            Some(response.as_slice())
+        );
+        assert_eq!(
+            machine.complete_9p_request(host_request.id, &response),
+            Err(HostCompletionError::NoPendingRequest)
+        );
+
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_BASE;
+        let resumed = machine.run_slice(1);
+        assert_eq!(resumed.outcome, SliceOutcome::Yielded);
+        assert_eq!(resumed.steps_executed, 1);
+        assert_eq!(machine.register(11), Some(SBI_SPEC_VERSION_3_0));
+    }
+
+    #[test]
+    fn sbi_9p_exchange_rejects_unadmitted_buffers_and_reload_invalidates_waiter() {
+        let mut machine = Machine::new(MachineConfig {
+            ram_bytes: MIN_LINUX_RAM_BYTES,
+            max_console_bytes: 64,
+        })
+        .expect("valid Linux machine");
+        let kernel = words(&[0x0000_0073; 3]);
+        machine
+            .boot_linux(&kernel, &[], "earlycon=sbi")
+            .expect("admit Linux boot");
+        let request_address = DRAM_BASE + 0x1_0000;
+        let response_address = DRAM_BASE + 0x1_1000;
+        let request = [7, 0, 0, 0, 100, 1, 0];
+        assert!(machine.devices.write_ram_slice(request_address, &request));
+
+        machine.cpu.registers[10] = request_address;
+        machine.cpu.registers[11] = 6;
+        machine.cpu.registers[12] = response_address;
+        machine.cpu.registers[13] = 32;
+        machine.cpu.registers[14] = 1;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_AOS_9P;
+        assert_eq!(machine.run_slice(1).outcome, SliceOutcome::Yielded);
+        assert_eq!(machine.register(10), Some(SBI_ERR_INVALID_PARAM));
+
+        machine.cpu.registers[10] = request_address;
+        machine.cpu.registers[11] = request.len() as u64;
+        machine.cpu.registers[12] = DRAM_BASE + MIN_LINUX_RAM_BYTES as u64;
+        machine.cpu.registers[13] = 32;
+        assert_eq!(machine.run_slice(1).outcome, SliceOutcome::Yielded);
+        assert_eq!(machine.register(10), Some(SBI_ERR_INVALID_ADDRESS));
+
+        machine.cpu.registers[10] = request_address;
+        machine.cpu.registers[11] = request.len() as u64;
+        machine.cpu.registers[12] = response_address;
+        let SliceOutcome::HostRequest(first) = machine.run_slice(1).outcome else {
+            panic!("expected admitted host request");
+        };
+        machine
+            .boot_linux(&kernel, &[], "earlycon=sbi")
+            .expect("replace Linux guest");
+        assert_eq!(
+            machine.fail_9p_request(first.id, HostRequestFailure::Failed),
+            Err(HostCompletionError::NoPendingRequest)
+        );
+
+        assert!(machine.devices.write_ram_slice(request_address, &request));
+        machine.cpu.registers[10] = request_address;
+        machine.cpu.registers[11] = request.len() as u64;
+        machine.cpu.registers[12] = response_address;
+        machine.cpu.registers[13] = 32;
+        machine.cpu.registers[14] = 1;
+        machine.cpu.registers[16] = 0;
+        machine.cpu.registers[17] = SBI_EXT_AOS_9P;
+        let SliceOutcome::HostRequest(replacement) = machine.run_slice(1).outcome else {
+            panic!("expected replacement host request");
+        };
+        assert_ne!(replacement.id, first.id);
+        machine
+            .fail_9p_request(replacement.id, HostRequestFailure::Denied)
+            .expect("deny current request");
+        assert_eq!(machine.register(10), Some(SBI_ERR_DENIED));
+        assert_eq!(machine.register(11), Some(0));
     }
 
     #[test]

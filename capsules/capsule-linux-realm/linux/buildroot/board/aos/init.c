@@ -24,6 +24,8 @@
 #define TOKEN_BYTES 16
 #define TOKEN_HEX_BYTES (TOKEN_BYTES * 2)
 #define MAX_COMMAND_BYTES 1024
+#define MAX_CWD_BYTES 64
+#define PROTOCOL_OVERHEAD_BYTES 128
 #define AGENT_UID 1000
 #define AGENT_GID 1000
 
@@ -84,7 +86,29 @@ static void emit_end(const char *token, int status)
     write_text("\n");
 }
 
-static int shell_status(const char *script)
+static int refresh_workspace(void)
+{
+    static const char options[] =
+        "trans=aos,version=9p2000.L,msize=65536,cache=none,access=client,"
+        "aname=workspace,noxattr,dfltuid=1000,dfltgid=1000";
+
+    if (mkdir("/workspace", 0700) < 0 && errno != EEXIST) {
+        write_text("workspace mount point failed\n");
+        return 70;
+    }
+    if (umount2("/workspace", 0) < 0 && errno != EINVAL && errno != ENOENT) {
+        write_text("workspace unmount failed\n");
+        return 70;
+    }
+    if (mount("workspace", "/workspace", "9p", MS_NOSUID | MS_NODEV,
+              options) < 0) {
+        write_text("workspace mount failed\n");
+        return 70;
+    }
+    return 0;
+}
+
+static int shell_status(const char *cwd, const char *script)
 {
     pid_t child = fork();
     if (child < 0)
@@ -115,7 +139,7 @@ static int shell_status(const char *script)
             close(null_fd);
         if (output_fd != STDOUT_FILENO && output_fd != STDERR_FILENO)
             close(output_fd);
-        if (chdir("/home/agent") < 0 || setgroups(0, NULL) < 0 ||
+        if (chdir(cwd) < 0 || setgroups(0, NULL) < 0 ||
             setgid(AGENT_GID) < 0 || setuid(AGENT_UID) < 0)
             _exit(126);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 ||
@@ -149,7 +173,73 @@ static int shell_status(const char *script)
     return 70;
 }
 
-static int execute_command(const char *command)
+static bool has_path_component(const char *path, const char *component)
+{
+    size_t component_length = strlen(component);
+    const char *cursor = path;
+
+    while (*cursor != '\0') {
+        while (*cursor == '/')
+            cursor++;
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != '/')
+            cursor++;
+        if ((size_t)(cursor - start) == component_length &&
+            memcmp(start, component, component_length) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool valid_shell_cwd(const char *cwd)
+{
+    static const char home[] = "/home/agent";
+    static const char workspace[] = "/workspace";
+
+    for (const unsigned char *cursor = (const unsigned char *)cwd;
+         *cursor != '\0'; cursor++) {
+        if (*cursor < 0x20 || *cursor == 0x7f || *cursor == '\\')
+            return false;
+    }
+    if (strstr(cwd, "//") != NULL || has_path_component(cwd, ".") ||
+        has_path_component(cwd, ".."))
+        return false;
+    return strcmp(cwd, home) == 0 ||
+           (strncmp(cwd, home, sizeof(home) - 1) == 0 &&
+            cwd[sizeof(home) - 1] == '/') ||
+           strcmp(cwd, workspace) == 0 ||
+           (strncmp(cwd, workspace, sizeof(workspace) - 1) == 0 &&
+            cwd[sizeof(workspace) - 1] == '/');
+}
+
+static int shell_command_status(char *payload)
+{
+    char *length_end;
+    char *cwd;
+    char *script;
+    unsigned long cwd_length;
+    size_t remaining;
+
+    errno = 0;
+    cwd_length = strtoul(payload, &length_end, 10);
+    if (errno != 0 || length_end == payload || *length_end != ' ' ||
+        cwd_length == 0 || cwd_length > MAX_CWD_BYTES)
+        return 64;
+    cwd = length_end + 1;
+    remaining = strlen(cwd);
+    if (remaining <= cwd_length || cwd[cwd_length] != ' ')
+        return 64;
+    cwd[cwd_length] = '\0';
+    script = cwd + cwd_length + 1;
+    if (!valid_shell_cwd(cwd) || *script == '\0')
+        return 64;
+    int status = refresh_workspace();
+    if (status != 0)
+        return status;
+    return shell_status(cwd, script);
+}
+
+static int execute_command(char *command)
 {
     if (strcmp(command, "ping") == 0) {
         write_text("pong\n");
@@ -169,7 +259,7 @@ static int execute_command(const char *command)
         return 0;
     }
     if (strncmp(command, "sh ", 3) == 0 && command[3] != '\0')
-        return shell_status(command + 3);
+        return shell_command_status(command + 3);
     write_text("unknown command\n");
     return 64;
 }
@@ -194,7 +284,7 @@ static void configure_console(void)
 
 int main(void)
 {
-    char line[MAX_COMMAND_BYTES + sizeof(PROTOCOL_PREFIX) + TOKEN_HEX_BYTES + 2];
+    char line[MAX_COMMAND_BYTES + PROTOCOL_OVERHEAD_BYTES];
 
     configure_console();
     (void)prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);

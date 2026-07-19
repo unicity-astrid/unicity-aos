@@ -19,24 +19,41 @@ The static device contract contains only `/dev/console`, `/dev/null`,
 `/dev/zero`, `/dev/random`, and `/dev/urandom`. In particular there is no raw
 memory, block, network, graphics, additional TTY, or PTY device node for the
 agent shell. The kernel also disables legacy `TIOCSTI`, both PTY families,
-networking, raw memory/port devices, input, and media support.
+IP/Unix networking and network devices, raw memory/port devices, input, and
+media support.
+
+Linux does have one capability device that is not represented as a `/dev` node:
+its built-in `trans=aos` 9P transport. PID 1 mounts the invocation workspace at
+`/workspace` with `version=9p2000.L`, `msize=65536`, `cache=none`, and
+`access=client`. The kernel transport sends one complete bounded request through
+private experimental SBI extension `0x08414f53`, channel 2. The outer machine
+copies it out of admitted guest RAM, pauses the guest while the capsule serves
+it, copies the bounded response back, and resumes Linux. There is no PLIC,
+virtio, socket, network device, shared-memory ring, or host filesystem handle in
+this path.
 
 This is not Bash, Debian, or a development distribution yet. It has no Python,
 GCC inside the guest, package manager, network device, block device, PTY, or
 durable Linux disk. Files under `/home/agent` survive separate calls while the
 same Linux RAM remains resident; shutdown, eviction, daemon restart, or a failed
-bounded execution discards them. Durable principal storage remains a separate
-Realm filesystem until the virtio-block/COW path attaches it.
+bounded execution discards them. `/workspace` is the invocation's Astrid COW
+resource, not a Linux disk: PID 1 unmounts and remounts it before every shell
+command so stale 9P FIDs cannot cross an invocation boundary. Durable principal
+home storage remains a separate Realm filesystem.
 
 ## Command protocol
 
 PID 1 disables terminal echo and accepts one canonical console line:
 
 ```text
-AOS/1 <32-lowercase-hex-token> <command>\n
+AOS/1 <32-lowercase-hex-token> sh <cwd-byte-length> <cwd> <script>\n
 ```
 
-It emits token-bound `AOS BEGIN` and `AOS END <token> <status>` frames followed
+Lifecycle and diagnostic commands retain their shorter fixed forms. The shell
+frame's length makes the absolute guest CWD unambiguous; only `/home/agent`,
+`/workspace`, and their normalized descendants are admitted.
+
+PID 1 emits token-bound `AOS BEGIN` and `AOS END <token> <status>` frames followed
 by `AOS READY`. The capsule generates the 128-bit token from Astrid's host
 CSPRNG for every call and accepts only the exact matching terminal frame before
 the next ready marker. The shell receives the script, not the token. Its stdin
@@ -88,11 +105,15 @@ and `AOS_RECORD_IMAGE=1` only print candidate digests for an intentional source
 refresh; recording them still requires review plus an independent clean rebuild.
 
 The checked-in `Image` contains the GPL-2.0-only Linux kernel and GPL-2.0-only
-BusyBox; the statically linked musl portions retain musl's MIT license. Release
-packaging must retain all notices and make the exact corresponding sources from
-`SOURCES.lock` available. `legal-info/` retains the exact target manifest,
-generated Buildroot configuration, target license texts, and kernel license;
-its README defines the larger corresponding-source release gate.
+BusyBox; the in-kernel `trans_aos.c` transport is GPL-2.0-only because it is
+compiled into Linux. That boundary does not change the MIT/Apache licensing of
+the Rust RV64 machine, 9P server, capsule, or Astrid runtime: they communicate
+with Linux across the SBI protocol rather than linking into it. The statically
+linked musl portions retain musl's MIT license. Release packaging must retain all
+notices and make the exact corresponding sources from `SOURCES.lock` available.
+`legal-info/` retains the exact target manifest, generated Buildroot
+configuration, target license texts, and kernel license; its README defines the
+larger corresponding-source release gate.
 
 To exercise the image through the AOS interpreter rather than QEMU:
 

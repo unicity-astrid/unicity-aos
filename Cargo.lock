@@ -154,6 +154,7 @@ dependencies = [
 name = "aos-linux-realm"
 version = "0.1.0"
 dependencies = [
+ "aos-realm-9p",
  "aos-realm-machine",
  "aos-realm-runtime",
  "aos-realm-vfs",
@@ -211,6 +212,10 @@ dependencies = [
  "serde_json",
  "uuid",
 ]
+
+[[package]]
+name = "aos-realm-9p"
+version = "0.1.0"
 
 [[package]]
 name = "aos-realm-abi"

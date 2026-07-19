@@ -1,0 +1,24 @@
+diff --git a/net/9p/Kconfig b/net/9p/Kconfig
+index 00ebce9e5fa8..edcfd2a0af37 100644
+--- a/net/9p/Kconfig
++++ b/net/9p/Kconfig
+@@ -27,0 +28,9 @@
++config NET_9P_AOS
++	bool "AOS Realm SBI transport"
++	depends on RISCV && RISCV_SBI
++	help
++	  This builds the synchronous private-SBI transport used by the AOS
++	  RV64 Realm machine. It exposes no socket, block device, DMA queue,
++	  or physical host path; the outer Realm serves each bounded message
++	  through an already-authorized principal filesystem capability.
++
+diff --git a/net/9p/Makefile b/net/9p/Makefile
+index 8dd6d589af06..588c733f685d 100644
+--- a/net/9p/Makefile
++++ b/net/9p/Makefile
+@@ -3,0 +4 @@
++obj-$(CONFIG_NET_9P_AOS) += 9pnet_aos.o
+@@ -15,0 +17,3 @@
++9pnet_aos-objs := \
++	trans_aos.o \
++

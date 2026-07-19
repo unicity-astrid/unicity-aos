@@ -30,8 +30,13 @@
   `echo`, `write-file`, and `cat` commands with no host-process authority.
 - A versioned Linux Realm path-identity contract separating semantic mount IDs,
   guest paths, Astrid resource URIs, and human display paths. Execution and
-  status responses now distinguish mounted nested-WASM projections from the
-  Linux guest's current RAM-only home and unmounted workspace.
+  status responses distinguish the Linux guest's invocation-mounted workspace
+  from its RAM-only home and temporary storage.
+- A bounded Linux workspace portal: a GPL `trans=aos` 9P transport crosses a
+  private experimental SBI request into the Rust Realm machine and 9P server,
+  then resolves only the current invocation's Astrid `cwd://` COW capability.
+  PID 1 remounts it before every shell call so FIDs cannot cross invocation
+  boundaries.
 - Crash-consistent `aos-linux-realm` home generations: a principal-scoped atomic
   KV head selects immutable BLAKE3-addressed file and manifest blobs, with
   concurrent-writer retry, corruption checks, daemon-restart recovery, and lazy

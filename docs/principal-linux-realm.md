@@ -1,6 +1,6 @@
 # AOS Principal Linux Realm Capsule
 
-Status: active implementation programme; bounded RV64IMA/Sv39 machine core live
+Status: active implementation programme; bounded Linux guest and workspace portal live
 
 Last reviewed: 2026-07-19
 
@@ -157,27 +157,45 @@ CPU interrupt controller, UART, boot arguments, and initramfs range without
 invoking `dtc` at build or runtime. Its bytes have also been independently parsed
 by DTC 1.8.1.
 
-The private firmware implements the SBI 3.0 Base, TIME, DBCN, and SRST subsets.
+The private firmware implements the SBI 3.0 Base, TIME, DBCN, and SRST subsets,
+plus one AOS experimental extension for bounded host requests.
 Debug-console buffers are accepted only when their complete physical range lies
 in admitted RAM; timer requests map the machine timer into the delegated
 Supervisor timer line; a successful reset halts the bounded machine. The
 `0x414f5300` implementation value is a private, unregistered profile value, not a
 claim to an assigned RISC-V SBI implementation ID.
 
+The first host request uses experimental EID `0x08414f53`, channel 2, for the
+workspace's 9P transport. Linux supplies one complete request and response buffer;
+the machine validates both full physical ranges, copies the request into an owned
+Rust value, and returns a typed suspension to the Realm. No more guest steps are
+possible while that request is pending. The initiating ECALL is charged as one
+non-retiring machine step, the bounded Rust service completes or fails the exact
+request ID, and only then may Linux resume.
+
 The pinned Linux longterm 6.18.39 image now reaches the AOS-controlled `/init`
 inside a 32 MiB machine and remains alive in a framed console command loop. Its
 source archive matches kernel.org SHA-256
 `a7a7e3d2ae9d95e74197223a8d4eb5f6be7aac21b6e6de27e9685d001c1f8cb0`;
 the Buildroot 2026.05.1 rootfs is
-`84d4edfc386be77369121f109ce180566f02393f8a314c8054787a27071a7bee`,
+`0877c008ec43627d9aeefc30c4e09412ceeb6aefb25b799b2365d002261b891b`,
 and the deterministic raw `Image` is
-`fadd0391fb17e54fc4831999a3a0ba87fffd51a14f84a3b6cc0b836cb8a15476`.
+`4a2bccd131828faa46711d546e169e4f32d0a6ec0ed66ed309dcf3ae012e9065`.
 The checked-in capsule regression asserts the exact kernel and userland
 versions, AOS machine model, PID 1 launch and ready markers, diagnostic state
 continuity, real UID-1000 BusyBox shell execution, warm in-RAM file continuity,
 nonzero exit propagation, forged-frame rejection, background descendant cleanup,
-the exact five-device surface and unreadable PID-1 console descriptors, clean SBI
+real Linux create/write/rename/read/readdir through `/workspace`, a clean
+unmount/remount across calls, the exact five-device surface and unreadable PID-1
+console descriptors, clean SBI
 shutdown, RAM release, and fresh restart.
+
+That regression drives the real Linux 9P client, SBI transport, machine boundary,
+and Rust server against a native temporary export so it can run without inventing
+an Astrid invocation context. The production adapter is separately path-tested,
+deny-warnings checked, and compiled into the `wasm32-unknown-unknown` capsule; an
+installed Astrid `>=0.10.2` run is still required before claiming an end-to-end
+production `cwd://` mount.
 
 The earlier cold-boot artifact ran through AOS Runtime 0.10.1 as an installed
 `wasm32-unknown-unknown` component and established the live tool path. The
@@ -191,11 +209,16 @@ room for the embedded image, interpreter, stack, and capsule state.
 This is now the first useful agent-workbench slice: static musl 1.2.6, BusyBox
 1.38.0, `ash`, `/proc`, `/sys`, and a UID/GID-1000 agent home execute inside the
 measured RV64 guest. It is not Bash, Debian, or the completed distribution. It
-has no Python, in-guest compiler, package manager, network, PTY, durable disk, or
-workspace mount. Its static `/dev` contract is only console, null, zero, random,
-and urandom: there are no raw-memory, block, network, graphics, additional TTY,
-or PTY nodes. The kernel disables legacy `TIOCSTI`, both PTY families,
-networking, raw memory/port devices, input, and media support.
+has no Python, in-guest compiler, package manager, network, PTY, or durable disk.
+It does mount the current invocation's Astrid COW workspace through synchronous
+9P before each shell call. Its static `/dev` contract is only console, null, zero,
+random, and urandom: there are no raw-memory, block, network, graphics,
+additional TTY, or PTY nodes. The kernel disables legacy `TIOCSTI`, both PTY
+families, IP/Unix networking, network devices, raw memory/port devices, input,
+and media support. `CONFIG_NET` remains only because Linux's 9P core depends on
+it. Linux therefore also selects its internal classic-BPF and RX-busy-poll
+helpers, but the `bpf(2)` syscall, packet/IP/Unix families, network devices,
+ethtool netlink surface, and every non-AOS 9P transport remain disabled.
 A PLIC, compressed instructions, and virtio block also remain absent and will be
 added only when an admitted device requires them.
 
@@ -212,7 +235,7 @@ Realm adapter (program admission, outer fuel/output ceilings)
         -> CsrFile (typed implemented CSR set and WARL masks)
         -> exception entry (delegation and xstatus stack update)
         -> Sv39 walk and permission check (virtual to admitted physical address)
-        -> SbiFirmware (Base/TIME/DBCN/SRST; no outer authority)
+        -> SbiFirmware (Base/TIME/DBCN/SRST plus bounded AOS host requests)
         -> Devices (admitted RAM, deterministic CLINT, UART, test finisher)
   -> boot_linux (image/initramfs admission, generated FDT, exact S-mode handoff)
 ```
@@ -245,11 +268,13 @@ an implicit RISC-V device.
 | Counters | Architectural counters are deterministic and guest-writable machine counters cannot rewrite outer Realm accounting | cycle/time/instret reads and M/S/U counter-enable matrix |
 | Interrupts | Pending/enable/delegation/global-enable selection precedes fetch; entry preserves the interrupted PC and vectors only interrupts | CLINT M-timer vectored entry and delegated S-timer/WFI regressions |
 | Linux placement | Kernel, initramfs, and FDT ranges are checked before mutation; Linux receives the standard RV64 register handoff in S-mode | exact RAM-byte, FDT-header, layout, register, CSR, and privilege assertions |
-| SBI boundary | Firmware sees only admitted RAM, deterministic time, and bounded console/reset devices; unsupported extensions fail closed | Base 3.0 probe, DBCN write, TIME interrupt, SRST halt, and invalid-address regressions |
+| SBI boundary | Firmware sees only admitted RAM, deterministic time, bounded console/reset devices, and typed host requests; unsupported extensions fail closed | Base 3.0 probe, DBCN write, TIME interrupt, SRST halt, invalid-address regressions, and pending-request exclusion |
+| Workspace portal | One complete 9P request is copied from validated guest RAM, served only against the invocation's `cwd://` capability, and completed into the exact admitted response range | Linux creates, writes, renames, lists and rereads a file, then remounts and rereads it in the next invocation |
 
-The table is also the review boundary: a useful static shell does not imply a
-durable distribution. The next increment connects a durable block overlay to
-the principal Realm filesystem contract and projects an admitted workspace.
+The table is also the review boundary: a useful static shell and mounted
+invocation workspace do not imply a durable distribution. The next storage
+increment connects the principal Realm home and a durable root overlay without
+weakening the already narrower workspace capability.
 
 ## 3. The system seen from each side
 
@@ -430,22 +455,23 @@ realm. `/home/agent` is a dedicated namespace backed by principal-scoped storage
 A workspace mount is separately granted so a destructive command in the Linux home
 cannot silently reach unrelated Astrid state.
 
-The executable seed uses that shape through two different consumers. They must
-not be described as one mount namespace before the transport exists:
+The executable seed uses that shape through two different consumers. Their
+durability still differs even where the workspace object is shared:
 
 - nested core-WASM programs see the principal-scoped versioned `/home/agent`, the
   invocation's Astrid `cwd://` copy-on-write `/workspace`, and the principal's
   ephemeral `/tmp` through audited host imports;
-- Linux currently sees an initramfs `/home/agent` and `/tmp`, preserved only in
-  its warm guest RAM, and no `/workspace`. The durable home and COW workspace are
-  declared targets, not mounted Linux storage.
+- Linux sees an initramfs `/home/agent` and `/tmp`, preserved only in its warm
+  guest RAM, plus the current invocation's same Astrid `cwd://` COW workspace at
+  `/workspace` through bounded 9P.
 
 That distinction is intentional. A command running inside the realm cannot silently
 commit source-tree changes merely because it can write its projected workspace.
 Promotion is an outer authority decision and must produce an audit record. The
-current seed does not yet expose a realm-side commit tool. It also rejects a
-Linux `/workspace` CWD until the file transport is real; sharing the spelling
-without sharing the object would be worse than an explicit missing mount.
+current seed does not yet expose a realm-side commit tool. Linux accepts
+`/workspace` and normalized descendants as CWDs only because the file transport
+now mounts that exact capability; `/home/agent` still names guest RAM rather than
+the nested-WASM durable home.
 
 The storage identity should be:
 
@@ -501,15 +527,15 @@ The current projection matrix is deliberately candid:
 
 | Role | Person display | Guest spelling | Astrid resource | Nested WASM | Linux now | Stability |
 | --- | --- | --- | --- | --- | --- | --- |
-| Workspace | `Workspace/src/lib.rs` | `/workspace/src/lib.rs` | `cwd://src/lib.rs` | mounted COW | not mounted | invocation |
+| Workspace | `Workspace/src/lib.rs` | `/workspace/src/lib.rs` | `cwd://src/lib.rs` | mounted COW | mounted COW during invocation | invocation |
 | Agent home | `Agent Home/.config/aos` | `/home/agent/.config/aos` | principal Realm home URI | mounted durable generation | guest RAM only | principal generation or Linux boot |
 | Temporary | `Temporary Files/job.log` | `/tmp/job.log` | principal Realm temp URI | mounted ephemeral | guest RAM only | Realm boot |
 
 The identical `/home/agent` spelling in the two consumers does not currently
 name the same storage object. Every response therefore names its consumer and
-projection. A Linux path has no Astrid `resource_uri` or durable generation until
-the guest file transport mounts one. Bare RV64 diagnostic programs have no active
-filesystem path.
+projection. A Linux workspace path carries its real `cwd://` resource URI but no
+durable generation; Linux home and temporary paths have no Astrid resource URI.
+Bare RV64 diagnostic programs have no active filesystem path.
 
 The Realm home ID is stable only inside the verified owner and Realm. The current
 `cwd://` import exposes neither a stable workspace attachment ID nor a generation,
@@ -551,7 +577,7 @@ The ambiguity rules are:
 | A path escapes every admitted root, uses an unmounted root, or has a physical host prefix | Reject before any storage operation |
 | A symlink would escape a mount | Resolve beneath the mount in the transport and reject the escape |
 | Principal B replays principal A's reference | Reject at the stamped-principal and mount-ownership boundary |
-| Linux requests `/workspace` before transport | Reject; do not chdir into an empty lookalike directory |
+| Linux requests a workspace descendant that does not exist after mount | Let guest `chdir` fail; do not redirect it to home or create it implicitly |
 
 The tool response remains additive: `requested_cwd` preserves what the caller
 asked for, `cwd` reports the effective guest CWD, and `path_context` is the
@@ -562,19 +588,55 @@ single `default_cwd` remains the nested-WASM value for compatibility. A future
 tool input may accept a typed `PathRef`, but the contract should remain
 capsule-private until at least two consumers require a shared WIT surface.
 
-The next transport increment needs three separate pieces:
+The selected transport is synchronous 9P2000.L over the private bounded SBI host
+request. PID 1 unmounts and remounts `/workspace` before every shell call. That
+rule is necessary because `cwd://` still exposes neither a stable attachment ID
+nor an epoch: all prior FIDs are discarded before a new invocation can bind its
+workspace. The remaining identity work is to have the runtime supply an opaque
+attachment ID and epoch, carry it through typed receipts and audit, and reject a
+stale reference before entering Linux. Transport choice does not change the path
+identity or Astrid's outer promotion requirement.
 
-1. a runtime-supplied workspace attachment ID and epoch, without physical paths;
-2. a read/write guest file transport such as bounded 9P or virtio-fs, connected
-   to the existing principal VFS and COW workspace adapters;
-3. admission and receipt plumbing that carries the same typed reference across
-   UI, agent, capsule, transport, and audit boundaries.
+### 6.2 What is the driver?
 
-Transport choice does not change path identity. It only changes a mount
-descriptor from `not-mounted` or `guest-ram-only` to `mounted` after the backing
-object and durability semantics are proven.
+The workspace driver is a protocol stack, not one privileged binary:
 
-### 6.2 Selected seed representation
+```text
+Linux VFS and 9P client
+  -> GPL-2.0-only trans=aos kernel transport
+  -> experimental SBI request in admitted guest RAM
+  -> MIT/Apache AOS machine host-request boundary
+  -> bounded Rust 9P server
+  -> Astrid cwd:// adapter
+  -> invocation-scoped COW workspace capability
+```
+
+The in-kernel transport is the guest driver in the conventional Linux sense. It
+knows 9P request buffers and SBI, but has no Astrid credentials, physical path,
+network socket, shared ring, DMA, or direct host handle. The Rust 9P server is the
+device model: it defines bounded filesystem behavior and rejects unsupported or
+escaping operations. The final adapter is the authority driver: it can exercise
+only the kernel-stamped invocation's `cwd://` capability.
+
+One mount admits at most 64 KiB per message, 1,024 live FIDs, 4,096 materialized
+directory entries, and 16,384 retained QID path identities. Exhaustion returns a
+guest-visible error instead of growing the capsule without bound.
+
+This is the pattern for later devices. A small guest-facing mechanism speaks a
+versioned protocol; a capsule or kernel service implements policy-free device
+semantics; Astrid binds the request to an explicit capability and meters it. A
+WASM driver may implement a filesystem, network, display, audio, or accelerator
+service, but it does not receive arbitrary MMIO or DMA merely by being called a
+driver. Physical hardware still needs a protected native mechanism beneath that
+service. For a GPU, the safe early portal is a validated command/resource API,
+not exposing the physical GPU driver ABI to an agent capsule.
+
+The C transport is GPL-2.0-only because it is compiled into Linux. Linux and
+BusyBox remain GPL works with corresponding-source obligations. The Rust machine,
+9P server, capsule, and Astrid runtime remain MIT/Apache across the SBI protocol
+boundary; none is linked into the kernel.
+
+### 6.3 Selected seed representation
 
 The seed deliberately uses both Astrid storage mechanisms, each for the property
 it is good at:
@@ -620,7 +682,7 @@ directory metadata, no links, no guest flush instruction, no named checkpoint,
 and no garbage collection. These omissions are reported as remaining work rather
 than implied POSIX behavior.
 
-### 6.3 Base and overlay
+### 6.4 Base and overlay
 
 - The base image is immutable, signed, content-addressed, and globally cacheable.
 - The overlay contains only blocks or files changed by the principal.
@@ -630,7 +692,7 @@ than implied POSIX behavior.
   require explicit tests. The seed currently proves only bounded file replacement
   and atomic selected-home generations over real Astrid storage.
 
-### 6.4 Persistence levels
+### 6.5 Persistence levels
 
 The first guarantee is durable filesystem state across realm restart. It does not
 include a live RAM or process checkpoint.
@@ -788,6 +850,35 @@ target one principal Store while allowing different principals' Stores to run
 concurrently. Background jobs still require an explicit job lifecycle rather
 than being smuggled through residency.
 
+A shell command is foreground by default. PID 1 waits for its direct child,
+kills and reaps every remaining descendant, and closes the command boundary
+before returning. Shell syntax such as `command &` therefore cannot create
+durable work. An agent that intends continued execution must say so through a
+separate Realm job operation with an explicit completion policy, execution
+budget, cancellation authority, and output sink. The minimum future record is:
+
+```text
+BackgroundJob {
+  handle
+  owner_principal
+  realm_boot_sequence
+  command_or_capsule
+  lifecycle: UntilComplete | UntilDeadline | UntilCancelled | WakeOnEvent
+  cpu_and_io_budget
+  started_at
+  last_observed_state
+  output_stream_or_artifact
+}
+```
+
+The handle, rather than a guest PID, crosses tool calls. A frozen resident VM
+is not a background job: it consumes no guest steps and makes no progress while
+no admitted invocation is driving it. Once background jobs exist, the Astrid
+scheduler must explicitly wake and meter them to the same principal, and idle
+eviction must refuse or deliberately cancel them according to their recorded
+lifecycle. The current implementation intentionally supports foreground work
+only.
+
 The earlier manual actor could see the broker call ID and held a bounded replay
 window. The SDK's direct tool method currently receives only deserialized tool
 arguments, so that cache is not present in the principal-affine path. This is an
@@ -846,9 +937,10 @@ stopping an already-cold Realm is idempotent. A guest trap, fuel exhaustion,
 output-limit failure, or cooperative-host failure also discards uncertain RAM.
 Runtime idle eviction, unload, and daemon restart destroy the Store and therefore
 the VM. Principal Realm home state is durable but is not yet attached to the
-Linux guest. `linux_realm_status` exposes this distinction as resident but
-evictable RAM and non-persistent Linux storage rather than calling it a durable
-VM.
+Linux guest. The invocation workspace is attached independently on every shell
+call and retains Astrid's COW/promotion semantics. `linux_realm_status` exposes
+the workspace as mounted, home and temporary storage as guest-RAM-only, and the
+overall Linux disk as non-persistent rather than calling it a durable VM.
 
 The missing runtime primitive was implemented from freshly fetched Astrid Runtime
 0.10.1 upstream `main` commit
@@ -894,8 +986,9 @@ Its non-negotiable rules are:
 4. Residency is bounded both per principal and globally. Admission fails or
    explicitly evicts an idle lease; it never grows an unbounded map in one Store.
 5. Idle eviction destroys RAM and returns the Realm to `cold`. The first
-   guarantee is filesystem persistence, not a memory checkpoint; Linux does not
-   yet have a block device to flush.
+   guarantee is filesystem persistence, not a memory checkpoint; the invocation
+   workspace has no guest state to flush after its 9P session is closed, and
+   Linux still has no durable root or home block device.
 6. The current `linux-shutdown` returns to restartable `cold`. A distinct
    operator-disabled `stopped` state that prevents implicit auto-start remains an
    explicit lifecycle-policy increment rather than an invented guarantee.
@@ -903,10 +996,10 @@ Its non-negotiable rules are:
    charged guest steps, charged outer fuel, peak memory, and lifecycle reason.
 
 Principal-affine residency, idle Store eviction, the persistent Linux supervisor,
-token-bound console transport, bounded BusyBox shell, and clean shutdown are
-now implemented. The next order is the durable block device and workspace
-projection, explicit disabled-vs-evicted lifecycle policy, then deterministic
-virtual SMP. Initial SMP can interleave
+token-bound console transport, bounded BusyBox shell, invocation workspace, and
+clean shutdown are now implemented. The next order is durable home/root storage,
+explicit disabled-vs-evicted lifecycle policy, then deterministic virtual SMP.
+Initial SMP can interleave
 harts in one host thread with a fixed scheduling quantum. True host-parallel harts
 remain optional because they add races to snapshots, metering, devices, and
 reproducibility without improving cross-principal isolation.
@@ -1446,12 +1539,20 @@ CE set rather than test-installed companions.
 - [x] mount a principal-private durable home, projected COW workspace, and
   principal-private temporary namespace for nested core-WASM programs;
 - [x] define a versioned typed path context that distinguishes guest, Astrid, and
-  person-facing paths and reports Linux's unmounted/guest-RAM projections honestly;
-- [ ] obtain a stable workspace attachment ID/epoch from the runtime and mount the
-  admitted home and workspace into Linux through a bounded file transport;
+  person-facing paths and reports Linux's mounted-workspace/guest-RAM projections honestly;
+- [x] mount the invocation's admitted `cwd://` workspace into Linux through a
+  bounded synchronous 9P/SBI file transport, remount it for every call, and prove
+  real Linux create/write/rename/read/readdir across two calls;
+- [ ] obtain a stable workspace attachment ID/epoch from the runtime and carry it
+  through admission, receipts, audit, and the Linux transport;
+- [ ] attach the durable principal home to Linux without conflating it with the
+  invocation workspace or warm guest RAM;
 - [x] implement bounded sequential open/read/write/close using whole-file Astrid
   VFS calls;
-- implement seek/stat/rename/unlink and a real flush barrier;
+- [x] implement positional I/O, stat, rename, unlink, and file flush for the
+  invocation workspace through Astrid's resource-backed file handles;
+- implement those remaining operations for the separate versioned principal-home
+  store before presenting it as Linux storage;
 - add immutable base plus COW overlay generations;
 - kill the realm during writes and verify declared crash semantics;
 - restart and observe the same principal's bytes, but never another's.
@@ -1513,6 +1614,10 @@ CE set rather than test-installed companions.
   1.2.6 and BusyBox 1.38.0; execute `ash` as UID 1000 through token-bound
   frames, strip privilege bits, close console input, bound descendants and prove
   warm file continuity plus exact exit status;
+- [x] implement a GPL Linux `trans=aos` 9P transport over an experimental bounded
+  SBI request, an authority-free Rust 9P device model, and an Astrid `cwd://`
+  adapter; remount `/workspace` before each shell command and keep all other 9P,
+  network, virtio, PLIC, and DMA paths absent;
 - add explicit Realm `start`, `stop`, and status transitions plus bounded idle
   eviction after that Store is kernel-metered to its verified principal;
 - add deterministic multi-hart scheduling, SBI HSM/IPI support, per-hart CLINT
@@ -1523,7 +1628,8 @@ CE set rather than test-installed companions.
   lifecycle, cancellation, and accounting use the same semantic kernel as other
   foreground work;
 - produce a signed minimal image with shell, Git, and Python;
-- add workspace projection and artifact export;
+- [x] add the invocation workspace projection;
+- add typed workspace diff and artifact export through an outer promotion flow;
 - add a mediated dependency fetch path;
 - persist the agent home and tool caches;
 - run a real repository inspection/edit/test loop;
@@ -1674,7 +1780,80 @@ The Linux realm is a system capsule with unusually rich internal semantics. It i
 not a second authority kernel. Astrid remains responsible for principal identity,
 outer grants, installation, revocation, metering, audit, and recovery.
 
-## 21. Open decisions
+## 21. Deferred agent-OS and Tensor Logic seam
+
+Status: design scaffold only. It is deliberately not active in scheduling,
+authorization, routing, or metering yet.
+
+The full cross-repository designs are pinned at Astrid commit `d505d46c`:
+[AI-native OS workplan](https://github.com/astrid-runtime/astrid/blob/d505d46c671effeee919fd4deb86f6d4a40e2e6d/docs/astrid-ai-native-os-workplan.md),
+[driver domain contract](https://github.com/astrid-runtime/astrid/blob/d505d46c671effeee919fd4deb86f6d4a40e2e6d/docs/astrid-driver-domain-contract.md),
+[Tensor Logic composition](https://github.com/astrid-runtime/astrid/blob/d505d46c671effeee919fd4deb86f6d4a40e2e6d/docs/astrid-tensor-logic-composition.md),
+and [native-kernel scope](https://github.com/astrid-runtime/astrid/blob/d505d46c671effeee919fd4deb86f6d4a40e2e6d/docs/astrid-native-kernel.md).
+This section records only the Linux Realm's integration seam with those designs.
+
+The larger agent-OS direction takes Plan 9's useful lesson—small named resources,
+composable namespaces, and protocol-shaped services—without forcing every device
+or semantic object into an undifferentiated file abstraction. Astrid's existing
+principal, capability, capsule, WIT, topic, and audit boundaries remain the real
+system. Capsules may dock as services or applications; the kernel continues to
+route, isolate, meter, revoke, and record rather than learning business logic.
+
+The future connection fabric is a typed relation over all admitted inputs,
+outputs, and interfaces. It is not a knowledge graph. A minimal descriptor needs:
+
+```text
+Port {
+  owner_capsule_digest
+  interface_type
+  direction: Input | Output | Duplex
+  schema_or_tensor_shape
+  scalar_type
+  units_or_semantic_kind
+  cardinality
+  capability_requirements
+  confidentiality_and_integrity_label
+  latency_and_cost_model
+  determinism
+  version
+}
+
+Connection {
+  producer_port
+  consumer_port
+  adapter_chain
+  principal_and_grant
+  budget
+  lifecycle
+}
+```
+
+Tensor Logic is reserved as a later AI-language and planning backend over those
+typed relations: Datalog-like rule selection, einsum-like tensor composition,
+and learned scoring may propose or optimize valid connections. It is not a proof
+engine, and it does not replace capability checks. A conventional deterministic
+validator must first decide schema, direction, version, authority, information
+flow, resource, and lifecycle compatibility; only admitted candidates reach a
+Tensor Logic planner. This seam lets the algebra arrive later without putting
+tensor dependencies or opaque learned decisions into the current kernel.
+
+The same model explains drivers and graphics. A driver advertises typed device
+ports and implements a narrow protocol behind them. A WASM service can transform,
+schedule, or validate requests, while a protected native mechanism retains MMIO,
+DMA, interrupts, and physical reset authority. A game capsule eventually targets
+a versioned surface/command-buffer/input/audio contract; the GPU portal validates
+resources and commands before the physical driver sees them. Linux's 9P stack is
+the first executable example of that split.
+
+This does not need another repository yet. The Linux Realm belongs in `aos-ce`
+while it is a product capsule and design probe. Generic runtime enforcement stays
+in Astrid core; stable cross-capsule contracts belong in canonical WIT with an RFC;
+SDK projections follow those contracts. A new repository becomes justified only
+when the connection algebra or agent distribution has an independently versioned
+release, conformance suite, and maintainership boundary. Until then, additive
+interfaces preserve every current capsule and let services opt in one at a time.
+
+## 22. Open decisions
 
 The first implementation must resolve these with executable evidence:
 
@@ -1706,11 +1885,12 @@ Decision 13 for the eventual explicit lifecycle: evict only an idle Realm with
 no foreground job, refuse implicit eviction of background work, flush its selected
 filesystem generation, destroy RAM, preserve its boot-generation history, and
 report the eviction reason. The current proof has no background jobs or
-Linux-attached filesystem to flush. It maps clean shutdown and eviction to
-restartable `cold`; a future operator-disabled `stopped` state will require
-explicit restart.
+durable Linux home/root filesystem to flush. Its invocation-scoped 9P workspace
+is remounted at each foreground boundary and cannot make progress while the guest
+is frozen. It maps clean shutdown and eviction to restartable `cold`; a future
+operator-disabled `stopped` state will require explicit restart.
 
-## 22. Implementation ledger and immediate task list
+## 23. Implementation ledger and immediate task list
 
 - [x] place `capsule-linux-realm` in the authoritative `unicity-aos/aos-ce`
   monorepo;
@@ -1734,7 +1914,11 @@ explicit restart.
 - [x] return versioned `PathRef`/`MountContext` data, requested and effective CWD,
   audience-specific renderings, and projection state without physical host paths;
 - [ ] carry an opaque workspace attachment ID and epoch from runtime admission to
-  Realm receipts, then use the same identity for the Linux file transport;
+  Realm receipts and the already-live Linux file transport;
+- [x] implement the bounded 9P2000.L server, Astrid `cwd://` adapter, private
+  SBI host-request boundary, GPL Linux transport, per-call remount, and exact
+  Linux read/write/rename/remount regression without adding virtio, PLIC, sockets,
+  DMA, or host-process authority;
 - [x] verify principal-scoped home persistence across daemon restart and reject a
   second principal's read of those bytes;
 - [x] invoke the packaged capsule through a live Astrid 0.10.1 daemon and MCP
@@ -1804,11 +1988,12 @@ explicit restart.
 The Linux-bearing executable artifact is now a useful static workbench: pinned
 Linux 6.18.39 serial-boots the Buildroot 2026.05.1 rootfs, executes token-bound
 BusyBox `ash` commands as UID 1000 across separate invocations, preserves warm
-userspace RAM, powers down cleanly, and restarts. The next artifact is a durable
-virtio-block projection of the principal home and workspace. The firmware
-contract beneath it is executable: exact image/initramfs placement, generated
-FDT bytes, S-mode register state, and bounded SBI 3.0 Base/TIME/DBCN/SRST
-handling.
+userspace RAM, mounts the invocation's COW workspace through a bounded 9P/SBI
+portal, powers down cleanly, and restarts. The next storage artifact is a durable
+principal-home and root overlay; the workspace remains a narrower
+invocation-scoped capability. The firmware contract beneath it is executable:
+exact image/initramfs placement, generated FDT bytes, S-mode register state,
+bounded SBI 3.0 Base/TIME/DBCN/SRST handling, and typed host-request suspension.
 Every artifact must run in bounded slices and
 fail with an exact architectural trap before virtio block, persistence,
 networking or broader distribution packages are added. The parallel process track still needs

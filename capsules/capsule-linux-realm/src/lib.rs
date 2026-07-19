@@ -9,9 +9,10 @@ mod actor;
 mod host;
 mod paths;
 
+use aos_realm_9p::Session as Plan9Session;
 use aos_realm_machine::{
-    Machine as Rv64Machine, MachineConfig as Rv64MachineConfig, RV64_SMOKE_PROGRAM,
-    RV64_SUPERVISOR_PROGRAM, SliceOutcome,
+    HostRequestFailure, Machine as Rv64Machine, MachineConfig as Rv64MachineConfig,
+    RV64_SMOKE_PROGRAM, RV64_SUPERVISOR_PROGRAM, SliceOutcome,
 };
 use aos_realm_runtime::{
     CAT_GUEST, ECHO_GUEST, ExecutionReport, GUEST_PIPELINE_GUEST, HostFault, MINI_SHELL_GUEST,
@@ -22,9 +23,13 @@ use aos_realm_runtime::{
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
+#[cfg(not(test))]
+use host::AstridWorkspace9p;
+#[cfg(test)]
+use host::NativeTestWorkspace9p;
 use host::{
-    AstridRealmHost, DEFAULT_CWD, REALM_HOME, REALM_NAME, REALM_TMP, ensure_layout, home_status,
-    layout_state, validate_cwd,
+    AstridRealmHost, DEFAULT_CWD, LINUX_WORKSPACE_9P_CHANNEL, REALM_HOME, REALM_NAME, REALM_TMP,
+    ensure_layout, home_status, layout_state, validate_cwd,
 };
 use paths::{
     MountContext, MountRole, PATH_CONTRACT_VERSION, PathConsumer, ProjectionState,
@@ -50,10 +55,25 @@ const LINUX_PROTOCOL_PREFIX: &str = "AOS/1 ";
 const LINUX_FRAME_TOKEN_BYTES: usize = 16;
 const LINUX_FRAME_TOKEN_HEX_BYTES: usize = LINUX_FRAME_TOKEN_BYTES * 2;
 const MAX_LINUX_COMMAND_BYTES: usize = 1024;
+const MAX_LINUX_CWD_BYTES: usize = 64;
 const LINUX_DEFAULT_CWD: &str = "/home/agent";
 #[cfg(target_arch = "wasm32")]
 const LINUX_COOPERATE_TOPIC: &str = "realm.v1.linux.cooperate";
 const AOS_LINUX_IMAGE: &[u8] = include_bytes!("../linux/Image");
+
+#[cfg(not(test))]
+type WorkspacePlan9Session = Plan9Session<AstridWorkspace9p>;
+#[cfg(test)]
+type WorkspacePlan9Session = Plan9Session<NativeTestWorkspace9p>;
+
+fn new_workspace_9p_session() -> Result<WorkspacePlan9Session, SysError> {
+    #[cfg(not(test))]
+    let filesystem = AstridWorkspace9p;
+    #[cfg(test)]
+    let filesystem = NativeTestWorkspace9p::new()?;
+    Plan9Session::new(filesystem, "workspace")
+        .map_err(|error| SysError::ApiError(error.to_string()))
+}
 
 /// One principal-owned Realm service.
 ///
@@ -94,8 +114,9 @@ pub struct ExecArgs {
     #[serde(default)]
     pub args: Vec<String>,
     /// Guest-visible CWD beneath `/workspace`, `/home/agent`, or `/tmp`.
-    /// The current Linux shell accepts only `/home/agent` until its workspace
-    /// projection is mounted; other Realm programs use `/workspace` by default.
+    /// The Linux shell accepts its RAM-backed `/home/agent` or the
+    /// invocation-scoped Astrid `/workspace`; other Realm programs use
+    /// `/workspace` by default.
     pub cwd: Option<String>,
     /// Optional lower fuel ceiling. It can never raise the capsule hard limit.
     pub fuel: Option<u64>,
@@ -311,9 +332,9 @@ impl LinuxRealm {
     ///
     /// Nested core-WASM programs can use the confined `/workspace`, durable
     /// `/home/agent`, and ephemeral `/tmp` Astrid projections. The Linux shell
-    /// currently runs in a separate RAM-only `/home/agent`; it rejects
-    /// `/workspace` until a real guest file transport mounts that projection.
-    /// The response describes the selected consumer and projection state.
+    /// has a separate RAM-only `/home/agent` and an invocation-scoped 9P mount
+    /// of the same admitted Astrid `/workspace`. The response describes the
+    /// selected consumer and projection state.
     #[astrid::tool("linux_realm_exec", mutable)]
     pub fn exec(&self, args: ExecArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
@@ -513,6 +534,10 @@ fn execute_rv64(program: &[u8], limits: RunLimits) -> Result<ExecutionReport, Sy
         SliceOutcome::Halted(status) => {
             ProcessOutcome::Exited(i32::try_from(status.code).unwrap_or(i32::MAX))
         }
+        SliceOutcome::HostRequest(request) => ProcessOutcome::Trapped(format!(
+            "bare RV64 execution unexpectedly requested 9P host service {}",
+            request.id.get()
+        )),
         SliceOutcome::Trapped(trap) => ProcessOutcome::Trapped(trap.to_string()),
     };
     Ok(ExecutionReport {
@@ -558,8 +583,10 @@ struct LinuxDriveReport {
 
 fn execute_linux_resident(
     machine: &mut Option<Rv64Machine>,
+    workspace_9p: &mut Option<WorkspacePlan9Session>,
     action: LinuxAction,
     command: Option<&str>,
+    cwd: &str,
     limits: RunLimits,
 ) -> Result<LinuxInvocationReport, SysError> {
     let frame_token =
@@ -572,9 +599,10 @@ fn execute_linux_resident(
     {
         let cooperate = ipc::subscribe(LINUX_COOPERATE_TOPIC)?;
         return execute_linux_resident_cooperatively(
-            machine,
+            LinuxResidentState::new(machine, workspace_9p),
             action,
             command,
+            cwd,
             frame_token.as_deref(),
             limits,
             || {
@@ -589,29 +617,53 @@ fn execute_linux_resident(
 
     #[cfg(not(target_arch = "wasm32"))]
     execute_linux_resident_cooperatively(
-        machine,
+        LinuxResidentState::new(machine, workspace_9p),
         action,
         command,
+        cwd,
         frame_token.as_deref(),
         limits,
         || Ok(()),
     )
 }
 
+struct LinuxResidentState<'a> {
+    machine: &'a mut Option<Rv64Machine>,
+    workspace_9p: &'a mut Option<WorkspacePlan9Session>,
+}
+
+impl<'a> LinuxResidentState<'a> {
+    fn new(
+        machine: &'a mut Option<Rv64Machine>,
+        workspace_9p: &'a mut Option<WorkspacePlan9Session>,
+    ) -> Self {
+        Self {
+            machine,
+            workspace_9p,
+        }
+    }
+}
+
 fn execute_linux_resident_cooperatively(
-    machine: &mut Option<Rv64Machine>,
+    state: LinuxResidentState<'_>,
     action: LinuxAction,
     command: Option<&str>,
+    cwd: &str,
     frame_token: Option<&str>,
     limits: RunLimits,
     mut cooperate: impl FnMut() -> Result<(), SysError>,
 ) -> Result<LinuxInvocationReport, SysError> {
+    let LinuxResidentState {
+        machine,
+        workspace_9p,
+    } = state;
     if matches!(action, LinuxAction::Console | LinuxAction::Shell) && command.is_none() {
         return Err(SysError::ApiError(
             "Linux execution requires a validated command".to_string(),
         ));
     }
     if action == LinuxAction::Shutdown && machine.is_none() {
+        *workspace_9p = None;
         return Ok(LinuxInvocationReport {
             outcome: "stopped",
             exit_status: Some(0),
@@ -631,6 +683,7 @@ fn execute_linux_resident_cooperatively(
     let booted = machine.is_none();
 
     if booted {
+        *workspace_9p = None;
         let mut resident = Rv64Machine::new(Rv64MachineConfig {
             ram_bytes: limits.memory_bytes,
             // Console chunks are drained after every scheduling slice. The
@@ -649,6 +702,7 @@ fn execute_linux_resident_cooperatively(
 
         let report = match drive_linux_until(
             machine.as_mut().expect("machine inserted"),
+            workspace_9p,
             limits.fuel,
             limits.output_bytes,
             LinuxAction::Boot,
@@ -658,6 +712,7 @@ fn execute_linux_resident_cooperatively(
             Ok(report) => report,
             Err(error) => {
                 *machine = None;
+                *workspace_9p = None;
                 return Err(error);
             }
         };
@@ -666,6 +721,7 @@ fn execute_linux_resident_cooperatively(
         stdout.extend_from_slice(&report.stdout);
         if !matches!(report.outcome, LinuxDriveOutcome::Ready) {
             *machine = None;
+            *workspace_9p = None;
             return Ok(linux_failure_report(
                 report.outcome,
                 stdout,
@@ -701,7 +757,7 @@ fn execute_linux_resident_cooperatively(
     })?;
     validate_linux_frame_token(frame_token)?;
     let framed_command = if action == LinuxAction::Shell {
-        format!("sh {command}")
+        format!("sh {} {cwd} {command}", cwd.len())
     } else {
         command.to_string()
     };
@@ -715,6 +771,7 @@ fn execute_linux_resident_cooperatively(
     let remaining_output = limits.output_bytes.saturating_sub(stdout.len());
     let report = match drive_linux_until(
         machine.as_mut().expect("machine remains resident"),
+        workspace_9p,
         remaining_fuel,
         remaining_output,
         action,
@@ -724,6 +781,7 @@ fn execute_linux_resident_cooperatively(
         Ok(report) => report,
         Err(error) => {
             *machine = None;
+            *workspace_9p = None;
             return Err(error);
         }
     };
@@ -745,6 +803,7 @@ fn execute_linux_resident_cooperatively(
         }),
         LinuxDriveOutcome::Halted(status) if action == LinuxAction::Shutdown && status == 0 => {
             *machine = None;
+            *workspace_9p = None;
             Ok(LinuxInvocationReport {
                 outcome: "stopped",
                 exit_status: Some(0),
@@ -759,6 +818,7 @@ fn execute_linux_resident_cooperatively(
         }
         outcome => {
             *machine = None;
+            *workspace_9p = None;
             Ok(linux_failure_report(
                 outcome,
                 stdout,
@@ -772,6 +832,7 @@ fn execute_linux_resident_cooperatively(
 
 fn drive_linux_until(
     machine: &mut Rv64Machine,
+    workspace_9p: &mut Option<WorkspacePlan9Session>,
     fuel: u64,
     output_bytes: usize,
     target: LinuxAction,
@@ -840,6 +901,26 @@ fn drive_linux_until(
                     fuel_consumed,
                     suspensions,
                 });
+            }
+            SliceOutcome::HostRequest(request) => {
+                if request.channel == LINUX_WORKSPACE_9P_CHANNEL {
+                    if workspace_9p.is_none() {
+                        *workspace_9p = Some(new_workspace_9p_session()?);
+                    }
+                    let response = workspace_9p
+                        .as_mut()
+                        .expect("workspace session inserted")
+                        .serve(&request.message);
+                    machine
+                        .complete_9p_request(request.id, &response)
+                        .map_err(|error| SysError::ApiError(error.to_string()))?;
+                } else {
+                    machine
+                        .fail_9p_request(request.id, HostRequestFailure::Denied)
+                        .map_err(|error| SysError::ApiError(error.to_string()))?;
+                }
+                suspensions = suspensions.saturating_add(1);
+                cooperate()?;
             }
             SliceOutcome::Trapped(trap) => {
                 return Ok(LinuxDriveReport {
@@ -1201,21 +1282,41 @@ fn select_program(args: &ExecArgs) -> Result<SelectedProgram, SysError> {
 fn linux_effective_cwd(
     action: LinuxAction,
     requested_cwd: Option<&str>,
-) -> Result<&'static str, SysError> {
+) -> Result<String, SysError> {
     if action != LinuxAction::Shell {
         if requested_cwd.is_some() {
             return Err(SysError::ApiError(
                 "cwd applies to linux-sh, not Linux lifecycle or diagnostic actions".to_string(),
             ));
         }
-        return Ok(LINUX_DEFAULT_CWD);
+        return Ok(LINUX_DEFAULT_CWD.to_string());
     }
 
-    match requested_cwd {
-        None | Some(LINUX_DEFAULT_CWD) => Ok(LINUX_DEFAULT_CWD),
-        Some(path) => Err(SysError::ApiError(format!(
-            "linux-sh cannot use cwd `{path}` yet: /workspace is declared but not mounted into the Linux guest; use /home/agent until the file transport lands"
-        ))),
+    let Some(requested) = requested_cwd else {
+        return Ok(LINUX_DEFAULT_CWD.to_string());
+    };
+    if !requested.starts_with('/') {
+        return Err(SysError::ApiError(format!(
+            "linux-sh cwd `{requested}` must be an absolute guest path"
+        )));
+    }
+    let normalized = host::canonical_guest_path("/", requested)
+        .map_err(|error| SysError::ApiError(format!("invalid linux-sh cwd: {error}")))?;
+    if normalized.len() > MAX_LINUX_CWD_BYTES {
+        return Err(SysError::ApiError(format!(
+            "linux-sh cwd exceeds the {MAX_LINUX_CWD_BYTES}-byte guest protocol limit"
+        )));
+    }
+    if normalized == LINUX_DEFAULT_CWD
+        || normalized.starts_with("/home/agent/")
+        || normalized == "/workspace"
+        || normalized.starts_with("/workspace/")
+    {
+        Ok(normalized)
+    } else {
+        Err(SysError::ApiError(format!(
+            "linux-sh cwd `{requested}` is outside the admitted /home/agent and /workspace roots"
+        )))
     }
 }
 
@@ -1286,7 +1387,7 @@ fn status_response(
                 durable: false,
                 reference_stability: ReferenceStability::Invocation,
                 nested_wasm_projection: ProjectionState::Mounted,
-                linux_projection: ProjectionState::NotMounted,
+                linux_projection: ProjectionState::Mounted,
             },
             MountStatus {
                 role: MountRole::Temporary,
@@ -1447,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_cwd_is_honest_until_the_file_transport_is_mounted() {
+    fn linux_cwd_admits_only_the_two_real_shell_roots() {
         assert_eq!(
             linux_effective_cwd(LinuxAction::Shell, None).expect("default Linux cwd"),
             LINUX_DEFAULT_CWD
@@ -1458,13 +1559,25 @@ mod tests {
             LINUX_DEFAULT_CWD
         );
 
-        let workspace_error = linux_effective_cwd(LinuxAction::Shell, Some("/workspace"))
-            .expect_err("an unmounted workspace cannot be selected");
-        assert!(
-            workspace_error
-                .to_string()
-                .contains("declared but not mounted")
+        assert_eq!(
+            linux_effective_cwd(LinuxAction::Shell, Some("/workspace"))
+                .expect("workspace is an invocation-scoped Linux mount"),
+            "/workspace"
         );
+        assert_eq!(
+            linux_effective_cwd(LinuxAction::Shell, Some("/workspace/src"))
+                .expect("workspace children remain inside the admitted mount"),
+            "/workspace/src"
+        );
+
+        let outside_error = linux_effective_cwd(LinuxAction::Shell, Some("/etc"))
+            .expect_err("an unadmitted Linux cwd cannot be selected");
+        assert!(outside_error.to_string().contains("outside the admitted"));
+
+        let oversized = format!("/workspace/{}", "x".repeat(MAX_LINUX_CWD_BYTES));
+        let oversized_error = linux_effective_cwd(LinuxAction::Shell, Some(&oversized))
+            .expect_err("PID 1 cannot admit a CWD larger than its frame limit");
+        assert!(oversized_error.to_string().contains("64-byte"));
 
         let lifecycle_error = linux_effective_cwd(LinuxAction::Console, Some(LINUX_DEFAULT_CWD))
             .expect_err("diagnostic actions do not accept a cwd");
@@ -1528,10 +1641,12 @@ mod tests {
             output_bytes: HARD_MAX_OUTPUT_BYTES,
         };
         let mut machine = None;
+        let mut workspace_9p = None;
         let boot = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Boot,
             None,
+            LINUX_DEFAULT_CWD,
             None,
             limits,
             || Ok(()),
@@ -1555,18 +1670,20 @@ mod tests {
         assert!(boot.suspensions > 100);
 
         let first = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Console,
             Some("counter"),
+            LINUX_DEFAULT_CWD,
             Some("0123456789abcdef0123456789abcdef"),
             limits,
             || Ok(()),
         )
         .expect("first resident command");
         let second = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Console,
             Some("counter"),
+            LINUX_DEFAULT_CWD,
             Some("fedcba9876543210fedcba9876543210"),
             limits,
             || Ok(()),
@@ -1581,11 +1698,12 @@ mod tests {
         assert!(machine.is_some(), "Linux RAM remains resident");
 
         let shell = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shell,
             Some(
                 "set -e; test ! -r /dev/console; test ! -r /proc/1/fd/0; test ! -r /proc/self/fd/1; test ! -r /proc/self/fd/2; test \"$(find /dev -type b -o -type c | wc -l)\" -eq 5; id -u; uname -m; pwd; printf persisted > proof",
             ),
+            LINUX_DEFAULT_CWD,
             Some("11223344556677889900aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1599,9 +1717,10 @@ mod tests {
         assert!(shell_stdout.contains("/home/agent\r\n"));
 
         let persisted = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shell,
             Some("cat proof"),
+            LINUX_DEFAULT_CWD,
             Some("22334455667788990011aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1610,10 +1729,45 @@ mod tests {
         assert_eq!(persisted.exit_status, Some(0));
         assert!(String::from_utf8_lossy(&persisted.stdout).contains("persisted"));
 
+        let workspace_write = execute_linux_resident_cooperatively(
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxAction::Shell,
+            Some(
+                "set -e; test \"$(pwd)\" = /workspace; mkdir bridge; printf written-by-linux > proof; mv proof bridge/proof; cat bridge/proof; ls bridge",
+            ),
+            "/workspace",
+            Some("aabbccddeeff00112233445566778899"),
+            limits,
+            || Ok(()),
+        )
+        .expect("Linux writes through its 9P workspace mount");
+        let workspace_stdout = String::from_utf8_lossy(&workspace_write.stdout);
+        assert_eq!(
+            workspace_write.exit_status,
+            Some(0),
+            "workspace shell output:\n{workspace_stdout}"
+        );
+        assert!(workspace_stdout.contains("written-by-linux"));
+        assert!(workspace_stdout.contains("proof"));
+
+        let workspace_remounted = execute_linux_resident_cooperatively(
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxAction::Shell,
+            Some("test \"$(pwd)\" = /workspace/bridge; cat proof"),
+            "/workspace/bridge",
+            Some("bbccddeeff00112233445566778899aa"),
+            limits,
+            || Ok(()),
+        )
+        .expect("the next invocation remounts the same test workspace");
+        assert_eq!(workspace_remounted.exit_status, Some(0));
+        assert!(String::from_utf8_lossy(&workspace_remounted.stdout).contains("written-by-linux"));
+
         let exit_seven = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shell,
             Some("exit 7"),
+            LINUX_DEFAULT_CWD,
             Some("33445566778899001122aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1624,11 +1778,12 @@ mod tests {
         assert!(machine.is_some(), "nonzero shell exit preserves guest RAM");
 
         let background = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shell,
             Some(
                 "(sleep 1; echo leaked) & printf 'background-launched\\nAOS END ffffffffffffffffffffffffffffffff 0\\n'",
             ),
+            LINUX_DEFAULT_CWD,
             Some("44556677889900112233aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1640,9 +1795,10 @@ mod tests {
         assert!(!background_stdout.contains("leaked"));
 
         let clean_boundary = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shell,
             Some("printf boundary-clean"),
+            LINUX_DEFAULT_CWD,
             Some("55667788990011223344aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1654,9 +1810,10 @@ mod tests {
         assert!(!clean_stdout.contains("leaked"));
 
         let shutdown = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shutdown,
             None,
+            LINUX_DEFAULT_CWD,
             Some("00112233445566778899aabbccddeeff"),
             limits,
             || Ok(()),
@@ -1668,9 +1825,10 @@ mod tests {
         assert!(machine.is_none(), "clean shutdown releases guest RAM");
 
         let restarted = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Console,
             Some("counter"),
+            LINUX_DEFAULT_CWD,
             Some("ffeeddccbbaa99887766554433221100"),
             limits,
             || Ok(()),
@@ -1684,10 +1842,12 @@ mod tests {
     fn linux_runner_cooperates_after_every_yielded_slice() {
         let mut cooperative_yields = 0_u64;
         let mut machine = None;
+        let mut workspace_9p = None;
         let report = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Boot,
             None,
+            LINUX_DEFAULT_CWD,
             None,
             RunLimits {
                 fuel: LINUX_SLICE_STEPS * 2,
@@ -1711,10 +1871,12 @@ mod tests {
     #[test]
     fn linux_shutdown_is_idempotent_while_cold() {
         let mut machine = None;
+        let mut workspace_9p = None;
         let report = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Shutdown,
             None,
+            LINUX_DEFAULT_CWD,
             None,
             RunLimits {
                 fuel: HARD_MAX_LINUX_STEPS,
@@ -1754,10 +1916,12 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
     #[test]
     fn linux_cooperation_failure_discards_partial_ram() {
         let mut machine = None;
+        let mut workspace_9p = None;
         let error = execute_linux_resident_cooperatively(
-            &mut machine,
+            LinuxResidentState::new(&mut machine, &mut workspace_9p),
             LinuxAction::Boot,
             None,
+            LINUX_DEFAULT_CWD,
             None,
             RunLimits {
                 fuel: HARD_MAX_LINUX_STEPS,
@@ -2081,7 +2245,7 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains(
             "\"cwd_defaults\":[{\"consumer\":\"nested-core-wasm\",\"cwd\":\"/workspace\"},{\"consumer\":\"linux-guest\",\"cwd\":\"/home/agent\"},{\"consumer\":\"bare-rv64\",\"cwd\":null}]"
         ));
-        assert!(json.contains("\"linux_projection\":\"not-mounted\""));
+        assert!(json.contains("\"linux_projection\":\"mounted\""));
         assert!(json.contains("\"linux_projection\":\"guest-ram-only\""));
         assert!(json.contains("outer-astrid-promotion-required"));
         assert!(!json.contains("/Users/"));

@@ -61,6 +61,7 @@ impl PrincipalRealm {
 #[derive(Default)]
 struct LinuxActivity {
     machine: Option<Rv64Machine>,
+    workspace_9p: Option<WorkspacePlan9Session>,
     boot_executions: u64,
     commands_completed: u64,
     clean_shutdowns: u64,
@@ -85,7 +86,7 @@ impl LinuxActivity {
             ));
         };
         let requested_cwd = args.cwd.clone();
-        let cwd = linux_effective_cwd(action, requested_cwd.as_deref())?.to_string();
+        let cwd = linux_effective_cwd(action, requested_cwd.as_deref())?;
         let hard_fuel = selected.execution.hard_fuel();
         let limits = RunLimits {
             fuel: args.fuel.unwrap_or(hard_fuel).min(hard_fuel),
@@ -96,7 +97,14 @@ impl LinuxActivity {
                 .min(HARD_MAX_OUTPUT_BYTES),
         };
         let command = selected.argv.get(1).map(String::as_str);
-        let report = execute_linux_resident(&mut self.machine, action, command, limits)?;
+        let report = execute_linux_resident(
+            &mut self.machine,
+            &mut self.workspace_9p,
+            action,
+            command,
+            &cwd,
+            limits,
+        )?;
 
         if report.booted {
             self.boot_executions = self.boot_executions.saturating_add(1);

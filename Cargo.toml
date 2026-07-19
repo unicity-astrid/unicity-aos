@@ -5,6 +5,7 @@ members = [
     "capsules/capsule-linux-realm/crates/realm-abi",
     "capsules/capsule-linux-realm/crates/realm-core",
     "capsules/capsule-linux-realm/crates/realm-machine",
+    "capsules/capsule-linux-realm/crates/realm-9p",
     "capsules/capsule-linux-realm/crates/realm-runtime",
     "capsules/capsule-linux-realm/crates/realm-vfs",
     "capsules/capsule-agents",
@@ -38,6 +39,7 @@ astrid-uplink = "=0.10.1"
 aos-realm-abi = { path = "capsules/capsule-linux-realm/crates/realm-abi" }
 aos-realm-core = { path = "capsules/capsule-linux-realm/crates/realm-core" }
 aos-realm-machine = { path = "capsules/capsule-linux-realm/crates/realm-machine" }
+aos-realm-9p = { path = "capsules/capsule-linux-realm/crates/realm-9p" }
 aos-realm-runtime = { path = "capsules/capsule-linux-realm/crates/realm-runtime" }
 aos-realm-vfs = { path = "capsules/capsule-linux-realm/crates/realm-vfs" }
 axum = "0.8"

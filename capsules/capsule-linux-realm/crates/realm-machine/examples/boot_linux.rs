@@ -82,6 +82,14 @@ fn run() -> Result<(), String> {
                 );
                 return Ok(());
             }
+            SliceOutcome::HostRequest(request) => {
+                return Err(format!(
+                    "Linux requested unwired 9P host service {} at pc {:#x} after {} steps",
+                    request.id.get(),
+                    machine.pc(),
+                    report.total_steps_executed
+                ));
+            }
             SliceOutcome::Trapped(trap) => {
                 return Err(format!(
                     "Linux crossed the machine boundary at pc {:#x} after {} steps: {trap}",

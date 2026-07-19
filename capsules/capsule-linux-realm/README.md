@@ -48,8 +48,9 @@ RV64 instruction images, and the first resident Linux boot image:
   resident `/init`, and returns one framed result while preserving Linux RAM;
   the proof commands are `ping`, `counter`, and `echo ...`
 - `linux-sh`, which executes one bounded script with BusyBox `ash` as UID/GID
-  1000 in `/home/agent`, propagates its exact exit status, kills/reaps background
-  descendants, and preserves the in-RAM home across warm calls
+  1000 in `/home/agent` or the invocation's mounted `/workspace`, propagates its
+  exact exit status, kills/reaps background descendants, and preserves the
+  in-RAM home across warm calls
 - `linux-shutdown`, which cleanly powers a warm guest down through SBI and
   releases its RAM; stopping an already-cold realm is an idempotent zero-step
   operation
@@ -67,12 +68,12 @@ principal-affine Store. Outer Wasm metering is charged to the verified invoking
 principal. The response's versioned path contract reports the semantic mount,
 guest path, Astrid resource URI where one really exists, human display path,
 reference lifetime, and the projection state for nested WASM and Linux. The
-separate Realm home is durable but does not become a Linux mount until the file
-transport exists. Every execution result identifies the kernel-stamped owner
-principal and exact execution backend, and includes the requested and effective
-CWD, path context, outcome, exit status, stdout, stderr, fuel or instruction
-accounting, memory ceiling, and process identifiers where the semantic process
-kernel allocated them.
+invocation workspace is mounted into Linux through bounded 9P; the separate
+durable Realm home is not yet a Linux mount. Every execution result identifies
+the kernel-stamped owner principal and exact execution backend, and includes the
+requested and effective CWD, path context, outcome, exit status, stdout, stderr,
+fuel or instruction accounting, memory ceiling, and process identifiers where
+the semantic process kernel allocated them.
 
 The first execution call lazily creates the declared Realm layout and its
 in-memory machine for the invoking principal. Status reports `uninitialized` and
@@ -94,13 +95,13 @@ Astrid's copy-on-write view and do not change the source workspace until the
 outer Astrid workflow promotes them. An unpromoted workspace overlay is
 discarded on daemon restart. `/tmp` is not durable state.
 
-The Linux lane does not claim those projections prematurely. Its current
-`/home/agent` and `/tmp` are guest RAM, preserved only while that principal's
-Linux machine remains warm, and `/workspace` is not mounted. Consequently
-`linux-sh` runs in `/home/agent`, rejects a requested `/workspace` CWD, and cannot
-yet see files written through the nested-WASM lane. `linux_realm_status` exposes
-these states as `guest-ram-only` and `not-mounted` rather than treating the
-declared layout as completed transport.
+The Linux lane mounts the invocation's `cwd://` resource at `/workspace` before
+every `linux-sh` call. Linux 9P requests cross a bounded private SBI channel into
+the capsule's Rust 9P server and then the Astrid filesystem imports. Because the
+runtime does not yet expose a stable workspace attachment ID or epoch, the mount
+is torn down and recreated for every call; no guest FID or path reference is
+allowed to outlive the invocation. Linux `/home/agent` and `/tmp` remain guest
+RAM, preserved only while that principal's machine remains warm.
 
 The default realm name is `default`, giving one durable home per principal. The
 principal is never accepted from tool input. It comes from the kernel-stamped
@@ -128,9 +129,10 @@ The enclosing execution response supplies the verified owner principal. A durabl
 home reference is therefore identified by owner, Realm home ID, relative path,
 and admitted generation. A Linux RAM path instead carries the `linux-rootfs`
 mount ID and the admitting Realm boot sequence. Workspace references are
-currently invocation-scoped and have `mount_id=null`: the `cwd://` host import
-does not yet supply a stable
-attachment ID or generation, and the capsule does not invent one. Bare RV64
+invocation-scoped and have `mount_id=null`: the `cwd://` host import does not yet
+supply a stable attachment ID or generation, and the capsule does not invent
+one. Both nested WASM and Linux workspace references carry the real `cwd://`
+resource URI. Bare RV64
 diagnostics have no active path.
 
 A client may show a person a local path such as `/Users/me/project`, but that
@@ -214,8 +216,9 @@ The pinned kernel, Buildroot rootfs, and AOS-controlled `/init` provide a
 token-bound serial command channel inside this machine. The static BusyBox shell
 is a useful Linux-workbench seed, not a claim of Debian compatibility: Bash,
 Python, an in-guest compiler, networking, durable block storage, and PTYs remain
-absent. Compressed instructions, PLIC, and virtio block are deliberately deferred
-until the selected kernel/device profile requires them.
+absent. The only guest file portal is the synchronous 9P workspace transport;
+compressed instructions, PLIC, and virtio block are deliberately deferred until
+the selected kernel/device profile requires them.
 
 The private ABI exposes bounded `pipe`, compatibility `spawn-signed`, record-based
 `spawn-signed-record`, `wait`, and `signal` operations. The record form selects an
@@ -259,8 +262,8 @@ failure, runtime eviction, daemon restart, or capsule unload destroys RAM.
 
 RAM residency is therefore an evictable cache, not durable process state. The
 existing durable Realm home is not yet attached to Linux, and status continues to
-return `linux_storage_persistent=false`. The first durable guarantee remains the
-principal filesystem rather than an implicit VM snapshot.
+return `linux_storage_persistent=false`. `/workspace` has Astrid's outer COW and
+promotion semantics; it is not evidence of a durable Linux root or home.
 
 Astrid Runtime now has the experimental primitive required to make this boundary
 honest: an opt-in Store permanently keyed by `(capsule, component, verified
@@ -273,10 +276,10 @@ free-pool or shared-run-loop semantics.
 This closes both outer component affinity and the first inner Linux lifecycle:
 lazy boot, ready, bounded command, clean stop, and restart are executable. Exact
 RV64 step counts remain separate principal-local records for the current Store
-residency. Durable disk remains an independent virtio-block/COW device problem
-rather than a promise made by resident RAM. The pinned Buildroot 2026.05.1
-userland is now behind this lifecycle; attaching principal storage and workspace
-projections is the next distribution increment.
+residency. Durable disk remains an independent block-overlay problem rather than
+a promise made by resident RAM. The pinned Buildroot 2026.05.1 userland and the
+invocation-scoped workspace are now behind this lifecycle; attaching durable
+principal home storage is the next storage increment.
 
 ## Build and install
 
@@ -319,6 +322,7 @@ Example tool arguments:
 {"command":"linux-console","args":["echo","hello from Linux"]}
 {"command":"linux-sh","args":["id -u; uname -m; pwd"]}
 {"command":"linux-sh","args":["printf persisted > proof && cat proof"]}
+{"command":"linux-sh","args":["pwd; ls -la"],"cwd":"/workspace"}
 {"command":"linux-shutdown"}
 {"command":"write-file","args":["notes.txt","durable\n"],"cwd":"/home/agent"}
 {"command":"cat","args":["notes.txt"],"cwd":"/home/agent"}
@@ -350,6 +354,14 @@ open-file descriptions, sequential POSIX file actions, Bash, package management,
 networking, PTYs, surviving background jobs, or an in-guest compiler. Those
 belong behind the same realm boundary; they must not be simulated by granting a
 host process.
+
+The Linux workspace driver is intentionally split at authority boundaries. The
+GPL-2.0-only in-kernel `trans=aos` module turns Linux 9P calls into one synchronous
+SBI exchange. The MIT/Apache Rust machine validates and copies bounded guest RAM,
+the 9P server implements filesystem semantics without ambient authority, and the
+Astrid adapter resolves operations against the invocation's `cwd://` capability.
+Docker is used only to reproduce the image; QEMU is neither linked nor used at
+runtime.
 
 ## Distribution direction
 

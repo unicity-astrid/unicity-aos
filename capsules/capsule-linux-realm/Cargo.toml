@@ -16,6 +16,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 aos-realm-machine = { workspace = true }
+aos-realm-9p = { workspace = true }
 aos-realm-runtime = { workspace = true }
 aos-realm-vfs = { workspace = true }
 astrid-sdk = { workspace = true }

@@ -23,8 +23,8 @@ if [ "$#" -eq 4 ]; then
 else
     output_image=$script_dir/Image
 fi
-expected_rootfs=84d4edfc386be77369121f109ce180566f02393f8a314c8054787a27071a7bee
-expected_image=fadd0391fb17e54fc4831999a3a0ba87fffd51a14f84a3b6cc0b836cb8a15476
+expected_rootfs=0877c008ec43627d9aeefc30c4e09412ceeb6aefb25b799b2365d002261b891b
+expected_image=4a2bccd131828faa46711d546e169e4f32d0a6ec0ed66ed309dcf3ae012e9065
 record_image=${AOS_RECORD_IMAGE:-0}
 
 if [ "$record_image" != 0 ] && [ "$record_image" != 1 ]; then
@@ -56,6 +56,25 @@ if ! ld.lld --version | head -n 1 | grep -q '18\.1\.3'; then
     echo "build-image.sh requires LLD 18.1.3 for the recorded image" >&2
     exit 69
 fi
+
+transport_patch=$script_dir/kernel/net-9p-aos.patch
+transport_source=$script_dir/kernel/trans_aos.c
+if [ ! -f "$transport_patch" ] || [ ! -f "$transport_source" ]; then
+    echo "AOS 9P kernel transport sources are missing" >&2
+    exit 66
+fi
+if grep -qxF 'config NET_9P_AOS' "$kernel_source/net/9p/Kconfig" \
+    && grep -qF 'obj-$(CONFIG_NET_9P_AOS) += 9pnet_aos.o' "$kernel_source/net/9p/Makefile" \
+    && grep -qxF '9pnet_aos-objs := \' "$kernel_source/net/9p/Makefile"; then
+    : # The exact source tree was already prepared by an earlier build.
+elif patch --batch --forward --dry-run -d "$kernel_source" -p1 \
+    < "$transport_patch" >/dev/null 2>&1; then
+    patch --batch --forward -d "$kernel_source" -p1 < "$transport_patch"
+else
+    echo "AOS 9P kernel transport patch does not apply cleanly" >&2
+    exit 66
+fi
+cp "$transport_source" "$kernel_source/net/9p/trans_aos.c"
 
 actual_rootfs=$(sha256sum "$rootfs_cpio" | cut -d ' ' -f 1)
 if [ "$record_image" = 0 ] && [ "$actual_rootfs" != "$expected_rootfs" ]; then
@@ -95,7 +114,24 @@ make -C "$kernel_source" O="$build_dir/kernel" \
     --disable DEVPORT \
     --disable INPUT \
     --disable MEDIA_SUPPORT \
-    --disable NET \
+    --enable NET \
+    --disable PACKET \
+    --disable UNIX \
+    --disable INET \
+    --disable NETDEVICES \
+    --disable ETHTOOL_NETLINK \
+    --enable NET_9P \
+    --enable NET_9P_AOS \
+    --disable NET_9P_FD \
+    --disable NET_9P_VIRTIO \
+    --disable NET_9P_XEN \
+    --disable NET_9P_USBG \
+    --disable NET_9P_RDMA \
+    --disable NET_9P_DEBUG \
+    --enable 9P_FS \
+    --disable 9P_FSCACHE \
+    --disable 9P_FS_POSIX_ACL \
+    --disable 9P_FS_SECURITY \
     --enable BINFMT_ELF \
     --enable BINFMT_SCRIPT \
     --enable PROC_FS \

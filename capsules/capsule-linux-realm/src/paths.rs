@@ -27,7 +27,6 @@ pub(crate) enum MountRole {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProjectionState {
     Mounted,
-    NotMounted,
     GuestRamOnly,
 }
 
@@ -145,9 +144,11 @@ fn path_ref(
     } else {
         format!("{display_name}/{relative_path}")
     };
-    let resource_uri = match consumer {
-        PathConsumer::NestedCoreWasm => Some(resolve_guest_path("/", &guest_path)?),
-        PathConsumer::LinuxGuest | PathConsumer::BareRv64 => None,
+    let resource_uri = match (consumer, mount) {
+        (PathConsumer::NestedCoreWasm, _) | (PathConsumer::LinuxGuest, MountRole::Workspace) => {
+            Some(resolve_guest_path("/", &guest_path)?)
+        }
+        (PathConsumer::LinuxGuest | PathConsumer::BareRv64, _) => None,
     };
     let generation_at_admission =
         if mount == MountRole::AgentHome && consumer == PathConsumer::NestedCoreWasm {
@@ -165,7 +166,8 @@ fn path_ref(
         display_path,
         reference_stability: stability,
         generation_at_admission,
-        realm_boot_sequence_at_admission: (consumer == PathConsumer::LinuxGuest)
+        realm_boot_sequence_at_admission: (consumer == PathConsumer::LinuxGuest
+            && stability == ReferenceStability::RealmBoot)
             .then_some(realm_boot_sequence),
     })
 }
@@ -220,7 +222,7 @@ fn mount_descriptors(consumer: PathConsumer) -> Vec<MountDescriptor> {
             ProjectionState::Mounted,
         ),
         PathConsumer::LinuxGuest => (
-            ProjectionState::NotMounted,
+            ProjectionState::Mounted,
             ProjectionState::GuestRamOnly,
             ProjectionState::GuestRamOnly,
         ),
@@ -333,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_context_does_not_claim_unimplemented_persistent_mounts() {
+    fn linux_context_distinguishes_invocation_workspace_from_ram_only_paths() {
         let context =
             MountContext::for_execution(PathConsumer::LinuxGuest, "/home/agent", Some(42), 9)
                 .expect("Linux path context");
@@ -354,11 +356,25 @@ mod tests {
         assert_eq!(cwd.generation_at_admission, None);
         assert_eq!(cwd.realm_boot_sequence_at_admission, Some(9));
         assert_eq!(cwd.reference_stability, ReferenceStability::RealmBoot);
-        assert_eq!(workspace.projection, ProjectionState::NotMounted);
+        assert_eq!(workspace.projection, ProjectionState::Mounted);
         assert_eq!(home.projection, ProjectionState::GuestRamOnly);
         assert_eq!(home.mount_id.as_deref(), Some("linux-rootfs"));
         assert_eq!(home.durability, MountDurability::RealmRam);
         assert_eq!(home.commit_policy, CommitPolicy::DiscardOnRealmStop);
+    }
+
+    #[test]
+    fn linux_workspace_ref_names_the_real_invocation_resource() {
+        let context =
+            MountContext::for_execution(PathConsumer::LinuxGuest, "/workspace/src", Some(42), 9)
+                .expect("Linux workspace context");
+        let cwd = context.active_cwd.expect("active cwd");
+
+        assert_eq!(cwd.mount, MountRole::Workspace);
+        assert_eq!(cwd.mount_id, None);
+        assert_eq!(cwd.resource_uri.as_deref(), Some("cwd://src"));
+        assert_eq!(cwd.reference_stability, ReferenceStability::Invocation);
+        assert_eq!(cwd.realm_boot_sequence_at_admission, None);
     }
 
     #[test]
@@ -388,14 +404,14 @@ mod tests {
     }
 
     #[test]
-    fn serialized_context_contains_no_physical_path_or_false_linux_resource_uri() {
+    fn serialized_context_contains_no_physical_path_or_false_home_resource_uri() {
         let context =
             MountContext::for_execution(PathConsumer::LinuxGuest, "/home/agent", Some(42), 9)
                 .expect("Linux path context");
         let json = serde_json::to_string(&context).expect("serialize path context");
 
         assert!(json.contains("\"physical_host_paths_visible\":false"));
-        assert!(json.contains("\"projection\":\"not-mounted\""));
+        assert!(json.contains("\"projection\":\"mounted\""));
         assert!(json.contains("\"projection\":\"guest-ram-only\""));
         assert!(json.contains("\"resource_uri\":null"));
         assert!(!json.contains("/Users/"));
