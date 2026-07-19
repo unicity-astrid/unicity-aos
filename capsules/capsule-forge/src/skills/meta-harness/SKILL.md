@@ -1,220 +1,156 @@
 ---
 name: meta-harness
-description: Build and operate a governed meta-harness on Unicity AOS. Use when connecting an external platform, creating or supervising a background worker, responding to a repeated capability gap, composing installed capsules, extending a user-space harness through Forge, or improving an agent harness from traces and evaluations.
+description: Proactively improve an agent's user-space world on Unicity AOS. Use when work reveals a missing capability, recurring friction, useful memory or skill, context or harness improvement, platform integration, or an opportunity to learn from traces; decide whether to reuse, compose, configure, remember, create, or build with Forge now or for future work.
 ---
 
-# Build a Meta Harness on Unicity AOS
+# Extend Your World on Unicity AOS
 
-Treat Unicity AOS as the operating system for agents, not as a harness or prompt
-wrapper. Build the meta-harness as a user-space system from agents, capsules,
-skills, state, models, providers, connectors, and tools. Compose existing
-capsules first. Use Forge only when evidence shows a real capability is
-missing. Never let a candidate capability promote itself.
+Treat the AOS user-space environment you can inspect and change as your world:
 
-## Know the system
+- instructions, skills, memory, files, and working state;
+- sessions, context assembly, retrieval, and harness code;
+- tools, capsules, providers, connectors, and their composition;
+- traces, evaluations, and artifacts from prior attempts.
 
-- **Astrid Runtime** is the mechanism: route IPC, enforce manifest capability
-  allowlists, isolate WASM components, meter resources, and audit actions. AOS
-  pins and distributes it as the low-level security and execution mechanism.
-- **Unicity AOS is the operating system for agents.** It supplies the product
-  environment in which agents, capsules, harnesses, connectors, services, and
-  other agent-native software run.
-- **A harness** is a user-space system built on AOS. It can combine an agent
-  loop, sessions, context, models, tools, skills, state, and platform uplinks.
-- **A meta-harness** is a user-space harness that governs workers or other
-  harnesses and can improve harness composition from evidence. It gives each
-  authorized platform a durable worker, detects gaps, reuses or composes
-  installed capabilities, verifies candidates, and promotes them only through
-  policy and approval.
-- **Forge is OS construction tooling, not the supervisor.** A meta-harness may
-  use it to explain contracts, scaffold capsules, suggest manifest
-  capabilities, validate manifests, and diagnose installations. Forge must not
-  choose user goals, grant itself power, or install an unverified candidate.
-
-AOS can host harnesses and other agent-native software. Do not force every
-workload into a harness or describe AOS itself as one.
-
-The kernel stays tool-blind and free of business logic. Put reasoning in agent
-workers, platform protocol handling in connector capsules, and lifecycle policy
-in a supervisor capsule.
-
-## Orient before acting
-
-1. Call `meta_harness_quickstart` when available.
-2. Call `system_status` and `list_capsules`.
-3. Use `inspect_capsule`, `list_interfaces`, and `read_interface` to inspect the
-   installed system and its typed contracts.
-4. Record the principal, platform, account/workspace, standing user intent,
-   allowed actions, approval rules, budget, and stop conditions.
-5. Verify that the platform is authorized and that its connector stamps caller
-   identity from trusted transport metadata rather than payload text.
-
-Do not invent repository/account scope, platform permissions, numeric budgets,
-retention periods, replay windows, concurrency, or a threshold for automatic
-capability building. Read configured policy or present proposed values and wait
-for acceptance. While those values are unset, fail closed to read-only
-observation and local drafts: no external writes, new authority, capability
-installation, or unattended spending.
-
-Do not assume a tool, interface, worker API, scheduler, or approval path exists.
-Inspect it. If durable agent spawning is absent, report that substrate gap. A
-background shell process is not a background agent.
-
-## Scope platform workers correctly
-
-Use one logical worker for each:
+Unicity AOS is the operating system containing that world. Astrid Runtime is
+its low-level security and execution mechanism. Forge is your construction
+workbench. A meta-harness is the reflexive loop through which you inspect your
+world, learn from experience, and improve what you can do next.
 
 ```text
-(principal, platform, platform-account-or-workspace)
+work -> notice friction or leverage -> inspect the world and prior experience
+     -> change the useful part -> evaluate -> retain the better world
 ```
 
-Examples are one GitHub worker for Alice's organization, one Telegram worker
-for Alice's bot identity, or one email worker for Alice's mailbox. Do not use a
-global worker across principals or accounts. Do not create one permanent worker
-per incoming message.
+## Exercise initiative
 
-Give every worker:
+Notice opportunities while doing real work. A missing observation or action,
+repeated manual step, poor retrieval choice, stale instruction, recurring
+failure, or useful new pattern can all justify extending your world.
 
-- a stable session identity and resumable state;
-- only the connector tools and capsules required for that platform;
-- an inbox of kernel-stamped platform events and a bounded work queue;
-- a standing objective derived from explicit user intent;
-- action, cost, concurrency, and time budgets;
-- an approval outbox for consequential actions;
-- observable traces, verification evidence, and a kill switch.
+Reach for the ability proactively. Decide with judgment:
 
-If the active LLM harness exposes a native background-agent API, start or resume
-the scoped worker through that API and pass this contract in its instructions.
-Otherwise, use a durable AOS worker/session API only if inspection proves one is
-installed. Never claim proactive execution merely because a prompt describes a
-worker.
+- Extend inline when the current objective is blocked or the new ability is the
+  clearest way to finish it well.
+- Finish the immediate work first when changing the world would be a distracting
+  side path, then make the improvement while the evidence is still fresh.
+- Preserve the insight in memory, a skill, or a trace when it will help future
+  work more than the current task.
+- Reuse or recompose what already exists when that is the stronger extension.
 
-## Handle each event
+The user's instruction sets the degree of freedom. “Think widely,” “decide for
+yourself,” “only propose,” “implement what is useful,” and approved standing
+preferences are ordinary harness inputs. Honor them directly rather than
+inventing an autonomy taxonomy or universal build threshold.
 
-For every authorized platform event:
+AOS capabilities and operator policy remain the real authority boundary. When
+an extension needs authority outside the current grants, surface that concrete
+need through the available approval path.
 
-1. Verify the principal, platform account, event identity, and replay boundary.
-2. Deduplicate and enqueue it for the matching worker.
-3. Restore that worker's session and standing intent.
-4. Plan with currently installed capabilities.
-5. Execute reversible actions within standing authority.
-6. Route consequential, external, financial, destructive, or scope-expanding
-   actions to approval.
-7. Persist the result, evidence, and any capability gap.
+## Inspect your current world
 
-Proactive means responding to authorized events and schedules without waiting
-for another chat message. It does not mean inventing goals or silently widening
-authority.
+When available, use `meta_harness_quickstart`, `system_status`, and
+`list_capsules`. Use `inspect_capsule`, `list_interfaces`, and `read_interface`
+to learn the installed composition and typed contracts. Inspect relevant
+skills, memory, harness files, traces, and evaluations rather than reasoning
+from names alone.
 
-## Resolve a capability gap
+Tool availability is part of the world. Discover it. If an AOS surface is not
+present, continue with the parts of the work that are possible and identify the
+missing substrate precisely.
 
-Create a gap record only after an attempted task provides evidence. Include:
+## Choose the useful kind of extension
 
-- the blocked goal and platform;
-- the missing observation or action;
-- the installed capsules and interfaces already checked;
-- the smallest required inputs, outputs, and side effects;
-- acceptance tests and replay fixtures;
-- the narrowest capability and topic scopes;
-- whether user approval is required.
+Select the artifact that best fits the opportunity:
 
-Resolve in this order:
+- **Remember:** retain a durable fact, preference, failure pattern, or successful
+  strategy when future reasoning needs it.
+- **Skill:** package reusable knowledge or a workflow that should load when
+  relevant.
+- **Harness change:** improve context construction, retrieval, planning, tool
+  selection, failure recovery, or how experience is presented to the model.
+- **Composition:** configure or connect installed capsules over existing typed
+  contracts.
+- **Capsule:** add a cohesive sandboxed capability, provider, connector, policy
+  edge, or state service through Forge.
+- **Worker or subagent:** create one when the available host supports it and the
+  work benefits from delegation, durable event handling, or an independent
+  role. It is an optional pattern, not a prerequisite for a meta-harness.
 
-1. **Reuse an installed tool or capsule.**
-2. **Compose** installed capsules over existing WIT/bus contracts.
-3. **Configure** an existing connector or provider without changing authority.
-4. **Build** a small capsule with Forge only if the first three cannot satisfy
-   the contract.
-
-Repeated use alone is not proof that a new capability is needed. A new capsule
-must remove a demonstrated block and have a cohesive security boundary.
-“Repeated” means the operator-configured threshold; never make up a number. If
-no threshold exists, record the gap but do not start an autonomous build.
+Prefer a change that becomes legible and reusable inside the world. A one-off
+patch can finish a task; a well-placed skill, capsule, or harness improvement
+can improve every later task.
 
 ## Build with Forge
 
-When a build is justified:
+When new code is the useful extension:
 
-1. Use `explain_interface` or `read_interface` for every relevant contract.
-2. Use `scaffold_capsule` for the smallest cohesive capsule.
-3. Use `suggest_capabilities` and then narrow the result manually.
-4. Keep credentials inside the platform/provider capsule. The model must not
-   receive raw keys or bearer tokens.
-5. Validate all untrusted platform data at the capsule edge.
-6. Run `validate_manifest` before building.
-7. Build an installable `.capsule` with `aos capsule build`; raw WASM is not an
-   installable artifact.
-8. Run unit tests, platform replay fixtures, denial tests, and the acceptance
-   test from the gap record.
-9. Use `capsule_doctor` on the staged installation.
+1. Inspect installed capabilities and relevant WIT/bus contracts.
+2. Use `explain_interface` or `read_interface` to understand each boundary.
+3. Use `scaffold_capsule` as a starting point for a cohesive capsule.
+4. Use `suggest_capabilities`, then choose the scopes that match the design.
+5. Implement and validate untrusted data at the capsule edge.
+6. Run `validate_manifest`, the relevant tests, and `capsule_doctor` when staged.
+7. Build an installable `.capsule` with `aos capsule build`.
+8. Activate it through the AOS mechanisms and authority available to the user.
 
-If a new public IPC/WIT contract is required, stop capsule implementation and
-follow the contract/RFC workflow. Do not disguise a new wire contract as an
-opaque payload.
+Match evaluation effort to the extension's consequences. A local formatting
+skill and a connector that can send messages deserve different evidence. When
+a new public IPC/WIT contract is needed, use the canonical contract/RFC
+workflow so the new ability becomes a typed part of the world.
 
-Use installed connector documentation or inspected schemas for platform setup.
-Do not fabricate AOS commands, API fields, provider permissions, webhook rules,
-or credential-store procedures that are not visible in the system.
+## Improve harness code from experience
 
-## Quarantine and promote
+Use the research Meta-Harness loop when the world contains repeated tasks and a
+meaningful evaluation signal:
 
-Keep generated capabilities outside the active user distribution until all of
-these exist:
+1. Define the harness interface, fixed model/tool surface, task distribution,
+   metrics, and budget.
+2. Keep a baseline and held-out evaluation separate from search feedback.
+3. Store each candidate's source, scores, and raw execution traces in an
+   agent-readable archive.
+4. Inspect the full archive selectively and diagnose which harness decisions
+   caused success or failure.
+5. Propose a coherent code change in an isolated candidate workspace.
+6. Evaluate it, retain the evidence, and keep the strongest useful candidate.
 
-- source and dependency provenance;
-- a manifest capability diff;
-- deterministic build output or recorded build identity;
-- positive acceptance tests and negative authorization tests;
-- replay results from real, redacted platform traces;
-- a rollback or uninstall path;
-- explicit operator approval for new authority or external side effects.
+The important feedback is the inspectable experience, not a compressed score
+or a hard-coded mutation recipe. Let the proposing agent decide which prior
+artifacts matter and how much of the harness to change.
 
-Install and grant through AOS/runtime mechanisms. Never hand-copy WASM, edit a
-principal's grants, or ask the model to treat a prompt as authorization. Monitor
-error rate, denied actions, cost, and user corrections after promotion. Revoke
-or roll back on regression.
+## Preserve continuity
 
-## Improve the harness itself
+Make successful extensions discoverable to future sessions. Store the artifact,
+the reason it exists, its validation evidence, and the traces that explain it.
+When the user approves a standing preference such as “think broadly and improve
+your setup when useful” or “bring me proposals,” preserve that instruction in
+the available principal-scoped memory or configuration.
 
-Keep optimization separate from live operation:
+Memory carries intent and continuity. AOS capabilities carry operational
+authority. Together they let the agent remain itself across sessions while
+operating inside the user's world.
 
-```text
-episode traces -> failure attribution -> candidate harness change
-               -> held-out evaluation -> policy review -> approval -> rollout
-```
+## Patterns
 
-Treat prompts, retrieval, skills, worker topology, tool selection, and context
-packing as harness code. Preserve complete traces and scores for prior
-candidates. Compare against a fixed baseline and held-out cases. Reject changes
-that gain task score by increasing authority, hiding failures, leaking data, or
-removing approval friction. Never let the proposer evaluate or promote its own
-candidate without independent checks.
-
-## Use-case patterns
-
-- **GitHub:** A per-organization worker triages issues and review queues. A
-  repeated project-specific validation gap can produce a narrow lint capsule.
-- **Email:** A per-mailbox worker classifies and drafts. Sending, deleting, or
-  changing subscriptions remains approval-gated; credentials stay in the mail
-  connector.
-- **Telegram:** A per-bot/account worker maintains conversational continuity and
-  hands work to calendar, research, or file capsules without giving Telegram
-  those capabilities directly.
-- **Commerce:** A storefront worker monitors orders and drafts resolutions.
-  Refunds and price changes require explicit policy and approval.
-- **Local operations:** A device worker watches authorized health signals and
-  proposes remediation. New diagnostic tooling is staged and replay-tested
-  before it can run on the host.
+- A coding agent repeatedly reconstructs a project convention, so it writes a
+  focused skill and uses it on later changes.
+- A support agent's traces show poor policy retrieval, so it evolves retrieval
+  and context assembly against held-out cases.
+- A task is blocked on a missing read-only API, so the agent uses Forge to build
+  a narrow connector and resumes the task.
+- A platform produces durable events, so the agent creates a scoped worker when
+  the installed runtime provides a useful worker primitive.
+- A user wants proposals only, so the agent still diagnoses and designs useful
+  world changes but presents them before applying them.
 
 ## Definition of done
 
-Do not call a platform meta-harnessed until all are true:
+The loop is working when the agent can:
 
-- the worker scope and user intent are explicit;
-- platform events are authenticated, deduplicated, and replay-bounded;
-- worker state survives a frontend disconnect;
-- budgets, approval routes, audit evidence, and stop controls work;
-- an unmet capability produces a structured gap rather than improvised power;
-- Forge candidates are tested in quarantine and cannot self-promote;
-- rollback is proven;
-- a fresh agent can rediscover this flow from installed tools and this skill.
+- see the relevant parts of its world and prior experience;
+- notice a useful extension without waiting for the user to name the artifact;
+- decide whether to extend now, after the task, or through durable learning;
+- use Forge or existing composition to make the extension real;
+- evaluate the result in proportion to its consequences;
+- preserve successful changes for future work; and
+- remain inside the user's intent and the authority AOS actually grants.

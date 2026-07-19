@@ -1,4 +1,4 @@
 interface:
   display_name: "Meta Harness"
-  short_description: "Build a governed meta-harness on Unicity AOS"
-  default_prompt: "Use $meta-harness to connect a platform, supervise its worker, and safely fill any missing capability."
+  short_description: "Proactively extend your AOS agent world"
+  default_prompt: "Use $meta-harness to notice and build useful extensions to this AOS agent world while completing the work."

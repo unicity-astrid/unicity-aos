@@ -27,9 +27,10 @@
 - Host-target unit-test coverage for the capsule workspace.
 - Forge in the default Community Edition distribution, including a discoverable
   bootstrap and skill that teach fresh agents to build a user-space
-  meta-harness on AOS, supervise platform-scoped workers, resolve capability
-  gaps, and quarantine generated capabilities until independent verification
-  and approval.
+  meta-harness on AOS by seeing instructions, memory, skills, harness code,
+  tools, capsules, traces, and evaluations as an improvable world. Agents reach
+  for Forge proactively when real work reveals a useful new capability, while
+  optional workers remain a use-case choice rather than a prerequisite.
 - Homebrew formula updates initiated by the tap's authenticated stable-release
   poll, eliminating the cross-repository dispatch credential.
 - Strict, signed stable/dev/nightly channel and immutable release metadata

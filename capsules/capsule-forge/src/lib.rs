@@ -536,14 +536,15 @@ mod tests {
     use super::{META_HARNESS_QUICKSTART_MD, META_HARNESS_SKILL};
 
     #[test]
-    fn meta_harness_bootstrap_preserves_os_and_authority_boundaries() {
+    fn meta_harness_bootstrap_teaches_proactive_world_extension() {
         for required in [
             "Unicity AOS is the operating system for agents",
-            "A meta-harness can use Forge",
-            "(principal, platform, account)",
-            "Do not invent scopes, permissions, numeric budgets",
-            "A shell process is not an agent",
-            "The proposer never promotes its own capability",
+            "your user-space world",
+            "Reach for it proactively",
+            "current objective and instructions as the anchor",
+            "Decide whether the extension is needed inline",
+            "Not every agent has subagents",
+            "capabilities remain the operational boundary",
         ] {
             assert!(
                 META_HARNESS_QUICKSTART_MD.contains(required),
@@ -553,14 +554,16 @@ mod tests {
     }
 
     #[test]
-    fn meta_harness_skill_teaches_discovery_before_generation() {
+    fn meta_harness_skill_teaches_reflexive_agent_judgment() {
         for required in [
             "name: meta-harness",
-            "Unicity AOS is the operating system for agents",
-            "Forge is OS construction tooling",
-            "Reuse an installed tool or capsule",
-            "Do not invent repository/account scope",
-            "Never let a candidate capability promote itself",
+            "Treat the AOS user-space environment",
+            "Exercise initiative",
+            "Reach for the ability proactively",
+            "The user's instruction sets the degree of freedom",
+            "Worker or subagent",
+            "optional pattern, not a prerequisite",
+            "Improve harness code from experience",
             "Definition of done",
         ] {
             assert!(

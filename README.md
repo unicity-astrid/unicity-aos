@@ -73,11 +73,13 @@ Community Edition ships Forge as OS construction tooling so a fresh agent can
 inspect the running system, learn the capsule model, identify a real capability
 gap, and build and verify a least-privilege capsule. Forge also installs the
 `meta-harness` skill, which teaches an agent how to build a governed
-meta-harness on AOS without letting generated capabilities grant or promote
-themselves.
+meta-harness on AOS by treating its instructions, memory, skills, harness code,
+tools, capsules, traces, and evaluations as an improvable user-space world. The
+agent is instructed to notice useful extensions during real work and reach for
+Forge proactively when new code is the right way to improve that world.
 
-See [Building a meta-harness on AOS](docs/meta-harness.md) for the user-space
-architecture, worker lifecycle, Forge boundary, safety gates, and
+See [Extending an agent's world on AOS](docs/meta-harness.md) for the world
+model, research loop, Forge boundary, optional worker pattern, and
 representative user experiences.
 
 Provisioning another principal keeps the authenticated operator separate from

@@ -1,283 +1,236 @@
-# Building a meta-harness on Unicity AOS
+# Extending an agent's world on Unicity AOS
 
 ## Decision
 
-Unicity AOS is an operating system for agents. It is not itself a harness.
-Harnesses are user-space systems built and run on AOS from agents, capsules,
-skills, state, models, providers, connectors, and tools. AOS can host harnesses,
-meta-harnesses, and other agent-native software; a workload does not have to be
-a harness to belong on AOS.
+Unicity AOS is the operating system for agents. It is not itself a harness.
+Harnesses are user-space systems built and run on AOS from agents, instructions,
+skills, memory, state, models, tools, capsules, providers, and connectors. AOS
+can host harnesses, meta-harnesses, and other agent-native software.
 
-Astrid Runtime is the low-level security and execution mechanism pinned and
-distributed by AOS. It routes IPC, enforces capabilities, manages the WASM
-sandbox, meters resources, and audits actions. Unicity AOS is the operating
-system and product environment around that mechanism.
+Astrid Runtime is the pinned low-level security and execution mechanism beneath
+AOS. It routes IPC, enforces capabilities, manages the WASM sandbox, meters
+resources, and audits actions. Those are the hard system boundaries; they do
+not decide how imaginative or proactive an agent should be inside them.
 
-A meta-harness is one kind of user-space harness. It governs other workers or
-harnesses and can improve harness composition from measured failures. Forge is
-OS-provided construction tooling available to user-space workloads. A
-meta-harness can use Forge to inspect contracts, scaffold a capsule, select
-manifest capabilities, validate the manifest, and diagnose an installed
-artifact. Forge is not inherently the meta-harness and does not own worker
-lifecycle, evaluation, approval, promotion, audit, or rollback.
+The useful Meta-Harness idea is reflexivity: an agent can inspect the world
+around itself, learn from prior work, and improve that world. Forge is the
+agent-facing construction workbench for changes that require a new capsule or
+other code. It is part of the available world, not the whole meta-harness.
 
-This terminology combines two established uses of “meta-harness”:
+## The agent's world
 
-- An agent harness is the runtime around a model that drives tool calls,
-  persistence, context, approvals, observability, background delegation, and
-  completion. See [Microsoft's agent harness description][ms-harness] and
-  [OpenAI's Codex harness architecture][codex-harness].
-- The Meta-Harness research system is an outer loop that searches over harness
-  code using prior candidates, scores, and traces. See the [paper][meta-paper]
-  and [reference implementation][meta-code].
-- Product meta-harnesses also provide a common governed layer over different
-  agent implementations. [Omnigent][omnigent] is a current example.
-
-Unicity should support heterogeneous models and frontends, but its distinctive
-advantage is stronger: a user-space meta-harness can produce capabilities that
-remain ordinary AOS capsules behind kernel-enforced identities, manifests, IPC
-ACLs, budgets, approvals, and audit.
-
-## System boundary
+For an agent running on AOS, “my world” includes everything outside its fixed
+model weights that shapes what it can perceive and do:
 
 ```text
 Unicity AOS
-|-- Astrid Runtime: kernel security and execution mechanism
-|-- OS services and capsules: identity, sessions, registry, policy
-|-- Forge: general construction tooling
-`-- user space
-    |-- harnesses and meta-harnesses
-    `-- connectors, services, and other agent-native systems
+|-- Astrid Runtime: isolation, capabilities, IPC, metering, audit
+|-- OS services: identity, sessions, registry, policy
+`-- agent user space
+    |-- instructions, skills, memory, files, working state
+    |-- context assembly, retrieval, planning, harness code
+    |-- tools, capsules, providers, connectors
+    |-- optional workers and platform sessions
+    |-- traces, evaluations, and prior candidate artifacts
+    `-- Forge: inspect, scaffold, validate, diagnose, build
 ```
 
-One reference meta-harness running in AOS user space looks like this:
+Memory is continuity, but it is not the entire world. A useful extension might
+be a remembered preference, a new skill, a better retrieval strategy, a changed
+tool composition, a capsule, a connector, or an optional worker.
+
+A meta-harness makes this world legible and changeable to the agent:
 
 ```text
-Platform API / local event source
-          |
-          v
-Platform capsule ------------------------------------------------+
-  protocol, credentials, trusted identity, dedupe, rate limits   |
-          | kernel-stamped platform event                         |
-          v                                                       |
-Harness supervisor                                                |
-  worker registry, queue, budgets, gap ledger, promotion state   |
-          |                                                       |
-          v                                                       |
-Worker session: (principal, platform, account)                    |
-  intent, context, planning, tool use, approval requests          |
-          |                                                       |
-          +---- existing capsules / typed bus composition --------+
-          |
-          +---- capability gap ----> Forge ----> candidate capsule
-                                          |            |
-                                          v            v
-                                      evaluation -> quarantine
-                                                       |
-                                      operator policy/approval
-                                                       |
-                                                       v
-                                              registry / installer
-                                                       |
-                                             observe or roll back
+do work
+  -> notice friction, a missing ability, or reusable leverage
+  -> inspect the current world and prior experience
+  -> change the useful part
+  -> evaluate the result
+  -> retain the better world for later work
 ```
 
-The boundaries are deliberate:
+## What the research concluded
 
-- The kernel routes and enforces. It does not decide what users want or what a
-  capability means.
-- A platform capsule owns protocol details and secrets. It emits normalized,
-  authenticated events and performs allowed platform actions. The LLM never
-  receives raw credentials.
-- A worker owns reasoning for one principal and platform account. It cannot
-  silently share memory or authority with another worker.
-- The supervisor owns lifecycle and policy state, not platform business logic.
-- Forge builds small capabilities. It cannot approve, grant, or promote them.
-- The installer and runtime remain the only authority for capsule activation
-  and principal grants.
+The Meta-Harness research system does not prescribe background agents or an
+autonomy-mode state machine. It searches over harness code around a fixed base
+model. A coding-agent proposer receives filesystem access to the source, scores,
+and raw execution traces of all prior candidates, decides what to inspect, and
+proposes a new harness. Each candidate is evaluated and its complete experience
+is added back to the archive. See the [paper][meta-paper] and [reference
+implementation][meta-code].
 
-## Worker identity and lifecycle
-
-The durable worker key is:
+The central result is that raw, selectively inspectable experience is a much
+better feedback channel than scores or compressed summaries. The outer loop is
+deliberately small:
 
 ```text
-(principal_id, platform_id, account_or_workspace_id)
+baseline harness + task distribution + metrics + budget
+  -> agent inspects prior source, scores, and traces
+  -> agent proposes a coherent harness change
+  -> candidate is evaluated
+  -> source, score, and traces are archived
+  -> repeat and retain the useful frontier
 ```
 
-This provides continuity without conflating trust domains. Multiple chats in
-one Telegram identity can share platform knowledge while retaining distinct
-conversation sessions. Two GitHub organizations, two mailboxes, or two users
-never share a worker merely because the provider is the same.
+This is most useful for repeated or long-horizon work with a stable evaluation
+signal, a fixed model/tool surface, useful historical traces, and a held-out
+test set. Open-ended subjective improvement can still use ordinary agent
+judgment, but it is not the same empirical search problem.
 
-One logical worker does not require one permanently scheduled model process.
-Persist its session and queue, then activate it on an authorized event or
-schedule. The supervisor may use short-lived task executors underneath, but the
-worker identity, budgets, memory, and audit stream remain stable.
+## Initiative comes from the agent and user
 
-Lifecycle states should be explicit:
+The user already steers initiative through normal instructions: “think widely,”
+“decide for yourself,” “bring me proposals,” “implement what is useful,” or
+“remember this preference.” Those instructions are part of the harness. An
+approved standing preference can persist through the agent's memory or
+configuration without becoming a new product-level autonomy taxonomy.
 
-```text
-disconnected -> connected -> active -> paused -> revoked
-                               |
-                               +-> gap-recorded -> candidate-staged
-                                                   -> awaiting-approval
-                                                   -> active | rejected
-```
+The agent should reach for extension proactively while doing real work. The
+current objective remains the anchor:
 
-Required controls:
+- If a missing ability blocks the objective, extending the world can be the
+  direct way to finish the task.
+- If an improvement is valuable but would derail the immediate work, the agent
+  can finish first and make or preserve the improvement while its evidence is
+  fresh.
+- If the value is primarily future reuse, memory, a skill, or an archived trace
+  may be the right extension.
+- If the world already contains the ability, discovery and composition are
+  better than creating a duplicate.
 
-- user-owned standing intent and stop conditions;
-- maximum concurrency, spend, elapsed time, and external actions;
-- queue bounds, replay protection, and idempotency keys;
-- pause, inspect, resume, and revoke operations;
-- async approval routing that survives frontend disconnects;
-- per-worker traces and outcome metrics.
+This is judgment, not a mandatory threshold. AOS permissions remain the
+operational ceiling. A natural-language instruction can guide the agent's
+choices but cannot manufacture a capability the OS has not granted.
 
-Unset policy fails closed. A worker may observe authorized read-only events and
-prepare local drafts, but it cannot infer repository/account scope, platform
-permissions, numeric budgets, retention or replay windows, external-write
-authority, or automatic-build thresholds. The user or operator must configure
-or accept those values.
+## Extension surfaces
 
-“Proactive” means the worker can act on authorized platform events or schedules
-without another chat turn. It does not authorize self-chosen goals.
+### Memory and skills
 
-## Capability acquisition loop
+Persist facts, preferences, failure patterns, and successful strategies when
+future reasoning needs them. Turn a repeated workflow or domain-specific method
+into a skill so it becomes available when relevant rather than occupying every
+prompt.
 
-An agent should not generate code merely because it can. A capability gap is a
-typed, auditable record containing:
+### Harness code
 
-- blocked objective and platform;
-- observed failure and attempts already made;
-- installed capsules and interfaces inspected;
-- smallest missing input/output/action contract;
-- side effects and required authority;
-- acceptance test and representative replay fixtures;
-- expected reuse frequency and owner.
+Improve context construction, retrieval, prompt assembly, planning, tool
+selection, memory updates, context compaction, or failure recovery. Preserve
+the baseline and traces so the effect can be evaluated rather than guessed.
 
-The decision order is:
+### Capsule composition
 
-1. Reuse an installed capability.
-2. Compose installed capsules over current contracts.
-3. Configure an existing capability without widening authority.
-4. Build a cohesive capsule through Forge.
+Inspect installed capsules and typed contracts before creating code. A useful
+new behavior may come from configuring or composing existing providers,
+connectors, state services, and tools over the event bus.
 
-Forge's current tools cover the first authoring loop:
+### New capabilities through Forge
+
+When the world genuinely needs new code, Forge supports the authoring loop:
 
 - `forge_quickstart`
+- `meta_harness_quickstart`
 - `scaffold_capsule`
 - `explain_interface`
 - `suggest_capabilities`
 - `validate_manifest`
 - `capsule_doctor`
-- `meta_harness_quickstart`
 
-Future Forge work should add a sandboxed test harness, trace replay, capability
-diffs, reproducible build evidence, and candidate bundles. Those are Forge
-functions because they construct and prove an artifact. Worker registration,
-scheduling, approval, and promotion remain supervisor functions.
+The agent inspects relevant contracts, implements the cohesive capability,
+validates its manifest, runs evidence appropriate to its consequences, builds
+an installable `.capsule`, and activates it through the AOS mechanisms and
+authority available to the user. New public IPC/WIT belongs in the canonical
+contract/RFC workflow.
 
-## Candidate safety and promotion
+Future Forge work can make this loop stronger with isolated candidate
+workspaces, trace replay, capability diffs, reproducible build evidence, and
+candidate bundles. These help the agent construct and compare changes; they do
+not decide the agent's goals.
 
-Generated capabilities begin quarantined. Promotion requires:
+### Workers and platforms
 
-1. source and dependency provenance;
-2. an exact manifest capability and IPC ACL diff;
-3. deterministic build identity;
-4. functional acceptance tests;
-5. negative tests proving denied authority stays denied;
-6. redacted platform-event replay;
-7. bounded resource and cost measurements;
-8. rollback/uninstall proof;
-9. explicit approval for new authority or consequential effects.
-
-Evaluation and promotion must be independent of the proposer. A candidate must
-not improve its score by hiding failures, changing the test set, increasing its
-own permissions, or weakening approvals.
-
-## Harness improvement loop
-
-Once the operational control plane produces trustworthy episode traces, a
-meta-harness running on AOS can apply the research meaning of Meta-Harness:
+A worker is one optional extension pattern. Event-driven platforms may benefit
+from a durable worker scoped to a principal and platform account:
 
 ```text
-baseline harness + episode archive + objective
-  -> proposer creates one candidate change
-  -> candidate runs against training episodes
-  -> independent evaluator runs held-out episodes
-  -> compare task quality, authority, cost, and reliability
-  -> human/policy approval
-  -> canary -> rollout or rollback
+(principal_id, platform_id, account_or_workspace_id)
 ```
 
-Candidate surfaces include prompt assembly, skill routing, memory retrieval,
-context compaction, tool selection, worker topology, and failure recovery.
-Kernel security rules, identity provenance, approval requirements, and audit
-integrity are constraints, never optimization variables.
+The connector owns protocol details, credentials, trusted identity,
+deduplication, and rate limits. The worker owns the continuing task context.
+Not every agent host has subagents, and not every task benefits from delegation
+or a permanently represented worker. The agent uses the execution primitives
+actually present in its world and creates a worker when the workload makes it
+useful.
 
-OpenAI's harness-engineering account reinforces the practical prerequisites:
-repository-local knowledge, agent-legible observability, isolated worktrees,
-mechanically enforced architecture, and feedback loops that turn recurring
-failures into durable capabilities. See [Harness engineering][openai-harness].
+## Evaluation and retention
 
-## Representative user experiences
+World changes should become inspectable experience. Record the relevant source,
+reasoning, task outcome, score or qualitative evidence, cost, and trace. Match
+the evaluation to the change: a local instruction edit, a retrieval algorithm,
+and a connector that sends external messages have different consequences and
+need different evidence.
 
-### Developer organization
+For research-style harness search, keep search feedback separate from held-out
+evaluation and let the proposer inspect full prior artifacts. For ordinary
+agent work, tests, user feedback, later task performance, or a direct comparison
+may be enough. The goal is to retain a demonstrably more useful world, not to
+force every improvement through the same ceremony.
 
-A GitHub worker watches authorized repositories, classifies issues, prepares
-small fixes, and requests review. When several tasks fail on the same internal
-schema check, it records the gap. Forge builds a narrow validation capsule,
-replays the failing cases, and stages it. The organization approves the new
-read scope before activation.
+## Representative experiences
 
-### Personal communications
+### Self-extending developer agent
 
-Separate email and Telegram workers maintain their own platform context but can
-compose through user-granted calendar and memory capsules. They draft freely
-within policy. Sending mail, deleting messages, or inviting attendees crosses
-an approval boundary. Provider credentials never enter model context.
+While fixing several repositories, the agent repeatedly reconstructs the same
+project convention. It writes a focused skill, uses it during the current task
+if useful, and makes it available to future sessions. When a task later needs a
+missing schema validator, it uses Forge to build a narrow capsule rather than
+continuing to duplicate ad hoc checks.
 
-### Storefront operations
+### Proposal-oriented user
 
-A commerce worker monitors orders and support messages, prepares responses, and
-identifies repeated carrier-data failures. Forge can add a read-only carrier
-adapter. Refunds, price changes, and customer-data exports remain separate
-capabilities with explicit approval.
+The user says, “Explore improvements, but bring them to me before changing the
+setup.” The agent still inspects traces and designs world changes proactively;
+it presents the candidate because that is the user's standing instruction, not
+because AOS imposed a special proposal mode.
 
-### Local and private operation
+### Broadly autonomous user
 
-A device worker responds to authorized local health events, collects bounded
-diagnostics, and proposes remediation. If a new diagnostic is necessary, it is
-built and tested in a constrained realm before host-process authority is
-considered.
+The user says, “Think widely and improve your setup when it helps.” The agent
+may add a skill, tune retrieval, recompose capsules, or build a capability while
+pursuing the user's objectives. AOS capabilities bound the effects without
+micromanaging how the agent reasons inside that boundary.
+
+### Platform integration
+
+An authorized Slack or GitHub workload benefits from durable event handling, so
+the agent composes a connector and worker using the runtime primitives actually
+available. If a repeated task exposes a missing action, the agent can extend
+that world through Forge. The platform worker is a use case, not the definition
+of the meta-harness.
 
 ### Harness optimization
 
-A user opts into improvement experiments. Redacted episodes show the email
-worker repeatedly retrieves too much history. A proposer changes retrieval and
-compaction, an independent evaluator runs held-out mailboxes, and the
-meta-harness asks AOS to roll out only if task quality improves without
-increasing disclosure, cost, or authority.
+Episode traces show that an agent repeatedly retrieves too much history. A
+proposer changes retrieval and compaction, evaluates candidates on search
+episodes, and checks the strongest candidates on held-out episodes. The useful
+change becomes part of the agent's world.
 
 ## Delivery sequence
 
-This implementation establishes the discoverable foundation for building a
-meta-harness on AOS. It does not turn AOS into one:
+This implementation establishes the discoverable foundation:
 
-1. Ship Forge in Community Edition rather than leaving it source-only.
+1. Ship Forge in Community Edition.
 2. Install the `meta-harness` skill and expose `meta_harness_quickstart`.
-3. Keep the worker/supervisor contract explicit and honest about missing
-   durable spawn support.
+3. Teach agents to see AOS user space as their world and reach for extension
+   during real work.
+4. Keep user instructions and memory as the natural steering surface while AOS
+   capabilities remain the hard boundary.
 
-The next runtime increment should define a narrow supervisor/worker contract in
-the canonical WIT repository and implement one end-to-end platform (Telegram or
-GitHub) with durable worker state, async approval, and a structured gap ledger.
-The optimization loop should follow only after those traces and evaluations are
-trustworthy.
+The next product increment should make the world more legible and testable: a
+unified inventory of harness artifacts, durable trace/evaluation archives,
+isolated candidate workspaces, and reusable evaluation runners. Durable
+platform workers are a valuable separate extension when a use case needs them.
 
-[codex-harness]: https://openai.com/index/unlocking-the-codex-harness/
 [meta-code]: https://github.com/stanford-iris-lab/meta-harness
 [meta-paper]: https://arxiv.org/abs/2603.28052
-[ms-harness]: https://learn.microsoft.com/en-us/agent-framework/agents/harness
-[omnigent]: https://docs.databricks.com/aws/en/omnigent/
-[openai-harness]: https://openai.com/index/harness-engineering/

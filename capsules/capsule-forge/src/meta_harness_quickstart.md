@@ -1,55 +1,49 @@
-# Build a Meta Harness on Unicity AOS
+# Extend Your World on Unicity AOS
 
-Unicity AOS is the operating system for agents. It hosts agents, capsules,
-harnesses, connectors, services, and other agent-native software. It is not
-itself a harness. A **meta-harness** is one user-space system that can run on
-AOS: it supervises durable workers or harnesses and improves their composition
-from evidence without allowing a model to grant itself power.
+Unicity AOS is the operating system for agents. The instructions, skills,
+memory, files, sessions, context policy, tools, capsules, providers, connectors,
+traces, and evaluations visible to you are your user-space world.
 
-Forge is OS-provided construction tooling. A meta-harness can use Forge to
-create or repair a capability, but Forge is not inherently the meta-harness and
-does not supervise workers:
+A meta-harness is your ability to improve that world from experience:
 
 ```text
-meta-harness running on AOS
-  |
-authorized platform event
-  -> worker scoped to (principal, platform, account)
-  -> use installed capabilities
-  -> record a capability gap if blocked
-  -> reuse -> compose -> configure -> Forge-build
-  -> quarantine -> verify -> approve -> install -> observe/rollback
+do work -> notice friction or leverage -> inspect what exists
+        -> remember | reuse | compose | change harness code | Forge-build
+        -> evaluate -> retain -> continue with a better world
 ```
 
-## Start
+Forge is OS-provided construction tooling. Reach for it proactively when new
+code is the useful extension; it is not the supervisor or the definition of the
+meta-harness.
 
-1. Call `system_status` and `list_capsules`.
-2. Inspect relevant capsules and WIT contracts.
-3. Define the platform worker's principal, account, standing intent, allowed
-   actions, budgets, approval rules, and stop conditions.
-4. Start or resume one logical background worker for that scoped platform using
-   a real background-agent or durable AOS worker API.
-5. Give the worker authenticated platform events, a bounded queue, persistent
-   session state, an approval outbox, traces, and a kill switch.
+## While working
 
-Do not invent scopes, permissions, numeric budgets, or auto-build thresholds.
-Until the user or operator accepts them, allow only read-only observation and
-local drafts. Never fabricate setup commands or provider permissions that are
-not visible through installed documentation or schemas.
+1. Keep the user's current objective and instructions as the anchor.
+2. Inspect the relevant skills, memory, capsules, interfaces, tools, and prior
+   traces instead of assuming what your world contains.
+3. Notice missing abilities, repeated work, recurring failures, and improvements
+   that would compound across future tasks.
+4. Decide whether the extension is needed inline, belongs immediately after the
+   task, or should be preserved as durable learning for later.
+5. Choose the useful artifact: memory, skill, harness change, composition,
+   capsule, connector, or an available worker/subagent.
+6. Evaluate the result in proportion to its consequences and retain what works.
 
-If no durable worker API is installed, say so. A shell process is not an agent,
-and a prompt promising future work is not proactive execution.
+The user may tell you to think widely, decide autonomously, make proposals, or
+remember a standing preference. Treat that as normal harness input. AOS
+capabilities remain the operational boundary.
 
-## When the worker is blocked
+Not every agent has subagents or needs a background worker. Use the execution
+primitives actually available, and create a worker only when its workload makes
+one useful.
 
-Capture the blocked goal, the installed capabilities checked, the smallest
-missing contract, required side effects, acceptance tests, and least-privilege
-manifest scope. Prefer an existing capsule or composition. If code is truly
-missing, use Forge's `explain_interface`, `scaffold_capsule`,
-`suggest_capabilities`, `validate_manifest`, and `capsule_doctor` tools.
+## When Forge is useful
 
-Keep generated code quarantined until deterministic tests, negative permission
-tests, platform replay fixtures, provenance, rollback, and any required operator
-approval are complete. The proposer never promotes its own capability.
+Inspect the installed contracts, then use `explain_interface`,
+`scaffold_capsule`, `suggest_capabilities`, `validate_manifest`, and
+`capsule_doctor` as appropriate. Build installable artifacts with
+`aos capsule build` and activate them through the AOS mechanisms available to
+the user.
 
-Load the `meta-harness` skill for the complete workflow and use cases.
+Load the `meta-harness` skill for the full world-extension and trace-driven
+harness-improvement workflow.
