@@ -30,8 +30,8 @@
   `echo`, `write-file`, and `cat` commands with no host-process authority.
 - A versioned Linux Realm path-identity contract separating semantic mount IDs,
   guest paths, Astrid resource URIs, and human display paths. Execution and
-  status responses distinguish the Linux guest's invocation-mounted workspace
-  from its RAM-only home and temporary storage.
+  status responses distinguish the Linux guest's invocation-mounted workspace,
+  principal-generation home, and boot-local temporary storage.
 - A bounded Linux workspace portal: a GPL `trans=aos` 9P transport crosses a
   private experimental SBI request into the Rust Realm machine and 9P server,
   then resolves only the current invocation's Astrid `cwd://` COW capability.
@@ -39,8 +39,13 @@
   boundaries.
 - Crash-consistent `aos-linux-realm` home generations: a principal-scoped atomic
   KV head selects immutable BLAKE3-addressed file and manifest blobs, with
-  concurrent-writer retry, corruption checks, daemon-restart recovery, and lazy
-  migration from the original direct-home format.
+  concurrent-writer retry, corruption checks, daemon-restart recovery, and
+  bounded migration from the original direct-home format.
+- A second bounded 9P/SBI channel mounts those same principal-home generations
+  at Linux `/home/agent`. Linux create, positional write, truncate, directory,
+  rename, unlink, and flush operations select complete generations, and the
+  home survives clean guest shutdown and cold boot while the initramfs root
+  remains disposable.
 - The host-testable `aos-realm-core` semantic kernel with monotonic process and
   pipe identities, explicit process transitions, direct-child wait/reap, typed
   terminal signals, deterministic FIFO admission, atomic descriptor inheritance,

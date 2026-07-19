@@ -61,6 +61,7 @@ impl PrincipalRealm {
 #[derive(Default)]
 struct LinuxActivity {
     machine: Option<Rv64Machine>,
+    home_9p: Option<HomePlan9Session>,
     workspace_9p: Option<WorkspacePlan9Session>,
     boot_executions: u64,
     commands_completed: u64,
@@ -99,6 +100,7 @@ impl LinuxActivity {
         let command = selected.argv.get(1).map(String::as_str);
         let report = execute_linux_resident(
             &mut self.machine,
+            &mut self.home_9p,
             &mut self.workspace_9p,
             action,
             command,
@@ -140,6 +142,8 @@ impl LinuxActivity {
             requested_cwd,
             cwd,
             path_context,
+            home_generation_before: home_generation,
+            home_generation_after: home_generation,
             outcome: report.outcome,
             exit_status: report.exit_status,
             fault: report.fault,
@@ -276,13 +280,14 @@ impl ResidentRealm {
             _ => validate_cwd(args.cwd.as_deref().unwrap_or(DEFAULT_CWD))?,
         }
         let home_generation = home_status()?.generation;
-        let response = self.execute_with_boot(
+        let mut response = self.execute_with_boot(
             principal,
             args,
             Box::<AstridRealmHost>::default(),
             home_generation,
             next_boot_sequence,
         )?;
+        response.home_generation_after = home_status()?.generation;
         serde_json::to_string(&response).map_err(|error| SysError::ApiError(error.to_string()))
     }
 

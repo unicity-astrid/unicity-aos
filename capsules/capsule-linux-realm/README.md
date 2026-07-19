@@ -49,8 +49,8 @@ RV64 instruction images, and the first resident Linux boot image:
   the proof commands are `ping`, `counter`, and `echo ...`
 - `linux-sh`, which executes one bounded script with BusyBox `ash` as UID/GID
   1000 in `/home/agent` or the invocation's mounted `/workspace`, propagates its
-  exact exit status, kills/reaps background descendants, and preserves the
-  in-RAM home across warm calls
+  exact exit status, kills/reaps background descendants, and commits home
+  mutations as crash-consistent principal generations
 - `linux-shutdown`, which cleanly powers a warm guest down through SBI and
   releases its RAM; stopping an already-cold realm is an idempotent zero-step
   operation
@@ -68,8 +68,8 @@ principal-affine Store. Outer Wasm metering is charged to the verified invoking
 principal. The response's versioned path contract reports the semantic mount,
 guest path, Astrid resource URI where one really exists, human display path,
 reference lifetime, and the projection state for nested WASM and Linux. The
-invocation workspace is mounted into Linux through bounded 9P; the separate
-durable Realm home is not yet a Linux mount. Every execution result identifies
+invocation workspace and durable Realm home are mounted into Linux through
+separate bounded 9P channels. Every execution result identifies
 the kernel-stamped owner principal and exact execution backend, and includes the
 requested and effective CWD, path context, outcome, exit status, stdout, stderr,
 fuel or instruction accounting, memory ceiling, and process identifiers where
@@ -95,13 +95,17 @@ Astrid's copy-on-write view and do not change the source workspace until the
 outer Astrid workflow promotes them. An unpromoted workspace overlay is
 discarded on daemon restart. `/tmp` is not durable state.
 
-The Linux lane mounts the invocation's `cwd://` resource at `/workspace` before
-every `linux-sh` call. Linux 9P requests cross a bounded private SBI channel into
-the capsule's Rust 9P server and then the Astrid filesystem imports. Because the
-runtime does not yet expose a stable workspace attachment ID or epoch, the mount
-is torn down and recreated for every call; no guest FID or path reference is
-allowed to outlive the invocation. Linux `/home/agent` and `/tmp` remain guest
-RAM, preserved only while that principal's machine remains warm.
+The Linux lane mounts the principal's selected Realm generation at
+`/home/agent` and the invocation's `cwd://` resource at `/workspace` before
+every `linux-sh` call. Linux 9P requests cross two bounded private SBI channels
+into the capsule's Rust 9P server. Home operations select a complete
+content-addressed generation; workspace operations resolve through the current
+Astrid filesystem imports. Because the runtime does not yet expose a stable
+workspace attachment ID or epoch, the workspace mount is torn down and
+recreated for every call; no workspace FID or path reference is allowed to
+outlive the invocation. The home session is principal-resident, while its
+authoritative generation survives guest shutdown, component eviction, and
+daemon restart. Linux `/tmp` and the initramfs root remain guest RAM.
 
 The default realm name is `default`, giving one durable home per principal. The
 principal is never accepted from tool input. It comes from the kernel-stamped
@@ -120,15 +124,17 @@ A path has three audience-specific spellings, but one typed identity:
 
 `PathRef` carries the mount role and optional mount ID, relative path, guest
 spelling, optional Astrid resource URI, display path, reference lifetime, and the
-home generation or Realm boot observed when the call was admitted.
+home generation or Realm boot observed when the call was admitted. Execution
+also reports the selected home generation before and after the command.
 `MountContext` adds the consumer (`nested-core-wasm`, `linux-guest`, or
 `bare-rv64`), all declared mount projections, and an explicit
 `physical_host_paths_visible=false` invariant.
 
 The enclosing execution response supplies the verified owner principal. A durable
 home reference is therefore identified by owner, Realm home ID, relative path,
-and admitted generation. A Linux RAM path instead carries the `linux-rootfs`
-mount ID and the admitting Realm boot sequence. Workspace references are
+and admitted generation in both nested-WASM and Linux consumers. A Linux
+temporary path instead carries the `linux-rootfs` mount ID and the admitting
+Realm boot sequence. Workspace references are
 invocation-scoped and have `mount_id=null`: the `cwd://` host import does not yet
 supply a stable attachment ID or generation, and the capsule does not invent
 one. Both nested WASM and Linux workspace references carry the real `cwd://`
@@ -162,15 +168,23 @@ with KV compare-and-swap. A crash before the swap can leave unreachable blobs bu
 cannot select a partial generation. A losing concurrent writer reloads the winner,
 merges its own replacement, and retries up to a fixed bound.
 
-Existing format-0 homes are not discarded. Their direct files are imported into
-the versioned store lazily on first read. The old direct path remains a rebuildable
-compatibility projection; reads prefer the selected versioned generation.
+Existing format-0 and format-1 homes are not discarded. Before first format-2
+execution, the dedicated direct-home tree is enumerated in stable order and any
+node absent from the selected generation is imported within explicit entry and
+file bounds. Format-1 manifests materialize their implicit parent directories in
+memory and upgrade on the next mutation. The old direct path remains a
+rebuildable compatibility projection; selected-generation nodes always win.
 
-The current seed supports regular-file create/truncate and read, with a 64 KiB
-per-file limit and 1 MiB manifest limit. It does not yet implement delete, rename,
-directory metadata, permissions, links, garbage collection, named checkpoints, or
-a guest `fsync`/flush call. `linux_realm_status` exposes the format, selected
-generation, file count, and manifest digest without exposing a physical path.
+The current seed supports regular-file create/read/positional-write/truncate,
+directory create/read/remove, tree rename, unlink, persisted permission bits,
+and synchronous flush semantics, with a 64 KiB per-file limit and 1 MiB
+manifest limit. Every successful mutation is already durable at its generation
+head; `fsync` therefore has no deferred dirty bytes. Links, timestamps, garbage
+collection, named checkpoints, and diff/reset remain absent. The component does
+not yet receive the outer principal storage quota, so 9P `statfs` capacity fields
+remain unspecified rather than fabricating free space.
+`linux_realm_status` exposes the format, selected generation, file count, and
+manifest digest without exposing a physical path.
 
 ## Process-kernel model
 
@@ -216,7 +230,8 @@ The pinned kernel, Buildroot rootfs, and AOS-controlled `/init` provide a
 token-bound serial command channel inside this machine. The static BusyBox shell
 is a useful Linux-workbench seed, not a claim of Debian compatibility: Bash,
 Python, an in-guest compiler, networking, durable block storage, and PTYs remain
-absent. The only guest file portal is the synchronous 9P workspace transport;
+absent. The only guest file portals are the synchronous 9P home and workspace
+transports;
 compressed instructions, PLIC, and virtio block are deliberately deferred until
 the selected kernel/device profile requires them.
 
@@ -260,10 +275,11 @@ across separate tool invocations. There is no background CPU: Linux advances
 only inside an admitted, metered invocation. A clean `linux-shutdown`, execution failure, output-limit
 failure, runtime eviction, daemon restart, or capsule unload destroys RAM.
 
-RAM residency is therefore an evictable cache, not durable process state. The
-existing durable Realm home is not yet attached to Linux, and status continues to
-return `linux_storage_persistent=false`. `/workspace` has Astrid's outer COW and
-promotion semantics; it is not evidence of a durable Linux root or home.
+RAM residency is therefore an evictable cache, not durable process state.
+Linux `/home/agent` is the durable Realm home and status reports that persistent
+storage separately from `linux_rootfs_persistent=false`. `/workspace` has
+Astrid's outer COW and promotion semantics; it is not evidence of a durable
+Linux root filesystem.
 
 Astrid Runtime now has the experimental primitive required to make this boundary
 honest: an opt-in Store permanently keyed by `(capsule, component, verified
@@ -273,13 +289,13 @@ eviction. `Capsule.toml` requests it through fail-closed package metadata and
 requires Astrid `>=0.10.2`; 0.10.1 must not silently run this capsule with its old
 free-pool or shared-run-loop semantics.
 
-This closes both outer component affinity and the first inner Linux lifecycle:
-lazy boot, ready, bounded command, clean stop, and restart are executable. Exact
-RV64 step counts remain separate principal-local records for the current Store
-residency. Durable disk remains an independent block-overlay problem rather than
-a promise made by resident RAM. The pinned Buildroot 2026.05.1 userland and the
-invocation-scoped workspace are now behind this lifecycle; attaching durable
-principal home storage is the next storage increment.
+This closes outer component affinity, the first inner Linux lifecycle, and the
+durable home attachment: lazy boot, ready, bounded command, clean stop, and
+restart are executable. Exact RV64 step counts remain separate principal-local
+records for the current Store residency. Durable root storage remains an
+independent block-overlay problem rather than a promise made by resident RAM.
+The pinned Buildroot 2026.05.1 userland, durable principal home, and
+invocation-scoped workspace are now behind this lifecycle.
 
 ## Build and install
 
@@ -355,13 +371,13 @@ networking, PTYs, surviving background jobs, or an in-guest compiler. Those
 belong behind the same realm boundary; they must not be simulated by granting a
 host process.
 
-The Linux workspace driver is intentionally split at authority boundaries. The
+The Linux storage driver is intentionally split at authority boundaries. The
 GPL-2.0-only in-kernel `trans=aos` module turns Linux 9P calls into one synchronous
 SBI exchange. The MIT/Apache Rust machine validates and copies bounded guest RAM,
 the 9P server implements filesystem semantics without ambient authority, and the
-Astrid adapter resolves operations against the invocation's `cwd://` capability.
-Docker is used only to reproduce the image; QEMU is neither linked nor used at
-runtime.
+Astrid adapters resolve channel 1 against the selected principal-home generation
+and channel 2 against the invocation's `cwd://` capability. Docker is used only
+to reproduce the image; QEMU is neither linked nor used at runtime.
 
 ## Distribution direction
 

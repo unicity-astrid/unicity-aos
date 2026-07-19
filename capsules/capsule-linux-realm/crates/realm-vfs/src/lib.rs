@@ -13,13 +13,20 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
 /// On-disk metadata format understood by this implementation.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+
+const LEGACY_FORMAT_VERSION: u32 = 1;
+const DEFAULT_FILE_MODE: u32 = 0o644;
+const DEFAULT_DIRECTORY_MODE: u32 = 0o755;
+const ROOT_DIRECTORY_MODE: u32 = 0o700;
 
 /// Maximum bytes in one file admitted by the current command seed.
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
 
 /// Maximum serialized manifest size admitted by the seed.
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+const MAX_HEAD_BYTES: usize = 1024;
 
 /// Number of optimistic head-swap attempts before reporting contention.
 pub const CAS_RETRY_LIMIT: usize = 8;
@@ -107,6 +114,14 @@ impl std::error::Error for StoreError {}
 pub enum FsError {
     /// The named file is absent from the selected generation.
     NotFound,
+    /// A create or rename destination already exists.
+    AlreadyExists,
+    /// A file operation selected a directory.
+    IsDirectory,
+    /// A directory operation selected a regular file or missing parent.
+    NotDirectory,
+    /// A directory removal or replacement selected a non-empty directory.
+    NotEmpty,
     /// The relative realm-home path is malformed.
     InvalidPath,
     /// A file or manifest exceeds a configured bound.
@@ -125,6 +140,10 @@ impl fmt::Display for FsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound => formatter.write_str("file not found"),
+            Self::AlreadyExists => formatter.write_str("filesystem node already exists"),
+            Self::IsDirectory => formatter.write_str("filesystem node is a directory"),
+            Self::NotDirectory => formatter.write_str("filesystem node is not a directory"),
+            Self::NotEmpty => formatter.write_str("directory is not empty"),
             Self::InvalidPath => formatter.write_str("invalid realm-home path"),
             Self::TooLarge => formatter.write_str("realm filesystem value is too large"),
             Self::Corrupt(message) => write!(formatter, "realm filesystem corruption: {message}"),
@@ -166,18 +185,31 @@ pub trait RealmStore {
 
 /// One file selected by a manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileRecord {
     blob: BlobDigest,
     bytes: u64,
+    #[serde(default = "default_file_mode")]
+    mode: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryRecord {
+    #[serde(default = "default_directory_mode")]
+    mode: u32,
 }
 
 /// Immutable snapshot manifest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     format: u32,
     generation: u64,
     parent_manifest: Option<BlobDigest>,
     files: BTreeMap<String, FileRecord>,
+    #[serde(default)]
+    directories: BTreeMap<String, DirectoryRecord>,
 }
 
 impl Manifest {
@@ -187,12 +219,53 @@ impl Manifest {
             generation: 0,
             parent_manifest: None,
             files: BTreeMap::new(),
+            directories: BTreeMap::new(),
         }
     }
 }
 
+const fn default_file_mode() -> u32 {
+    DEFAULT_FILE_MODE
+}
+
+const fn default_directory_mode() -> u32 {
+    DEFAULT_DIRECTORY_MODE
+}
+
+/// Node category stored in one selected Realm generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FsNodeKind {
+    /// Regular byte-addressable file.
+    File,
+    /// Directory containing files or other directories.
+    Directory,
+}
+
+/// Metadata for one node in the selected Realm generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsMetadata {
+    /// Stored node category.
+    pub kind: FsNodeKind,
+    /// File byte length, or zero for a directory.
+    pub bytes: u64,
+    /// Persisted Unix permission bits.
+    pub mode: u32,
+    /// Selected generation that supplied this metadata.
+    pub generation: u64,
+}
+
+/// One immediate child of a selected directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsDirectoryEntry {
+    /// Single normalized path component.
+    pub name: String,
+    /// Metadata captured from the same selected generation.
+    pub metadata: FsMetadata,
+}
+
 /// The sole mutable filesystem metadata value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HeadRecord {
     format: u32,
     generation: u64,
@@ -203,6 +276,20 @@ struct LoadedSnapshot {
     raw_head: Option<Vec<u8>>,
     manifest_digest: Option<BlobDigest>,
     manifest: Manifest,
+}
+
+enum ManifestChange<T> {
+    Unchanged(T),
+    Changed {
+        value: T,
+        blobs: Vec<(BlobDigest, Vec<u8>)>,
+    },
+}
+
+struct MutationResult<T> {
+    value: T,
+    generation: u64,
+    manifest: Option<BlobDigest>,
 }
 
 /// Observable metadata for the current selected generation.
@@ -240,21 +327,59 @@ impl<S: RealmStore> RealmFs<S> {
         Self { store }
     }
 
+    /// Inspect one file or directory in the currently selected generation.
+    /// The empty path denotes the export root.
+    pub fn metadata(&self, path: &str) -> Result<FsMetadata, FsError> {
+        if !path.is_empty() {
+            validate_relative_path(path)?;
+        }
+        let snapshot = self.load_snapshot()?;
+        metadata_in(&snapshot.manifest, path)
+    }
+
+    /// Enumerate one directory in stable name order.
+    pub fn read_dir(&self, path: &str) -> Result<Vec<FsDirectoryEntry>, FsError> {
+        if !path.is_empty() {
+            validate_relative_path(path)?;
+        }
+        let snapshot = self.load_snapshot()?;
+        if metadata_in(&snapshot.manifest, path)?.kind != FsNodeKind::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        let mut entries = BTreeMap::<String, FsMetadata>::new();
+        for candidate in snapshot
+            .manifest
+            .directories
+            .keys()
+            .chain(snapshot.manifest.files.keys())
+        {
+            let Some(name) = immediate_child(path, candidate) else {
+                continue;
+            };
+            let child = if path.is_empty() {
+                name.to_string()
+            } else {
+                format!("{path}/{name}")
+            };
+            entries
+                .entry(name.to_string())
+                .or_insert(metadata_in(&snapshot.manifest, &child)?);
+        }
+        Ok(entries
+            .into_iter()
+            .map(|(name, metadata)| FsDirectoryEntry { name, metadata })
+            .collect())
+    }
+
     /// Read one file from the currently selected manifest.
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>, FsError> {
         validate_relative_path(path)?;
         let snapshot = self.load_snapshot()?;
-        let record = snapshot.manifest.files.get(path).ok_or(FsError::NotFound)?;
-        let bytes = self.store.get_blob(&record.blob)?.ok_or_else(|| {
-            FsError::Corrupt(format!("missing file blob {}", record.blob.as_str()))
-        })?;
-        verify_blob(&record.blob, &bytes)?;
-        if u64::try_from(bytes.len()).map_err(|_| FsError::TooLarge)? != record.bytes {
-            return Err(FsError::Corrupt(format!(
-                "file length does not match manifest for {path}"
-            )));
+        if snapshot.manifest.directories.contains_key(path) {
+            return Err(FsError::IsDirectory);
         }
-        Ok(bytes)
+        let record = snapshot.manifest.files.get(path).ok_or(FsError::NotFound)?;
+        read_record_bytes(&self.store, path, record)
     }
 
     /// Commit a create-or-truncate file replacement as one new generation.
@@ -265,25 +390,299 @@ impl<S: RealmStore> RealmFs<S> {
         }
 
         let file_blob = BlobDigest::for_bytes(bytes);
-        self.put_verified_blob(&file_blob, bytes)?;
-
-        for _ in 0..CAS_RETRY_LIMIT {
-            let snapshot = self.load_snapshot()?;
-            let generation = snapshot
-                .manifest
-                .generation
-                .checked_add(1)
-                .ok_or(FsError::TooLarge)?;
-            let mut manifest = snapshot.manifest;
-            manifest.generation = generation;
-            manifest.parent_manifest = snapshot.manifest_digest;
+        let result = self.mutate(|_, manifest| {
+            if manifest.directories.contains_key(path) {
+                return Err(FsError::IsDirectory);
+            }
+            ensure_parent_directories(manifest, path)?;
+            let mode = manifest
+                .files
+                .get(path)
+                .map_or(DEFAULT_FILE_MODE, |record| record.mode);
             manifest.files.insert(
                 path.to_string(),
                 FileRecord {
                     blob: file_blob.clone(),
                     bytes: u64::try_from(bytes.len()).map_err(|_| FsError::TooLarge)?,
+                    mode,
                 },
             );
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: vec![(file_blob.clone(), bytes.to_vec())],
+            })
+        })?;
+        Ok(CommitReceipt {
+            generation: result.generation,
+            manifest: result.manifest.ok_or_else(|| {
+                FsError::Corrupt("a file replacement selected no manifest".to_string())
+            })?,
+            file_blob,
+        })
+    }
+
+    /// Replace a byte range and atomically select the resulting file.
+    pub fn write_at(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<u32, FsError> {
+        validate_relative_path(path)?;
+        let offset = usize::try_from(offset).map_err(|_| FsError::TooLarge)?;
+        let end = offset.checked_add(data.len()).ok_or(FsError::TooLarge)?;
+        if end > MAX_FILE_BYTES {
+            return Err(FsError::TooLarge);
+        }
+        let result = self.mutate(|store, manifest| {
+            if manifest.directories.contains_key(path) {
+                return Err(FsError::IsDirectory);
+            }
+            let record = manifest.files.get(path).ok_or(FsError::NotFound)?.clone();
+            if data.is_empty() {
+                return Ok(ManifestChange::Unchanged(0));
+            }
+            let mut bytes = read_record_bytes(store, path, &record)?;
+            if bytes.len() < end {
+                bytes.resize(end, 0);
+            }
+            bytes[offset..end].copy_from_slice(data);
+            let blob = BlobDigest::for_bytes(&bytes);
+            manifest.files.insert(
+                path.to_string(),
+                FileRecord {
+                    blob: blob.clone(),
+                    bytes: u64::try_from(bytes.len()).map_err(|_| FsError::TooLarge)?,
+                    mode: record.mode,
+                },
+            );
+            Ok(ManifestChange::Changed {
+                value: u32::try_from(data.len()).map_err(|_| FsError::TooLarge)?,
+                blobs: vec![(blob, bytes)],
+            })
+        })?;
+        Ok(result.value)
+    }
+
+    /// Create a regular file, applying exclusive and truncate semantics in one
+    /// selected generation.
+    pub fn create_file(
+        &mut self,
+        path: &str,
+        mode: u32,
+        exclusive: bool,
+        truncate: bool,
+    ) -> Result<(), FsError> {
+        validate_relative_path(path)?;
+        let empty_blob = BlobDigest::for_bytes(&[]);
+        self.mutate(|_, manifest| {
+            require_parent_directory(manifest, path)?;
+            if manifest.directories.contains_key(path) {
+                return Err(FsError::IsDirectory);
+            }
+            if let Some(record) = manifest.files.get(path) {
+                if exclusive {
+                    return Err(FsError::AlreadyExists);
+                }
+                if !truncate {
+                    return Ok(ManifestChange::Unchanged(()));
+                }
+                let retained_mode = record.mode;
+                manifest.files.insert(
+                    path.to_string(),
+                    FileRecord {
+                        blob: empty_blob.clone(),
+                        bytes: 0,
+                        mode: retained_mode,
+                    },
+                );
+            } else {
+                manifest.files.insert(
+                    path.to_string(),
+                    FileRecord {
+                        blob: empty_blob.clone(),
+                        bytes: 0,
+                        mode: mode & 0o7777,
+                    },
+                );
+            }
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: vec![(empty_blob.clone(), Vec::new())],
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Create one empty directory beneath an existing directory.
+    pub fn create_dir(&mut self, path: &str, mode: u32) -> Result<(), FsError> {
+        validate_relative_path(path)?;
+        self.mutate(|_, manifest| {
+            require_parent_directory(manifest, path)?;
+            if node_exists(manifest, path) {
+                return Err(FsError::AlreadyExists);
+            }
+            manifest.directories.insert(
+                path.to_string(),
+                DirectoryRecord {
+                    mode: mode & 0o7777,
+                },
+            );
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: Vec::new(),
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Truncate or zero-extend one regular file atomically.
+    pub fn set_len(&mut self, path: &str, len: u64) -> Result<(), FsError> {
+        validate_relative_path(path)?;
+        let len = usize::try_from(len).map_err(|_| FsError::TooLarge)?;
+        if len > MAX_FILE_BYTES {
+            return Err(FsError::TooLarge);
+        }
+        self.mutate(|store, manifest| {
+            if manifest.directories.contains_key(path) {
+                return Err(FsError::IsDirectory);
+            }
+            let record = manifest.files.get(path).ok_or(FsError::NotFound)?.clone();
+            if usize::try_from(record.bytes).map_err(|_| FsError::TooLarge)? == len {
+                return Ok(ManifestChange::Unchanged(()));
+            }
+            let mut bytes = read_record_bytes(store, path, &record)?;
+            bytes.resize(len, 0);
+            let blob = BlobDigest::for_bytes(&bytes);
+            manifest.files.insert(
+                path.to_string(),
+                FileRecord {
+                    blob: blob.clone(),
+                    bytes: len as u64,
+                    mode: record.mode,
+                },
+            );
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: vec![(blob, bytes)],
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Remove one regular file in a new selected generation.
+    pub fn remove_file(&mut self, path: &str) -> Result<(), FsError> {
+        validate_relative_path(path)?;
+        self.mutate(|_, manifest| {
+            if manifest.directories.contains_key(path) {
+                return Err(FsError::IsDirectory);
+            }
+            manifest.files.remove(path).ok_or(FsError::NotFound)?;
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: Vec::new(),
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Remove one empty directory in a new selected generation.
+    pub fn remove_dir(&mut self, path: &str) -> Result<(), FsError> {
+        validate_relative_path(path)?;
+        self.mutate(|_, manifest| {
+            if manifest.files.contains_key(path) {
+                return Err(FsError::NotDirectory);
+            }
+            if !manifest.directories.contains_key(path) {
+                return Err(FsError::NotFound);
+            }
+            if has_descendant(manifest, path) {
+                return Err(FsError::NotEmpty);
+            }
+            manifest.directories.remove(path);
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: Vec::new(),
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Atomically rename one file or directory tree within this filesystem.
+    pub fn rename(&mut self, source: &str, destination: &str) -> Result<(), FsError> {
+        validate_relative_path(source)?;
+        validate_relative_path(destination)?;
+        if source == destination {
+            return Ok(());
+        }
+        self.mutate(|_, manifest| {
+            require_parent_directory(manifest, destination)?;
+            let source_kind = node_kind(manifest, source).ok_or(FsError::NotFound)?;
+            if source_kind == FsNodeKind::Directory
+                && destination
+                    .strip_prefix(source)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                return Err(FsError::InvalidPath);
+            }
+            match (source_kind, node_kind(manifest, destination)) {
+                (_, None) => {}
+                (FsNodeKind::File, Some(FsNodeKind::Directory)) => {
+                    return Err(FsError::IsDirectory);
+                }
+                (FsNodeKind::Directory, Some(FsNodeKind::File)) => {
+                    return Err(FsError::NotDirectory);
+                }
+                (FsNodeKind::Directory, Some(FsNodeKind::Directory))
+                    if has_descendant(manifest, destination) =>
+                {
+                    return Err(FsError::NotEmpty);
+                }
+                _ => remove_node(manifest, destination),
+            }
+            rename_node(manifest, source, destination, source_kind);
+            Ok(ManifestChange::Changed {
+                value: (),
+                blobs: Vec::new(),
+            })
+        })?;
+        Ok(())
+    }
+
+    /// Inspect the selected generation without mutating the store.
+    pub fn status(&self) -> Result<FsStatus, FsError> {
+        let snapshot = self.load_snapshot()?;
+        Ok(FsStatus {
+            format: snapshot.manifest.format,
+            generation: snapshot.manifest.generation,
+            files: snapshot.manifest.files.len(),
+            manifest: snapshot.manifest_digest,
+        })
+    }
+
+    fn mutate<T>(
+        &mut self,
+        mut operation: impl FnMut(&S, &mut Manifest) -> Result<ManifestChange<T>, FsError>,
+    ) -> Result<MutationResult<T>, FsError> {
+        for _ in 0..CAS_RETRY_LIMIT {
+            let snapshot = self.load_snapshot()?;
+            let mut manifest = snapshot.manifest;
+            let (value, blobs) = match operation(&self.store, &mut manifest)? {
+                ManifestChange::Unchanged(value) => {
+                    return Ok(MutationResult {
+                        value,
+                        generation: manifest.generation,
+                        manifest: snapshot.manifest_digest,
+                    });
+                }
+                ManifestChange::Changed { value, blobs } => (value, blobs),
+            };
+
+            let generation = manifest
+                .generation
+                .checked_add(1)
+                .ok_or(FsError::TooLarge)?;
+            manifest.format = FORMAT_VERSION;
+            manifest.generation = generation;
+            manifest.parent_manifest = snapshot.manifest_digest;
+            for (digest, bytes) in blobs {
+                self.put_verified_blob(&digest, &bytes)?;
+            }
             let manifest_bytes = encode(&manifest)?;
             if manifest_bytes.len() > MAX_MANIFEST_BYTES {
                 return Err(FsError::TooLarge);
@@ -301,26 +700,14 @@ impl<S: RealmStore> RealmFs<S> {
                 .store
                 .compare_and_swap_head(snapshot.raw_head.as_deref(), &head_bytes)?
             {
-                return Ok(CommitReceipt {
+                return Ok(MutationResult {
+                    value,
                     generation,
-                    manifest: manifest_digest,
-                    file_blob,
+                    manifest: Some(manifest_digest),
                 });
             }
         }
-
         Err(FsError::Contended)
-    }
-
-    /// Inspect the selected generation without mutating the store.
-    pub fn status(&self) -> Result<FsStatus, FsError> {
-        let snapshot = self.load_snapshot()?;
-        Ok(FsStatus {
-            format: FORMAT_VERSION,
-            generation: snapshot.manifest.generation,
-            files: snapshot.manifest.files.len(),
-            manifest: snapshot.manifest_digest,
-        })
     }
 
     fn put_verified_blob(&mut self, digest: &BlobDigest, bytes: &[u8]) -> Result<(), FsError> {
@@ -339,8 +726,11 @@ impl<S: RealmStore> RealmFs<S> {
                 manifest: Manifest::empty(),
             });
         };
+        if raw_head.len() > MAX_HEAD_BYTES {
+            return Err(FsError::Corrupt("selected head is oversized".to_string()));
+        }
         let head: HeadRecord = decode(&raw_head)?;
-        if head.format != FORMAT_VERSION {
+        if !matches!(head.format, LEGACY_FORMAT_VERSION | FORMAT_VERSION) {
             return Err(FsError::Corrupt(format!(
                 "unsupported head format {}",
                 head.format
@@ -350,18 +740,241 @@ impl<S: RealmStore> RealmFs<S> {
             .store
             .get_blob(&head.manifest)?
             .ok_or_else(|| FsError::Corrupt("selected manifest blob is missing".to_string()))?;
+        if manifest_bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(FsError::Corrupt(
+                "selected manifest is oversized".to_string(),
+            ));
+        }
         verify_blob(&head.manifest, &manifest_bytes)?;
-        let manifest: Manifest = decode(&manifest_bytes)?;
-        if manifest.format != FORMAT_VERSION || manifest.generation != head.generation {
+        let mut manifest: Manifest = decode(&manifest_bytes)?;
+        if manifest.format != head.format || manifest.generation != head.generation {
             return Err(FsError::Corrupt(
                 "head and selected manifest metadata disagree".to_string(),
             ));
         }
+        if manifest.format == LEGACY_FORMAT_VERSION {
+            materialize_legacy_directories(&mut manifest)?;
+        }
+        validate_manifest(&manifest)?;
         Ok(LoadedSnapshot {
             raw_head: Some(raw_head),
             manifest_digest: Some(head.manifest),
             manifest,
         })
+    }
+}
+
+fn validate_manifest(manifest: &Manifest) -> Result<(), FsError> {
+    if manifest.generation == 0 || (manifest.generation == 1) != manifest.parent_manifest.is_none()
+    {
+        return Err(FsError::Corrupt(
+            "manifest generation and parent disagree".to_string(),
+        ));
+    }
+    for (path, record) in &manifest.files {
+        validate_stored_path(path)?;
+        if record.bytes > MAX_FILE_BYTES as u64 || record.mode & !0o7777 != 0 {
+            return Err(FsError::Corrupt(format!(
+                "file metadata is outside bounds for {path:?}"
+            )));
+        }
+        if manifest.directories.contains_key(path)
+            || node_kind(manifest, parent_path(path)) != Some(FsNodeKind::Directory)
+        {
+            return Err(FsError::Corrupt(format!(
+                "file parent or node kind is invalid for {path:?}"
+            )));
+        }
+    }
+    for (path, record) in &manifest.directories {
+        validate_stored_path(path)?;
+        if record.mode & !0o7777 != 0
+            || manifest.files.contains_key(path)
+            || node_kind(manifest, parent_path(path)) != Some(FsNodeKind::Directory)
+        {
+            return Err(FsError::Corrupt(format!(
+                "directory metadata is invalid for {path:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stored_path(path: &str) -> Result<(), FsError> {
+    validate_relative_path(path)
+        .map_err(|_| FsError::Corrupt(format!("manifest contains invalid path {path:?}")))
+}
+
+fn read_record_bytes<S: RealmStore>(
+    store: &S,
+    path: &str,
+    record: &FileRecord,
+) -> Result<Vec<u8>, FsError> {
+    let bytes = store
+        .get_blob(&record.blob)?
+        .ok_or_else(|| FsError::Corrupt(format!("missing file blob {}", record.blob.as_str())))?;
+    verify_blob(&record.blob, &bytes)?;
+    if u64::try_from(bytes.len()).map_err(|_| FsError::TooLarge)? != record.bytes {
+        return Err(FsError::Corrupt(format!(
+            "file length does not match manifest for {path}"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn metadata_in(manifest: &Manifest, path: &str) -> Result<FsMetadata, FsError> {
+    if path.is_empty() {
+        return Ok(FsMetadata {
+            kind: FsNodeKind::Directory,
+            bytes: 0,
+            mode: ROOT_DIRECTORY_MODE,
+            generation: manifest.generation,
+        });
+    }
+    if let Some(record) = manifest.files.get(path) {
+        return Ok(FsMetadata {
+            kind: FsNodeKind::File,
+            bytes: record.bytes,
+            mode: record.mode,
+            generation: manifest.generation,
+        });
+    }
+    if let Some(record) = manifest.directories.get(path) {
+        return Ok(FsMetadata {
+            kind: FsNodeKind::Directory,
+            bytes: 0,
+            mode: record.mode,
+            generation: manifest.generation,
+        });
+    }
+    Err(FsError::NotFound)
+}
+
+fn node_kind(manifest: &Manifest, path: &str) -> Option<FsNodeKind> {
+    if path.is_empty() || manifest.directories.contains_key(path) {
+        Some(FsNodeKind::Directory)
+    } else if manifest.files.contains_key(path) {
+        Some(FsNodeKind::File)
+    } else {
+        None
+    }
+}
+
+fn node_exists(manifest: &Manifest, path: &str) -> bool {
+    node_kind(manifest, path).is_some()
+}
+
+fn parent_path(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+fn require_parent_directory(manifest: &Manifest, path: &str) -> Result<(), FsError> {
+    match node_kind(manifest, parent_path(path)) {
+        Some(FsNodeKind::Directory) => Ok(()),
+        Some(FsNodeKind::File) | None => Err(FsError::NotDirectory),
+    }
+}
+
+fn ensure_parent_directories(manifest: &mut Manifest, path: &str) -> Result<(), FsError> {
+    let Some((parent, _)) = path.rsplit_once('/') else {
+        return Ok(());
+    };
+    let mut current = String::new();
+    for component in parent.split('/') {
+        if !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(component);
+        if manifest.files.contains_key(&current) {
+            return Err(FsError::NotDirectory);
+        }
+        manifest
+            .directories
+            .entry(current.clone())
+            .or_insert(DirectoryRecord {
+                mode: DEFAULT_DIRECTORY_MODE,
+            });
+    }
+    Ok(())
+}
+
+fn materialize_legacy_directories(manifest: &mut Manifest) -> Result<(), FsError> {
+    let paths: Vec<_> = manifest.files.keys().cloned().collect();
+    for path in paths {
+        validate_relative_path(&path).map_err(|_| {
+            FsError::Corrupt(format!("legacy manifest contains invalid path {path:?}"))
+        })?;
+        ensure_parent_directories(manifest, &path)?;
+    }
+    Ok(())
+}
+
+fn immediate_child<'a>(parent: &str, candidate: &'a str) -> Option<&'a str> {
+    let relative = if parent.is_empty() {
+        candidate
+    } else {
+        candidate.strip_prefix(parent)?.strip_prefix('/')?
+    };
+    if relative.is_empty() {
+        return None;
+    }
+    Some(relative.split('/').next().unwrap_or(relative))
+}
+
+fn has_descendant(manifest: &Manifest, path: &str) -> bool {
+    let prefix = format!("{path}/");
+    manifest
+        .files
+        .keys()
+        .chain(manifest.directories.keys())
+        .any(|candidate| candidate.starts_with(&prefix))
+}
+
+fn remove_node(manifest: &mut Manifest, path: &str) {
+    manifest.files.remove(path);
+    manifest.directories.remove(path);
+}
+
+fn rename_node(manifest: &mut Manifest, source: &str, destination: &str, source_kind: FsNodeKind) {
+    match source_kind {
+        FsNodeKind::File => {
+            if let Some(record) = manifest.files.remove(source) {
+                manifest.files.insert(destination.to_string(), record);
+            }
+        }
+        FsNodeKind::Directory => {
+            let prefix = format!("{source}/");
+            let directories: Vec<_> = manifest
+                .directories
+                .iter()
+                .filter(|(path, _)| path.as_str() == source || path.starts_with(&prefix))
+                .map(|(path, record)| (path.clone(), record.clone()))
+                .collect();
+            let files: Vec<_> = manifest
+                .files
+                .iter()
+                .filter(|(path, _)| path.starts_with(&prefix))
+                .map(|(path, record)| (path.clone(), record.clone()))
+                .collect();
+            for (path, _) in &directories {
+                manifest.directories.remove(path);
+            }
+            for (path, _) in &files {
+                manifest.files.remove(path);
+            }
+            for (path, record) in directories {
+                let suffix = path.strip_prefix(source).unwrap_or_default();
+                manifest
+                    .directories
+                    .insert(format!("{destination}{suffix}"), record);
+            }
+            for (path, record) in files {
+                let suffix = path.strip_prefix(source).unwrap_or_default();
+                manifest
+                    .files
+                    .insert(format!("{destination}{suffix}"), record);
+            }
+        }
     }
 }
 
@@ -439,6 +1052,7 @@ mod tests {
                 FileRecord {
                     blob: file_blob.clone(),
                     bytes: u64::try_from(bytes.len()).expect("test file length fits"),
+                    mode: DEFAULT_FILE_MODE,
                 },
             );
             let manifest = Manifest {
@@ -446,6 +1060,7 @@ mod tests {
                 generation: 1,
                 parent_manifest: None,
                 files,
+                directories: BTreeMap::new(),
             };
             let manifest_bytes = encode(&manifest).expect("competitor manifest encodes");
             let manifest_digest = BlobDigest::for_bytes(&manifest_bytes);
@@ -672,15 +1287,204 @@ mod tests {
     }
 
     #[test]
+    fn directory_and_positional_mutations_are_generation_atomic() {
+        let store = MemoryStore::default();
+        let mut filesystem = RealmFs::new(store);
+
+        filesystem
+            .create_dir("projects", 0o750)
+            .expect("directory commits");
+        filesystem
+            .create_file("projects/main.rs", 0o640, true, false)
+            .expect("file commits");
+        assert_eq!(
+            filesystem.write_at("projects/main.rs", 0, b"fn main"),
+            Ok(7)
+        );
+        assert_eq!(filesystem.write_at("projects/main.rs", 10, b"{}"), Ok(2));
+        assert_eq!(
+            filesystem.read_file("projects/main.rs"),
+            Ok(b"fn main\0\0\0{}".to_vec())
+        );
+        filesystem
+            .set_len("projects/main.rs", 9)
+            .expect("truncate commits");
+
+        let before_failed_remove = filesystem.status().expect("status").generation;
+        assert_eq!(filesystem.remove_dir("projects"), Err(FsError::NotEmpty));
+        assert_eq!(
+            filesystem.status().expect("status").generation,
+            before_failed_remove
+        );
+
+        filesystem
+            .rename("projects", "archive")
+            .expect("tree rename commits");
+        assert_eq!(
+            filesystem.read_file("archive/main.rs"),
+            Ok(b"fn main\0\0".to_vec())
+        );
+        assert_eq!(
+            filesystem.metadata("archive").expect("directory metadata"),
+            FsMetadata {
+                kind: FsNodeKind::Directory,
+                bytes: 0,
+                mode: 0o750,
+                generation: filesystem.status().expect("status").generation,
+            }
+        );
+        assert_eq!(
+            filesystem
+                .read_dir("")
+                .expect("root directory")
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            vec!["archive"]
+        );
+
+        filesystem
+            .remove_file("archive/main.rs")
+            .expect("file removal commits");
+        filesystem
+            .remove_dir("archive")
+            .expect("empty directory removal commits");
+        assert_eq!(filesystem.metadata("archive"), Err(FsError::NotFound));
+    }
+
+    #[test]
+    fn legacy_file_manifests_gain_directories_on_the_next_mutation() {
+        let store = MemoryStore::default();
+        let file_bytes = b"legacy".to_vec();
+        let file_blob = BlobDigest::for_bytes(&file_bytes);
+        let manifest_bytes = serde_json::to_vec(&serde_json::json!({
+            "format": LEGACY_FORMAT_VERSION,
+            "generation": 1,
+            "parent_manifest": null,
+            "files": {
+                "state/session.json": {
+                    "blob": file_blob.as_str(),
+                    "bytes": file_bytes.len()
+                }
+            }
+        }))
+        .expect("legacy manifest encodes");
+        let manifest_digest = BlobDigest::for_bytes(&manifest_bytes);
+        {
+            let mut state = store.inner.borrow_mut();
+            state.blobs.insert(file_blob, file_bytes);
+            state.blobs.insert(manifest_digest.clone(), manifest_bytes);
+            state.head = Some(
+                encode(&HeadRecord {
+                    format: LEGACY_FORMAT_VERSION,
+                    generation: 1,
+                    manifest: manifest_digest,
+                })
+                .expect("legacy head encodes"),
+            );
+        }
+        let mut filesystem = RealmFs::new(store);
+
+        assert_eq!(
+            filesystem
+                .metadata("state")
+                .expect("implicit directory")
+                .kind,
+            FsNodeKind::Directory
+        );
+        assert_eq!(filesystem.status().expect("legacy status").format, 1);
+        filesystem
+            .write_at("state/session.json", 6, b"-migrated")
+            .expect("mutation upgrades the manifest");
+        assert_eq!(filesystem.status().expect("current status").format, 2);
+        assert_eq!(
+            filesystem.read_file("state/session.json"),
+            Ok(b"legacy-migrated".to_vec())
+        );
+        assert_eq!(
+            filesystem
+                .read_dir("")
+                .expect("root directory")
+                .first()
+                .map(|entry| entry.name.as_str()),
+            Some("state")
+        );
+    }
+
+    #[test]
     fn newer_or_malformed_metadata_is_never_interpreted() {
         let store = MemoryStore::default();
         store.inner.borrow_mut().head = Some(
-            br#"{"format":2,"generation":1,"manifest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
-                .to_vec(),
+            encode(&HeadRecord {
+                format: FORMAT_VERSION + 1,
+                generation: 1,
+                manifest: BlobDigest::parse("a".repeat(64)).expect("digest"),
+            })
+            .expect("future head encodes"),
         );
         let filesystem = RealmFs::new(store);
 
         assert!(matches!(filesystem.status(), Err(FsError::Corrupt(_))));
         assert!(BlobDigest::parse("A".repeat(64)).is_err());
+        assert!(matches!(
+            decode::<HeadRecord>(
+                br#"{"format":2,"generation":1,"manifest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","extra":true}"#
+            ),
+            Err(FsError::Serialization(_))
+        ));
+        assert!(matches!(
+            decode::<Manifest>(
+                br#"{"format":2,"generation":1,"parent_manifest":null,"files":{},"directories":{},"extra":true}"#
+            ),
+            Err(FsError::Serialization(_))
+        ));
+    }
+
+    #[test]
+    fn structurally_invalid_selected_manifests_fail_closed() {
+        for manifest in [
+            Manifest {
+                format: FORMAT_VERSION,
+                generation: 1,
+                parent_manifest: None,
+                files: BTreeMap::from([(
+                    "missing/parent".to_string(),
+                    FileRecord {
+                        blob: BlobDigest::for_bytes(b"x"),
+                        bytes: 1,
+                        mode: DEFAULT_FILE_MODE,
+                    },
+                )]),
+                directories: BTreeMap::new(),
+            },
+            Manifest {
+                format: FORMAT_VERSION,
+                generation: 2,
+                parent_manifest: None,
+                files: BTreeMap::new(),
+                directories: BTreeMap::new(),
+            },
+        ] {
+            let store = MemoryStore::default();
+            let bytes = encode(&manifest).expect("invalid manifest still encodes");
+            let digest = BlobDigest::for_bytes(&bytes);
+            {
+                let mut state = store.inner.borrow_mut();
+                state.blobs.insert(digest.clone(), bytes);
+                state.head = Some(
+                    encode(&HeadRecord {
+                        format: manifest.format,
+                        generation: manifest.generation,
+                        manifest: digest,
+                    })
+                    .expect("head encodes"),
+                );
+            }
+
+            assert!(matches!(
+                RealmFs::new(store).status(),
+                Err(FsError::Corrupt(_))
+            ));
+        }
     }
 }

@@ -23,23 +23,27 @@ IP/Unix networking and network devices, raw memory/port devices, input, and
 media support.
 
 Linux does have one capability device that is not represented as a `/dev` node:
-its built-in `trans=aos` 9P transport. PID 1 mounts the invocation workspace at
-`/workspace` with `version=9p2000.L`, `msize=65536`, `cache=none`, and
-`access=client`. The kernel transport sends one complete bounded request through
-private experimental SBI extension `0x08414f53`, channel 2. The outer machine
-copies it out of admitted guest RAM, pauses the guest while the capsule serves
-it, copies the bounded response back, and resumes Linux. There is no PLIC,
-virtio, socket, network device, shared-memory ring, or host filesystem handle in
-this path.
+its built-in `trans=aos` 9P transport. PID 1 mounts the principal's durable home
+at `/home/agent` and the invocation workspace at `/workspace` with
+`version=9p2000.L`, `msize=65536`, `cache=none`, and `access=client`. The kernel
+transport sends one complete bounded request through private experimental SBI
+extension `0x08414f53`: channel 1 selects the principal-home generation and
+channel 2 resolves the invocation's workspace. The outer machine copies the
+request out of admitted guest RAM, pauses the guest while the capsule serves it,
+copies the bounded response back, and resumes Linux. There is no PLIC, virtio,
+socket, network device, shared-memory ring, or host filesystem handle in this
+path.
 
 This is not Bash, Debian, or a development distribution yet. It has no Python,
 GCC inside the guest, package manager, network device, block device, PTY, or
-durable Linux disk. Files under `/home/agent` survive separate calls while the
-same Linux RAM remains resident; shutdown, eviction, daemon restart, or a failed
-bounded execution discards them. `/workspace` is the invocation's Astrid COW
-resource, not a Linux disk: PID 1 unmounts and remounts it before every shell
-command so stale 9P FIDs cannot cross an invocation boundary. Durable principal
-home storage remains a separate Realm filesystem.
+durable Linux root disk. `/home/agent` is the separate crash-consistent Realm
+filesystem: each successful mutation selects an immutable principal generation,
+so its bytes survive warm calls, guest shutdown, component eviction, and daemon
+restart. `/workspace` is the invocation's Astrid COW resource, not a Linux disk.
+PID 1 unmounts and remounts both views before every shell command; the home
+reattaches the current durable head, while workspace remounting ensures stale 9P
+FIDs cannot cross an invocation boundary. `/tmp` and the initramfs root remain
+boot-local RAM.
 
 ## Command protocol
 
@@ -115,7 +119,8 @@ notices and make the exact corresponding sources from `SOURCES.lock` available.
 configuration, target license texts, and kernel license; its README defines the
 larger corresponding-source release gate.
 
-To exercise the image through the AOS interpreter rather than QEMU:
+To exercise the image through the AOS interpreter rather than QEMU, including a
+durable-home write/rename, clean shutdown, cold boot, and exact readback:
 
 ```sh
 cargo test --release -p aos-linux-realm \

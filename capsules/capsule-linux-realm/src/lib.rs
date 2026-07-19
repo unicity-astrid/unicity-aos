@@ -23,13 +23,13 @@ use aos_realm_runtime::{
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
-#[cfg(not(test))]
-use host::AstridWorkspace9p;
 #[cfg(test)]
 use host::NativeTestWorkspace9p;
+#[cfg(not(test))]
+use host::{AstridHome9p, AstridWorkspace9p};
 use host::{
-    AstridRealmHost, DEFAULT_CWD, LINUX_WORKSPACE_9P_CHANNEL, REALM_HOME, REALM_NAME, REALM_TMP,
-    ensure_layout, home_status, layout_state, validate_cwd,
+    AstridRealmHost, DEFAULT_CWD, LINUX_HOME_9P_CHANNEL, LINUX_WORKSPACE_9P_CHANNEL, REALM_HOME,
+    REALM_NAME, REALM_TMP, ensure_layout, home_status, layout_state, validate_cwd,
 };
 use paths::{
     MountContext, MountRole, PATH_CONTRACT_VERSION, PathConsumer, ProjectionState,
@@ -66,6 +66,11 @@ type WorkspacePlan9Session = Plan9Session<AstridWorkspace9p>;
 #[cfg(test)]
 type WorkspacePlan9Session = Plan9Session<NativeTestWorkspace9p>;
 
+#[cfg(not(test))]
+type HomePlan9Session = Plan9Session<AstridHome9p>;
+#[cfg(test)]
+type HomePlan9Session = Plan9Session<NativeTestWorkspace9p>;
+
 fn new_workspace_9p_session() -> Result<WorkspacePlan9Session, SysError> {
     #[cfg(not(test))]
     let filesystem = AstridWorkspace9p;
@@ -73,6 +78,14 @@ fn new_workspace_9p_session() -> Result<WorkspacePlan9Session, SysError> {
     let filesystem = NativeTestWorkspace9p::new()?;
     Plan9Session::new(filesystem, "workspace")
         .map_err(|error| SysError::ApiError(error.to_string()))
+}
+
+fn new_home_9p_session() -> Result<HomePlan9Session, SysError> {
+    #[cfg(not(test))]
+    let filesystem = AstridHome9p;
+    #[cfg(test)]
+    let filesystem = NativeTestWorkspace9p::new()?;
+    Plan9Session::new(filesystem, "home").map_err(|error| SysError::ApiError(error.to_string()))
 }
 
 /// One principal-owned Realm service.
@@ -114,7 +127,7 @@ pub struct ExecArgs {
     #[serde(default)]
     pub args: Vec<String>,
     /// Guest-visible CWD beneath `/workspace`, `/home/agent`, or `/tmp`.
-    /// The Linux shell accepts its RAM-backed `/home/agent` or the
+    /// The Linux shell accepts its durable principal `/home/agent` or the
     /// invocation-scoped Astrid `/workspace`; other Realm programs use
     /// `/workspace` by default.
     pub cwd: Option<String>,
@@ -134,6 +147,8 @@ struct ExecResponse {
     requested_cwd: Option<String>,
     cwd: String,
     path_context: MountContext,
+    home_generation_before: u64,
+    home_generation_after: u64,
     outcome: &'static str,
     exit_status: Option<i32>,
     fault: Option<String>,
@@ -207,6 +222,8 @@ struct StatusResponse {
     linux_ram_persistent: bool,
     linux_ram_durability: &'static str,
     linux_storage_persistent: bool,
+    linux_rootfs_persistent: bool,
+    linux_home_persistent: bool,
     linux_boot_executions_this_actor_boot: u64,
     linux_commands_completed_this_actor_boot: u64,
     linux_clean_shutdowns: u64,
@@ -331,10 +348,10 @@ impl LinuxRealm {
     /// Run one signed command in the caller's principal-scoped AOS Realm.
     ///
     /// Nested core-WASM programs can use the confined `/workspace`, durable
-    /// `/home/agent`, and ephemeral `/tmp` Astrid projections. The Linux shell
-    /// has a separate RAM-only `/home/agent` and an invocation-scoped 9P mount
-    /// of the same admitted Astrid `/workspace`. The response describes the
-    /// selected consumer and projection state.
+    /// `/home/agent`, and ephemeral `/tmp` Astrid projections. Linux receives
+    /// the same durable principal home over one 9P channel and the current
+    /// invocation's Astrid `/workspace` over another. The response describes
+    /// the selected consumer, projection state, and home generation boundary.
     #[astrid::tool("linux_realm_exec", mutable)]
     pub fn exec(&self, args: ExecArgs) -> Result<String, SysError> {
         let principal = caller_principal()?;
@@ -412,6 +429,8 @@ fn run_command_in_machine(
         requested_cwd,
         cwd,
         path_context,
+        home_generation_before: home_generation,
+        home_generation_after: home_generation,
         outcome,
         exit_status,
         fault,
@@ -583,6 +602,7 @@ struct LinuxDriveReport {
 
 fn execute_linux_resident(
     machine: &mut Option<Rv64Machine>,
+    home_9p: &mut Option<HomePlan9Session>,
     workspace_9p: &mut Option<WorkspacePlan9Session>,
     action: LinuxAction,
     command: Option<&str>,
@@ -599,7 +619,7 @@ fn execute_linux_resident(
     {
         let cooperate = ipc::subscribe(LINUX_COOPERATE_TOPIC)?;
         return execute_linux_resident_cooperatively(
-            LinuxResidentState::new(machine, workspace_9p),
+            LinuxResidentState::new(machine, home_9p, workspace_9p),
             action,
             command,
             cwd,
@@ -617,7 +637,7 @@ fn execute_linux_resident(
 
     #[cfg(not(target_arch = "wasm32"))]
     execute_linux_resident_cooperatively(
-        LinuxResidentState::new(machine, workspace_9p),
+        LinuxResidentState::new(machine, home_9p, workspace_9p),
         action,
         command,
         cwd,
@@ -629,16 +649,24 @@ fn execute_linux_resident(
 
 struct LinuxResidentState<'a> {
     machine: &'a mut Option<Rv64Machine>,
+    home_9p: &'a mut Option<HomePlan9Session>,
     workspace_9p: &'a mut Option<WorkspacePlan9Session>,
+}
+
+struct LinuxPlan9State<'a> {
+    home: &'a mut Option<HomePlan9Session>,
+    workspace: &'a mut Option<WorkspacePlan9Session>,
 }
 
 impl<'a> LinuxResidentState<'a> {
     fn new(
         machine: &'a mut Option<Rv64Machine>,
+        home_9p: &'a mut Option<HomePlan9Session>,
         workspace_9p: &'a mut Option<WorkspacePlan9Session>,
     ) -> Self {
         Self {
             machine,
+            home_9p,
             workspace_9p,
         }
     }
@@ -655,6 +683,7 @@ fn execute_linux_resident_cooperatively(
 ) -> Result<LinuxInvocationReport, SysError> {
     let LinuxResidentState {
         machine,
+        home_9p,
         workspace_9p,
     } = state;
     if matches!(action, LinuxAction::Console | LinuxAction::Shell) && command.is_none() {
@@ -702,7 +731,10 @@ fn execute_linux_resident_cooperatively(
 
         let report = match drive_linux_until(
             machine.as_mut().expect("machine inserted"),
-            workspace_9p,
+            LinuxPlan9State {
+                home: home_9p,
+                workspace: workspace_9p,
+            },
             limits.fuel,
             limits.output_bytes,
             LinuxAction::Boot,
@@ -771,7 +803,10 @@ fn execute_linux_resident_cooperatively(
     let remaining_output = limits.output_bytes.saturating_sub(stdout.len());
     let report = match drive_linux_until(
         machine.as_mut().expect("machine remains resident"),
-        workspace_9p,
+        LinuxPlan9State {
+            home: home_9p,
+            workspace: workspace_9p,
+        },
         remaining_fuel,
         remaining_output,
         action,
@@ -832,7 +867,7 @@ fn execute_linux_resident_cooperatively(
 
 fn drive_linux_until(
     machine: &mut Rv64Machine,
-    workspace_9p: &mut Option<WorkspacePlan9Session>,
+    plan9: LinuxPlan9State<'_>,
     fuel: u64,
     output_bytes: usize,
     target: LinuxAction,
@@ -903,11 +938,24 @@ fn drive_linux_until(
                 });
             }
             SliceOutcome::HostRequest(request) => {
-                if request.channel == LINUX_WORKSPACE_9P_CHANNEL {
-                    if workspace_9p.is_none() {
-                        *workspace_9p = Some(new_workspace_9p_session()?);
+                if request.channel == LINUX_HOME_9P_CHANNEL {
+                    if plan9.home.is_none() {
+                        *plan9.home = Some(new_home_9p_session()?);
                     }
-                    let response = workspace_9p
+                    let response = plan9
+                        .home
+                        .as_mut()
+                        .expect("home session inserted")
+                        .serve(&request.message);
+                    machine
+                        .complete_9p_request(request.id, &response)
+                        .map_err(|error| SysError::ApiError(error.to_string()))?;
+                } else if request.channel == LINUX_WORKSPACE_9P_CHANNEL {
+                    if plan9.workspace.is_none() {
+                        *plan9.workspace = Some(new_workspace_9p_session()?);
+                    }
+                    let response = plan9
+                        .workspace
                         .as_mut()
                         .expect("workspace session inserted")
                         .serve(&request.message);
@@ -1375,7 +1423,7 @@ fn status_response(
                 durable: true,
                 reference_stability: ReferenceStability::PrincipalGeneration,
                 nested_wasm_projection: ProjectionState::Mounted,
-                linux_projection: ProjectionState::GuestRamOnly,
+                linux_projection: ProjectionState::Mounted,
             },
             MountStatus {
                 role: MountRole::Workspace,
@@ -1435,7 +1483,9 @@ fn status_response(
         linux_vcpus: 1,
         linux_ram_persistent: actor.linux.state == "running",
         linux_ram_durability: "evictable-cache",
-        linux_storage_persistent: false,
+        linux_storage_persistent: true,
+        linux_rootfs_persistent: false,
+        linux_home_persistent: true,
         linux_boot_executions_this_actor_boot: actor.linux.boot_executions,
         linux_commands_completed_this_actor_boot: actor.linux.commands_completed,
         linux_clean_shutdowns: actor.linux.clean_shutdowns,
@@ -1641,9 +1691,10 @@ mod tests {
             output_bytes: HARD_MAX_OUTPUT_BYTES,
         };
         let mut machine = None;
+        let mut home_9p = None;
         let mut workspace_9p = None;
         let boot = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Boot,
             None,
             LINUX_DEFAULT_CWD,
@@ -1670,7 +1721,7 @@ mod tests {
         assert!(boot.suspensions > 100);
 
         let first = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Console,
             Some("counter"),
             LINUX_DEFAULT_CWD,
@@ -1680,7 +1731,7 @@ mod tests {
         )
         .expect("first resident command");
         let second = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Console,
             Some("counter"),
             LINUX_DEFAULT_CWD,
@@ -1698,10 +1749,10 @@ mod tests {
         assert!(machine.is_some(), "Linux RAM remains resident");
 
         let shell = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some(
-                "set -e; test ! -r /dev/console; test ! -r /proc/1/fd/0; test ! -r /proc/self/fd/1; test ! -r /proc/self/fd/2; test \"$(find /dev -type b -o -type c | wc -l)\" -eq 5; id -u; uname -m; pwd; printf persisted > proof",
+                "set -e; test ! -r /dev/console; test ! -r /proc/1/fd/0; test ! -r /proc/self/fd/1; test ! -r /proc/self/fd/2; test \"$(find /dev -type b -o -type c | wc -l)\" -eq 5; id -u; uname -m; pwd; mkdir -p .config/aos; printf persisted > .config/aos/proof.tmp; mv .config/aos/proof.tmp .config/aos/proof",
             ),
             LINUX_DEFAULT_CWD,
             Some("11223344556677889900aabbccddeeff"),
@@ -1717,9 +1768,9 @@ mod tests {
         assert!(shell_stdout.contains("/home/agent\r\n"));
 
         let persisted = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
-            Some("cat proof"),
+            Some("cat .config/aos/proof"),
             LINUX_DEFAULT_CWD,
             Some("22334455667788990011aabbccddeeff"),
             limits,
@@ -1730,7 +1781,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&persisted.stdout).contains("persisted"));
 
         let workspace_write = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some(
                 "set -e; test \"$(pwd)\" = /workspace; mkdir bridge; printf written-by-linux > proof; mv proof bridge/proof; cat bridge/proof; ls bridge",
@@ -1751,7 +1802,7 @@ mod tests {
         assert!(workspace_stdout.contains("proof"));
 
         let workspace_remounted = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some("test \"$(pwd)\" = /workspace/bridge; cat proof"),
             "/workspace/bridge",
@@ -1764,7 +1815,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&workspace_remounted.stdout).contains("written-by-linux"));
 
         let exit_seven = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some("exit 7"),
             LINUX_DEFAULT_CWD,
@@ -1778,7 +1829,7 @@ mod tests {
         assert!(machine.is_some(), "nonzero shell exit preserves guest RAM");
 
         let background = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some(
                 "(sleep 1; echo leaked) & printf 'background-launched\\nAOS END ffffffffffffffffffffffffffffffff 0\\n'",
@@ -1795,7 +1846,7 @@ mod tests {
         assert!(!background_stdout.contains("leaked"));
 
         let clean_boundary = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shell,
             Some("printf boundary-clean"),
             LINUX_DEFAULT_CWD,
@@ -1810,7 +1861,7 @@ mod tests {
         assert!(!clean_stdout.contains("leaked"));
 
         let shutdown = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shutdown,
             None,
             LINUX_DEFAULT_CWD,
@@ -1823,28 +1874,49 @@ mod tests {
         assert_eq!(shutdown.exit_status, Some(0));
         assert!(String::from_utf8_lossy(&shutdown.stdout).contains("shutting down"));
         assert!(machine.is_none(), "clean shutdown releases guest RAM");
+        assert!(home_9p.is_some(), "durable home export remains attached");
+        assert!(
+            workspace_9p.is_none(),
+            "invocation workspace attachment is released"
+        );
 
         let restarted = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
-            LinuxAction::Console,
-            Some("counter"),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
+            LinuxAction::Shell,
+            Some("test ! -e .config/aos/proof.tmp; cat .config/aos/proof"),
             LINUX_DEFAULT_CWD,
             Some("ffeeddccbbaa99887766554433221100"),
             limits,
             || Ok(()),
         )
-        .expect("console lazily restarts Linux");
+        .expect("shell lazily restarts Linux with its durable home");
         assert!(restarted.booted);
-        assert!(String::from_utf8_lossy(&restarted.stdout).contains("counter=1"));
+        assert_eq!(restarted.exit_status, Some(0));
+        assert!(String::from_utf8_lossy(&restarted.stdout).contains("persisted"));
+
+        let reset_ram = execute_linux_resident_cooperatively(
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
+            LinuxAction::Console,
+            Some("counter"),
+            LINUX_DEFAULT_CWD,
+            Some("ffeeddccbbaa99887766554433221101"),
+            limits,
+            || Ok(()),
+        )
+        .expect("console state starts from the new guest boot");
+        // The cold-boot readback shell was command 1 in the new PID 1; this
+        // diagnostic is command 2 rather than continuing the old guest count.
+        assert!(String::from_utf8_lossy(&reset_ram.stdout).contains("counter=2"));
     }
 
     #[test]
     fn linux_runner_cooperates_after_every_yielded_slice() {
         let mut cooperative_yields = 0_u64;
         let mut machine = None;
+        let mut home_9p = None;
         let mut workspace_9p = None;
         let report = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Boot,
             None,
             LINUX_DEFAULT_CWD,
@@ -1871,9 +1943,10 @@ mod tests {
     #[test]
     fn linux_shutdown_is_idempotent_while_cold() {
         let mut machine = None;
+        let mut home_9p = None;
         let mut workspace_9p = None;
         let report = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Shutdown,
             None,
             LINUX_DEFAULT_CWD,
@@ -1916,9 +1989,10 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
     #[test]
     fn linux_cooperation_failure_discards_partial_ram() {
         let mut machine = None;
+        let mut home_9p = None;
         let mut workspace_9p = None;
         let error = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut workspace_9p),
+            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
             LinuxAction::Boot,
             None,
             LINUX_DEFAULT_CWD,
@@ -2240,13 +2314,16 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains("\"linux_guest_steps_this_actor_boot\":25000000"));
         assert!(json.contains("\"linux_outer_wasm_metering\":\"principal-affine-invocation\""));
         assert!(json.contains("\"component_residency\":\"principal-affine-store\""));
-        assert!(json.contains("\"path_contract_version\":1"));
+        assert!(json.contains("\"path_contract_version\":2"));
         assert!(json.contains("\"physical_host_paths_visible\":false"));
         assert!(json.contains(
             "\"cwd_defaults\":[{\"consumer\":\"nested-core-wasm\",\"cwd\":\"/workspace\"},{\"consumer\":\"linux-guest\",\"cwd\":\"/home/agent\"},{\"consumer\":\"bare-rv64\",\"cwd\":null}]"
         ));
         assert!(json.contains("\"linux_projection\":\"mounted\""));
         assert!(json.contains("\"linux_projection\":\"guest-ram-only\""));
+        assert!(json.contains("\"linux_storage_persistent\":true"));
+        assert!(json.contains("\"linux_rootfs_persistent\":false"));
+        assert!(json.contains("\"linux_home_persistent\":true"));
         assert!(json.contains("outer-astrid-promotion-required"));
         assert!(!json.contains("/Users/"));
         assert!(!json.contains(".astrid/home"));

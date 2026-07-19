@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::host::{REALM_HOME, REALM_TMP, canonical_guest_path, resolve_guest_path};
 
-pub(crate) const PATH_CONTRACT_VERSION: u32 = 1;
+pub(crate) const PATH_CONTRACT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -127,9 +127,7 @@ fn path_ref(
 ) -> Result<PathRef, RealmIoError> {
     let guest_path = canonical_guest_path("/", requested)?;
     let (mount, guest_root, display_name, declared_stability) = classify_guest_path(&guest_path)?;
-    let stability = if consumer == PathConsumer::LinuxGuest
-        && matches!(mount, MountRole::AgentHome | MountRole::Temporary)
-    {
+    let stability = if consumer == PathConsumer::LinuxGuest && mount == MountRole::Temporary {
         ReferenceStability::RealmBoot
     } else {
         declared_stability
@@ -145,17 +143,17 @@ fn path_ref(
         format!("{display_name}/{relative_path}")
     };
     let resource_uri = match (consumer, mount) {
-        (PathConsumer::NestedCoreWasm, _) | (PathConsumer::LinuxGuest, MountRole::Workspace) => {
+        (PathConsumer::NestedCoreWasm, _)
+        | (PathConsumer::LinuxGuest, MountRole::Workspace | MountRole::AgentHome) => {
             Some(resolve_guest_path("/", &guest_path)?)
         }
         (PathConsumer::LinuxGuest | PathConsumer::BareRv64, _) => None,
     };
-    let generation_at_admission =
-        if mount == MountRole::AgentHome && consumer == PathConsumer::NestedCoreWasm {
-            home_generation
-        } else {
-            None
-        };
+    let generation_at_admission = if mount == MountRole::AgentHome {
+        home_generation
+    } else {
+        None
+    };
 
     Ok(PathRef {
         mount,
@@ -204,11 +202,11 @@ fn classify_guest_path(
 
 const fn projection_mount_id(consumer: PathConsumer, mount: MountRole) -> Option<&'static str> {
     match (consumer, mount) {
-        (PathConsumer::NestedCoreWasm, MountRole::AgentHome) => Some("realm-home:default"),
-        (PathConsumer::NestedCoreWasm, MountRole::Temporary) => Some("realm-tmp:default"),
-        (PathConsumer::LinuxGuest, MountRole::AgentHome | MountRole::Temporary) => {
-            Some("linux-rootfs")
+        (PathConsumer::NestedCoreWasm | PathConsumer::LinuxGuest, MountRole::AgentHome) => {
+            Some("realm-home:default")
         }
+        (PathConsumer::NestedCoreWasm, MountRole::Temporary) => Some("realm-tmp:default"),
+        (PathConsumer::LinuxGuest, MountRole::Temporary) => Some("linux-rootfs"),
         (PathConsumer::NestedCoreWasm | PathConsumer::LinuxGuest, MountRole::Workspace)
         | (PathConsumer::BareRv64, _) => None,
     }
@@ -223,22 +221,11 @@ fn mount_descriptors(consumer: PathConsumer) -> Vec<MountDescriptor> {
         ),
         PathConsumer::LinuxGuest => (
             ProjectionState::Mounted,
-            ProjectionState::GuestRamOnly,
+            ProjectionState::Mounted,
             ProjectionState::GuestRamOnly,
         ),
         PathConsumer::BareRv64 => return Vec::new(),
     };
-    let home_durability = if consumer == PathConsumer::LinuxGuest {
-        MountDurability::RealmRam
-    } else {
-        MountDurability::PrincipalPersistent
-    };
-    let home_commit = if consumer == PathConsumer::LinuxGuest {
-        CommitPolicy::DiscardOnRealmStop
-    } else {
-        CommitPolicy::AtomicGeneration
-    };
-
     vec![
         MountDescriptor {
             role: MountRole::Workspace,
@@ -259,14 +246,10 @@ fn mount_descriptors(consumer: PathConsumer) -> Vec<MountDescriptor> {
             guest_root: "/home/agent",
             declared_resource_root: REALM_HOME,
             mode: "read-write",
-            durability: home_durability,
-            commit_policy: home_commit,
+            durability: MountDurability::PrincipalPersistent,
+            commit_policy: CommitPolicy::AtomicGeneration,
             projection: home_projection,
-            reference_stability: if consumer == PathConsumer::LinuxGuest {
-                ReferenceStability::RealmBoot
-            } else {
-                ReferenceStability::PrincipalGeneration
-            },
+            reference_stability: ReferenceStability::PrincipalGeneration,
         },
         MountDescriptor {
             role: MountRole::Temporary,
@@ -335,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_context_distinguishes_invocation_workspace_from_ram_only_paths() {
+    fn linux_context_distinguishes_durable_home_from_invocation_workspace() {
         let context =
             MountContext::for_execution(PathConsumer::LinuxGuest, "/home/agent", Some(42), 9)
                 .expect("Linux path context");
@@ -351,16 +334,19 @@ mod tests {
             .find(|mount| mount.role == MountRole::AgentHome)
             .expect("home descriptor");
 
-        assert_eq!(cwd.resource_uri, None);
-        assert_eq!(cwd.mount_id.as_deref(), Some("linux-rootfs"));
-        assert_eq!(cwd.generation_at_admission, None);
-        assert_eq!(cwd.realm_boot_sequence_at_admission, Some(9));
-        assert_eq!(cwd.reference_stability, ReferenceStability::RealmBoot);
+        assert_eq!(cwd.resource_uri.as_deref(), Some(REALM_HOME));
+        assert_eq!(cwd.mount_id.as_deref(), Some("realm-home:default"));
+        assert_eq!(cwd.generation_at_admission, Some(42));
+        assert_eq!(cwd.realm_boot_sequence_at_admission, None);
+        assert_eq!(
+            cwd.reference_stability,
+            ReferenceStability::PrincipalGeneration
+        );
         assert_eq!(workspace.projection, ProjectionState::Mounted);
-        assert_eq!(home.projection, ProjectionState::GuestRamOnly);
-        assert_eq!(home.mount_id.as_deref(), Some("linux-rootfs"));
-        assert_eq!(home.durability, MountDurability::RealmRam);
-        assert_eq!(home.commit_policy, CommitPolicy::DiscardOnRealmStop);
+        assert_eq!(home.projection, ProjectionState::Mounted);
+        assert_eq!(home.mount_id.as_deref(), Some("realm-home:default"));
+        assert_eq!(home.durability, MountDurability::PrincipalPersistent);
+        assert_eq!(home.commit_policy, CommitPolicy::AtomicGeneration);
     }
 
     #[test]
@@ -404,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn serialized_context_contains_no_physical_path_or_false_home_resource_uri() {
+    fn serialized_context_contains_no_physical_path_and_names_durable_home() {
         let context =
             MountContext::for_execution(PathConsumer::LinuxGuest, "/home/agent", Some(42), 9)
                 .expect("Linux path context");
@@ -413,7 +399,7 @@ mod tests {
         assert!(json.contains("\"physical_host_paths_visible\":false"));
         assert!(json.contains("\"projection\":\"mounted\""));
         assert!(json.contains("\"projection\":\"guest-ram-only\""));
-        assert!(json.contains("\"resource_uri\":null"));
+        assert!(json.contains(REALM_HOME));
         assert!(!json.contains("/Users/"));
     }
 }

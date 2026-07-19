@@ -6,10 +6,11 @@ use aos_realm_9p::{
 };
 use aos_realm_runtime::{OpenMode, RealmFile, RealmHost, RealmIoError};
 use aos_realm_vfs::{
-    BlobDigest, FsError, FsStatus, MAX_MANIFEST_BYTES, RealmFs, RealmStore, StoreError,
+    BlobDigest, FsError, FsMetadata as RealmMetadata, FsNodeKind as RealmNodeKind, FsStatus,
+    MAX_MANIFEST_BYTES, RealmFs, RealmStore, StoreError,
 };
 use astrid_sdk::{SysError, fs, kv};
-use std::time::UNIX_EPOCH;
+use std::{collections::VecDeque, time::UNIX_EPOCH};
 #[cfg(test)]
 use std::{
     fs as native_fs,
@@ -29,11 +30,162 @@ pub(crate) const REALM_TMP: &str = "home://.local/tmp/aos-realm/default";
 const FORMAT_MARKER: &str = "home://.local/share/aos-realm/default/state/format";
 const BLOB_ROOT: &str = "home://.local/share/aos-realm/default/store/blobs";
 const HEAD_KEY: &str = "realm/default/fs/head";
-const LEGACY_FORMAT_MARKER: &[u8] = b"aos-realm-format=0\n";
-const CURRENT_FORMAT_MARKER: &[u8] = b"aos-realm-format=1\n";
+const LEGACY_FORMAT_MARKER_V0: &[u8] = b"aos-realm-format=0\n";
+const LEGACY_FORMAT_MARKER_V1: &[u8] = b"aos-realm-format=1\n";
+const CURRENT_FORMAT_MARKER: &[u8] = b"aos-realm-format=2\n";
 const MAX_SEED_FILE_BYTES: usize = 64 * 1024;
+const MAX_LEGACY_HOME_ENTRIES: usize = 4096;
 
+pub(crate) const LINUX_HOME_9P_CHANNEL: u32 = 1;
 pub(crate) const LINUX_WORKSPACE_9P_CHANNEL: u32 = 2;
+
+/// Crash-consistent principal-home export used by the Linux guest.
+///
+/// Every mutation selects a complete content-addressed Realm generation before
+/// success is returned to Linux. The export therefore survives guest shutdown,
+/// component eviction, and daemon restart independently of resident RAM.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) struct AstridHome9p;
+
+impl Plan9FileSystem for AstridHome9p {
+    fn metadata(&mut self, path: &str) -> Result<Plan9Metadata, Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .metadata(path)
+            .map(realm_metadata_to_plan9)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn read_dir(&mut self, path: &str) -> Result<Vec<Plan9DirectoryEntry>, Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .read_dir(path)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| Plan9DirectoryEntry {
+                        name: entry.name,
+                        metadata: realm_metadata_to_plan9(entry.metadata),
+                    })
+                    .collect()
+            })
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn read(&mut self, path: &str, offset: u64, count: u32) -> Result<Vec<u8>, Plan9Errno> {
+        let bytes = RealmFs::new(AstridRealmStore)
+            .read_file(path)
+            .map_err(map_vfs_9p_error)?;
+        let offset = usize::try_from(offset).map_err(|_| Plan9Errno::InvalidArgument)?;
+        if offset >= bytes.len() {
+            return Ok(Vec::new());
+        }
+        let end = offset
+            .checked_add(usize::try_from(count).map_err(|_| Plan9Errno::MessageTooLarge)?)
+            .ok_or(Plan9Errno::MessageTooLarge)?
+            .min(bytes.len());
+        Ok(bytes[offset..end].to_vec())
+    }
+
+    fn write(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<u32, Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .write_at(path, offset, data)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn create_file(
+        &mut self,
+        path: &str,
+        mode: u32,
+        exclusive: bool,
+        truncate: bool,
+    ) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .create_file(path, mode, exclusive, truncate)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn create_dir(&mut self, path: &str, mode: u32) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .create_dir(path, mode)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn set_len(&mut self, path: &str, len: u64) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .set_len(path, len)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn remove_file(&mut self, path: &str) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .remove_file(path)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn remove_dir(&mut self, path: &str) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .remove_dir(path)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn rename(&mut self, source: &str, destination: &str) -> Result<(), Plan9Errno> {
+        RealmFs::new(AstridRealmStore)
+            .rename(source, destination)
+            .map_err(map_vfs_9p_error)
+    }
+
+    fn sync(&mut self, path: &str, _data_only: bool) -> Result<(), Plan9Errno> {
+        let metadata = RealmFs::new(AstridRealmStore)
+            .metadata(path)
+            .map_err(map_vfs_9p_error)?;
+        if metadata.kind == RealmNodeKind::Directory {
+            return Err(Plan9Errno::NotSupported);
+        }
+        // Each successful mutation already selected and verified a complete
+        // generation, so there is no deferred dirty state to flush.
+        Ok(())
+    }
+
+    fn statfs(&mut self) -> Result<Plan9FileSystemStats, Plan9Errno> {
+        let _ = RealmFs::new(AstridRealmStore)
+            .status()
+            .map_err(map_vfs_9p_error)?;
+        // The capsule has per-file and manifest bounds, but the outer
+        // principal storage quota is not yet imported into this component.
+        // Zeroes mean unspecified; do not misreport the current used-file count
+        // as a total inode capacity.
+        Ok(Plan9FileSystemStats::default())
+    }
+}
+
+fn realm_metadata_to_plan9(metadata: RealmMetadata) -> Plan9Metadata {
+    Plan9Metadata {
+        kind: match metadata.kind {
+            RealmNodeKind::File => Plan9NodeKind::File,
+            RealmNodeKind::Directory => Plan9NodeKind::Directory,
+        },
+        len: metadata.bytes,
+        mode: metadata.mode,
+        modified_seconds: 0,
+        generation: metadata.generation,
+    }
+}
+
+fn map_vfs_9p_error(error: FsError) -> Plan9Errno {
+    match error {
+        FsError::NotFound => Plan9Errno::NotFound,
+        FsError::AlreadyExists => Plan9Errno::AlreadyExists,
+        FsError::IsDirectory => Plan9Errno::IsDirectory,
+        FsError::NotDirectory => Plan9Errno::NotDirectory,
+        FsError::NotEmpty => Plan9Errno::NotEmpty,
+        FsError::InvalidPath => Plan9Errno::InvalidArgument,
+        FsError::TooLarge | FsError::Store(StoreError::TooLarge) => Plan9Errno::NoSpace,
+        FsError::Store(StoreError::Denied) => Plan9Errno::Permission,
+        FsError::Contended
+        | FsError::Corrupt(_)
+        | FsError::Serialization(_)
+        | FsError::Store(StoreError::Corrupt(_) | StoreError::Io(_)) => Plan9Errno::Io,
+    }
+}
 
 /// Astrid VFS projection used by the Linux 9P workspace mount.
 ///
@@ -425,7 +577,10 @@ pub(crate) fn ensure_layout() -> Result<(), SysError> {
     if fs::exists(FORMAT_MARKER)? {
         match fs::read(FORMAT_MARKER)?.as_slice() {
             CURRENT_FORMAT_MARKER => {}
-            LEGACY_FORMAT_MARKER => fs::write(FORMAT_MARKER, CURRENT_FORMAT_MARKER)?,
+            LEGACY_FORMAT_MARKER_V0 | LEGACY_FORMAT_MARKER_V1 => {
+                import_legacy_home_projection()?;
+                fs::write(FORMAT_MARKER, CURRENT_FORMAT_MARKER)?;
+            }
             _ => {
                 return Err(SysError::ApiError(
                     "unsupported AOS Realm storage format marker".to_string(),
@@ -438,6 +593,80 @@ pub(crate) fn ensure_layout() -> Result<(), SysError> {
     Ok(())
 }
 
+/// Import every bounded legacy direct-home entry before declaring format 2.
+///
+/// Earlier formats imported files only when the nested-WASM lane read that
+/// exact path. Linux directory traversal cannot safely guess those names, so
+/// the one-time marker transition enumerates the dedicated Realm home. Existing
+/// selected-generation nodes always win over the rebuildable projection.
+fn import_legacy_home_projection() -> Result<(), SysError> {
+    let mut filesystem = RealmFs::new(AstridRealmStore);
+    let mut directories = VecDeque::from([(REALM_HOME.to_string(), String::new())]);
+    let mut entries_seen = 0_usize;
+
+    while let Some((directory, relative_directory)) = directories.pop_front() {
+        let mut entries: Vec<_> = fs::read_dir(&directory)?.collect();
+        entries.sort_by(|left, right| left.file_name().cmp(right.file_name()));
+        for entry in entries {
+            entries_seen = entries_seen.checked_add(1).ok_or_else(|| {
+                SysError::ApiError("legacy Realm home entry count overflowed".to_string())
+            })?;
+            if entries_seen > MAX_LEGACY_HOME_ENTRIES {
+                return Err(SysError::ApiError(format!(
+                    "legacy Realm home exceeds {MAX_LEGACY_HOME_ENTRIES} entries"
+                )));
+            }
+            let relative = if relative_directory.is_empty() {
+                entry.file_name().to_string()
+            } else {
+                format!("{relative_directory}/{}", entry.file_name())
+            };
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.is_dir() {
+                match filesystem.metadata(&relative) {
+                    Ok(node) if node.kind == RealmNodeKind::Directory => {}
+                    Ok(_) => {
+                        return Err(SysError::ApiError(format!(
+                            "legacy Realm home directory conflicts with selected file: {relative}"
+                        )));
+                    }
+                    Err(FsError::NotFound) => filesystem
+                        .create_dir(&relative, metadata.mode())
+                        .map_err(fs_to_sys_error)?,
+                    Err(error) => return Err(fs_to_sys_error(error)),
+                }
+                directories.push_back((entry.path().to_string(), relative));
+            } else if metadata.is_file() {
+                match filesystem.metadata(&relative) {
+                    Ok(node) if node.kind == RealmNodeKind::File => {}
+                    Ok(_) => {
+                        return Err(SysError::ApiError(format!(
+                            "legacy Realm home file conflicts with selected directory: {relative}"
+                        )));
+                    }
+                    Err(FsError::NotFound) => {
+                        if metadata.len() > MAX_SEED_FILE_BYTES as u64 {
+                            return Err(SysError::ApiError(format!(
+                                "legacy Realm home file exceeds {MAX_SEED_FILE_BYTES} bytes: {relative}"
+                            )));
+                        }
+                        let bytes = fs::read(entry.path())?;
+                        filesystem
+                            .write_file(&relative, &bytes)
+                            .map_err(fs_to_sys_error)?;
+                    }
+                    Err(error) => return Err(fs_to_sys_error(error)),
+                }
+            } else {
+                return Err(SysError::ApiError(format!(
+                    "legacy Realm home contains unsupported node: {relative}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Inspect the realm layout state without creating or migrating it.
 pub(crate) fn layout_state() -> Result<&'static str, SysError> {
     if !fs::exists(FORMAT_MARKER)? {
@@ -445,7 +674,7 @@ pub(crate) fn layout_state() -> Result<&'static str, SysError> {
     }
     match fs::read(FORMAT_MARKER)?.as_slice() {
         CURRENT_FORMAT_MARKER => Ok("ready"),
-        LEGACY_FORMAT_MARKER => Ok("migration-required"),
+        LEGACY_FORMAT_MARKER_V0 | LEGACY_FORMAT_MARKER_V1 => Ok("migration-required"),
         _ => Err(SysError::ApiError(
             "unsupported AOS Realm storage format marker".to_string(),
         )),
@@ -461,6 +690,22 @@ pub(crate) fn home_status() -> Result<FsStatus, SysError> {
 
 /// Confirm that a guest CWD names an existing directory in one admitted mount.
 pub(crate) fn validate_cwd(cwd: &str) -> Result<(), SysError> {
+    let absolute = canonical_guest_path("/", cwd)
+        .map_err(|error| SysError::ApiError(format!("invalid realm cwd: {error}")))?;
+    if absolute == "/home/agent" {
+        return Ok(());
+    }
+    if let Some(relative) = absolute.strip_prefix("/home/agent/") {
+        let metadata = RealmFs::new(AstridRealmStore)
+            .metadata(relative)
+            .map_err(fs_to_sys_error)?;
+        if metadata.kind != RealmNodeKind::Directory {
+            return Err(SysError::ApiError(format!(
+                "realm cwd is not a directory: {cwd}"
+            )));
+        }
+        return Ok(());
+    }
     let outer = resolve_guest_path(cwd, ".")
         .map_err(|error| SysError::ApiError(format!("invalid realm cwd: {error}")))?;
     let metadata = fs::metadata(&outer)?;
@@ -755,10 +1000,14 @@ fn read_versioned_home_file(relative: &str, legacy_path: &str) -> Result<Vec<u8>
 fn map_vfs_error(error: FsError) -> RealmIoError {
     match error {
         FsError::NotFound => RealmIoError::NotFound,
+        FsError::IsDirectory => RealmIoError::IsDirectory,
+        FsError::NotDirectory => RealmIoError::NotDirectory,
         FsError::InvalidPath => RealmIoError::InvalidPath,
         FsError::TooLarge | FsError::Store(StoreError::TooLarge) => RealmIoError::TooLarge,
         FsError::Store(StoreError::Denied) => RealmIoError::Denied,
-        FsError::Contended
+        FsError::AlreadyExists
+        | FsError::NotEmpty
+        | FsError::Contended
         | FsError::Corrupt(_)
         | FsError::Serialization(_)
         | FsError::Store(StoreError::Corrupt(_) | StoreError::Io(_)) => RealmIoError::Io,
@@ -864,6 +1113,52 @@ mod tests {
                 map_sdk_9p_error(SysError::HostError(code.to_string())),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn durable_home_metadata_maps_to_stable_9p_attributes() {
+        assert_eq!(
+            realm_metadata_to_plan9(RealmMetadata {
+                kind: RealmNodeKind::File,
+                bytes: 23,
+                mode: 0o640,
+                generation: 7,
+            }),
+            Plan9Metadata {
+                kind: Plan9NodeKind::File,
+                len: 23,
+                mode: 0o640,
+                modified_seconds: 0,
+                generation: 7,
+            }
+        );
+        assert_eq!(
+            realm_metadata_to_plan9(RealmMetadata {
+                kind: RealmNodeKind::Directory,
+                bytes: 0,
+                mode: 0o750,
+                generation: 8,
+            })
+            .kind,
+            Plan9NodeKind::Directory
+        );
+    }
+
+    #[test]
+    fn durable_home_errors_map_to_linux_errno_without_string_parsing() {
+        for (error, expected) in [
+            (FsError::NotFound, Plan9Errno::NotFound),
+            (FsError::AlreadyExists, Plan9Errno::AlreadyExists),
+            (FsError::IsDirectory, Plan9Errno::IsDirectory),
+            (FsError::NotDirectory, Plan9Errno::NotDirectory),
+            (FsError::NotEmpty, Plan9Errno::NotEmpty),
+            (FsError::InvalidPath, Plan9Errno::InvalidArgument),
+            (FsError::TooLarge, Plan9Errno::NoSpace),
+            (FsError::Store(StoreError::Denied), Plan9Errno::Permission),
+            (FsError::Contended, Plan9Errno::Io),
+        ] {
+            assert_eq!(map_vfs_9p_error(error), expected);
         }
     }
 

@@ -25,6 +25,7 @@
 #define SBI_EXT_AOS_9P 0x08414f53
 #define SBI_FID_AOS_9P_EXCHANGE 0
 #define AOS_9P_MAX_MESSAGE (64 * 1024)
+#define AOS_9P_HOME_CHANNEL 1
 #define AOS_9P_WORKSPACE_CHANNEL 2
 
 struct aos_9p_channel {
@@ -83,12 +84,19 @@ static int aos_9p_create(struct p9_client *client, const char *devname,
 {
 	struct aos_9p_channel *channel;
 
-	if (!devname || strcmp(devname, "workspace"))
+	if (!devname)
 		return -ENOENT;
 	channel = kzalloc(sizeof(*channel), GFP_KERNEL);
 	if (!channel)
 		return -ENOMEM;
-	channel->id = AOS_9P_WORKSPACE_CHANNEL;
+	if (!strcmp(devname, "home"))
+		channel->id = AOS_9P_HOME_CHANNEL;
+	else if (!strcmp(devname, "workspace"))
+		channel->id = AOS_9P_WORKSPACE_CHANNEL;
+	else {
+		kfree(channel);
+		return -ENOENT;
+	}
 	client->trans = channel;
 	client->status = Connected;
 	return 0;

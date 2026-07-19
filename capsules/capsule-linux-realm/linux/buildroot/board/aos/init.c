@@ -86,6 +86,28 @@ static void emit_end(const char *token, int status)
     write_text("\n");
 }
 
+static int refresh_home(void)
+{
+    static const char options[] =
+        "trans=aos,version=9p2000.L,msize=65536,cache=none,access=client,"
+        "aname=home,noxattr,dfltuid=1000,dfltgid=1000";
+
+    if (mkdir("/home/agent", 0700) < 0 && errno != EEXIST) {
+        write_text("home mount point failed\n");
+        return 70;
+    }
+    if (umount2("/home/agent", 0) < 0 && errno != EINVAL && errno != ENOENT) {
+        write_text("home unmount failed\n");
+        return 70;
+    }
+    if (mount("home", "/home/agent", "9p", MS_NOSUID | MS_NODEV,
+              options) < 0) {
+        write_text("home mount failed\n");
+        return 70;
+    }
+    return 0;
+}
+
 static int refresh_workspace(void)
 {
     static const char options[] =
@@ -233,7 +255,10 @@ static int shell_command_status(char *payload)
     script = cwd + cwd_length + 1;
     if (!valid_shell_cwd(cwd) || *script == '\0')
         return 64;
-    int status = refresh_workspace();
+    int status = refresh_home();
+    if (status != 0)
+        return status;
+    status = refresh_workspace();
     if (status != 0)
         return status;
     return shell_status(cwd, script);
@@ -293,6 +318,15 @@ int main(void)
     umask(0077);
     write_text("AOS LINUX /init\n");
     write_text("AOS USERLAND buildroot-2026.05.1 busybox-1.38.0\n");
+    int mount_status = refresh_home();
+    if (mount_status == 0)
+        mount_status = refresh_workspace();
+    if (mount_status != 0) {
+        write_text("AOS STORAGE FAILED\n");
+        sync();
+        (void)reboot(RB_POWER_OFF);
+        return mount_status;
+    }
 
     for (;;) {
         write_text("AOS READY\n");
