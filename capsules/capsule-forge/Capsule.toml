@@ -13,16 +13,6 @@ type = "executable"
 [capabilities]
 fs_read  = ["home://"]
 
-[[skill]]
-name = "capsule-forge"
-description = "Build and diagnose current Unicity AOS capsules and harnesses"
-file = "src/skills/capsule-forge/SKILL.md"
-
-[[skill]]
-name = "meta-harness"
-description = "Proactively improve an agent's user-space world on Unicity AOS"
-file = "src/skills/meta-harness/SKILL.md"
-
 # Publish ACL: the [publish] keys are the only IPC-publish declaration.
 # These two are the mandatory tool-bus boilerplate — without them tool
 # results never return and the describe fan-out can't answer.
@@ -36,6 +26,7 @@ file = "src/skills/meta-harness/SKILL.md"
 # #[astrid::tool] annotations — declared here but never hand-written.
 [subscribe]
 "tool.v1.execute.forge_quickstart" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_forge_quickstart" }
+"tool.v1.execute.forge_guide" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_forge_guide" }
 "tool.v1.execute.meta_harness_quickstart" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_meta_harness_quickstart" }
 "tool.v1.execute.scaffold_capsule" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_scaffold_capsule" }
 "tool.v1.execute.explain_interface" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_explain_interface" }

@@ -31,10 +31,6 @@
   tools, capsules, traces, and evaluations as an improvable world. Agents reach
   for Forge proactively when real work reveals a useful new capability, while
   optional workers remain a use-case choice rather than a prerequisite.
-- Generic capsule-contributed Skill discovery from installed `[[skill]]`
-  declarations. Workspace and principal-home Skills remain higher-priority
-  overrides, while Forge and System ship declarative assets instead of relying
-  on one-shot install-hook writes. Closes #43.
 - Homebrew formula updates initiated by the tap's authenticated stable-release
   poll, eliminating the cross-repository dispatch credential.
 - Strict, signed stable/dev/nightly channel and immutable release metadata
@@ -52,6 +48,16 @@
 
 ### Changed
 
+- Keep agent Skills out of `Capsule.toml` and the generic capsule release
+  contract. Host plugins may vendor trigger Skills, the AOS Skills service
+  indexes workspace and principal-home entries, and capsules expose detailed
+  guidance over ordinary IPC tools without teaching the runtime an AI-specific
+  file protocol.
+- Make Capsule Forge a progressively disclosed, exhaustive AOS author manual:
+  its compact Skill now routes fresh agents into installed reference chapters
+  covering portable source placement, all manifest capabilities, IPC
+  layering/priority, WIT, Skills and host plugins, construction-versus-activation
+  authority, build/release practice, security, and proactive meta-harness design.
 - Target the Telegram capsule's actual `aos-telegram` package name in CI so the
   WASI job and target-specific workspace exclusions run as intended.
 - Parse AOS-owned commands with Clap-generated validation and help while

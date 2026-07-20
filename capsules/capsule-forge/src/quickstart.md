@@ -119,9 +119,9 @@ aos status                                      # confirm the daemon is healthy
 3. **No checked-in `wit/`** — the WIT is generated at build time.
 4. **Install via `aos capsule install`**, never hand-copy the `.wasm` — install is
    content-addressed.
-5. **Declare shipped Skills with `[[skill]]`** and a relative file path. The
-   builder packages the asset and AOS indexes it from the installed capsule;
-   do not copy it from an install hook.
+5. **Skills are user-space, not Capsule.toml.** Distribute trigger Skills through
+   the host plugin or an agent-level Skills service. Capsule guidance can also be
+   exposed over IPC, as Forge does with `forge_guide`.
 6. **No hot-reload** — rebuild and reinstall to iterate.
 7. **`tool_describe` must publish, not return** — handled for you by depending on
    `astrid-sdk = "0.7"` (0.7.1+). If a tool is in the manifest but the model can't see it,
@@ -129,4 +129,5 @@ aos status                                      # confirm the daemon is healthy
    describe fan-out race on first prompt is fixed in the current kernel.
 
 Use `aos capsule new <name>`, or the `scaffold_capsule` tool, to generate all five files
-at once, then write them out.
+at once, then write them out. Call `forge_guide` with no topic for the complete
+author manual; load only the chapters relevant to the current decision.

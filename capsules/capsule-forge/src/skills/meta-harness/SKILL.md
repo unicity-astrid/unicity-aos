@@ -47,6 +47,20 @@ AOS capabilities and operator policy remain the real authority boundary. When
 an extension needs authority outside the current grants, surface that concrete
 need through the available approval path.
 
+Keep construction separate from activation. Reversible source edits and local
+builds inside a workspace the user already placed in scope are ordinary work.
+When the opportunity is proactive and no durable owner is clear, build an
+isolated candidate in writable scratch space. Do not silently move it into a
+user repository, mutate an installed runtime/plugin cache, install or replace a
+capsule, persist a principal grant, expand authority, or cause an external
+effect without authorization that actually covers that boundary.
+
+Before activation, present the exact authority delta: capability paths,
+domains, binaries and endpoints; publish/subscribe topics; typed imports and
+exports; install hooks and MCP servers; secrets; persistence, uplink, identity,
+or prompt-injection access; and separate host-plugin or user-space Skill
+changes. Generated code never approves itself.
+
 ## Inspect your current world
 
 When available, use `meta_harness_quickstart`, `system_status`, and
@@ -56,12 +70,11 @@ skills, memory, harness files, traces, and evaluations rather than reasoning
 from names alone.
 
 When `list_skills` is available, call it with `dir_path` set to `skills` to
-discover workflows contributed by any installed capsule. Load a relevant entry
-with `read_skill` using the same directory and its skill ID. This is the dynamic
-AOS skill path: user overrides remain in workspace or `home://skills/`, while
-capsule-shipped workflows remain durable in the installed capsule mirror across
-sessions without requiring a host-plugin release. Reading a Skill supplies
-instructions; capsule grants and AOS policy still supply authority.
+discover workspace and principal-home workflows. Load a relevant entry with
+`read_skill` using the same directory and its skill ID. Capsule-owned detailed
+guidance can be exposed through bus tools such as `forge_guide`, while host
+plugins vendor trigger Skills for native startup discovery. Reading a Skill
+supplies instructions; capsule grants and AOS policy still supply authority.
 
 Tool availability is part of the world. Discover it. If an AOS surface is not
 present, continue with the parts of the work that are possible and identify the
@@ -93,14 +106,18 @@ can improve every later task.
 
 When new code is the useful extension:
 
-1. Inspect installed capabilities and relevant WIT/bus contracts.
-2. Use `explain_interface` or `read_interface` to understand each boundary.
-3. Use `scaffold_capsule` as a starting point for a cohesive capsule.
-4. Use `suggest_capabilities`, then choose the scopes that match the design.
-5. Implement and validate untrusted data at the capsule edge.
-6. Run `validate_manifest`, the relevant tests, and `capsule_doctor` when staged.
-7. Build an installable `.capsule` with `aos capsule build`.
-8. Activate it through the AOS mechanisms and authority available to the user.
+1. Call `forge_guide` for `foundations` and `workspace`; locate the owning
+   repository or choose an isolated candidate workspace without hardcoding a
+   machine-specific path.
+2. Inspect installed capabilities and relevant WIT/bus contracts.
+3. Use `explain_interface` or `read_interface` to understand each boundary.
+4. Use `scaffold_capsule` as a starting point for a cohesive capsule.
+5. Use `suggest_capabilities`, then choose the scopes that match the design.
+6. Implement and validate untrusted data at the capsule edge.
+7. Run `validate_manifest`, the relevant tests, and `capsule_doctor` when staged.
+8. Build an installable `.capsule` with `aos capsule build`.
+9. Load the `authority` guide, then install and grant only through AOS
+   mechanisms and authority available to the user.
 
 Match evaluation effort to the extension's consequences. A local formatting
 skill and a connector that can send messages deserve different evidence. When
@@ -134,11 +151,11 @@ When the user approves a standing preference such as “think broadly and improv
 your setup when useful” or “bring me proposals,” preserve that instruction in
 the available principal-scoped memory or configuration.
 
-A capsule that ships a valid `[[skill]]` declaration joins the same Skills index
-as first-party capsules. Workspace and principal-home entries can override its
-global skill ID. Host plugins may also vendor important Skills for native
-startup discovery and offline use, but that snapshot is a distribution adapter
-rather than the only durable copy.
+Host plugins may vendor important Skills for native startup discovery and
+offline use. Workspace and principal-home entries remain user-space overrides.
+Capsules can serve version-matched reference material over typed IPC without
+putting an AI protocol into Capsule.toml. A future registry can advertise that
+provider surface with opaque strings rather than kernel-owned Skill semantics.
 
 Memory carries intent and continuity. AOS capabilities carry operational
 authority. Together they let the agent remain itself across sessions while

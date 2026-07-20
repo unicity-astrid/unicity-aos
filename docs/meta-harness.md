@@ -112,13 +112,14 @@ future reasoning needs them. Turn a repeated workflow or domain-specific method
 into a skill so it becomes available when relevant rather than occupying every
 prompt.
 
-Capsules contribute durable skills by writing valid
-`home://skills/<id>/SKILL.md` files for the principal. The `aos-skills` service
-indexes that directory generically: `list_skills` returns metadata and
-`read_skill` loads the selected workflow. This works for user-authored capsules
-as well as the Community Edition fleet. Host plugins can vendor important
-first-party skills for native startup discovery and offline operation, while
-the AOS index carries skills installed after the plugin was published.
+Skills remain agent user-space rather than a Capsule.toml or kernel protocol.
+The `aos-skills` service indexes workspace and principal-home skills:
+`list_skills` returns metadata and `read_skill` loads the selected workflow,
+with workspace entries taking priority. Host plugins can vendor important
+first-party Skills for native startup discovery and offline operation.
+Capsule-owned, version-matched reference material can be exposed through typed
+bus tools such as Forge's `forge_guide`. A future registry may advertise opaque
+provider strings without teaching the kernel the Skill format.
 
 ### Harness code
 
@@ -137,6 +138,7 @@ connectors, state services, and tools over the event bus.
 When the world genuinely needs new code, Forge supports the authoring loop:
 
 - `forge_quickstart`
+- `forge_guide`
 - `meta_harness_quickstart`
 - `scaffold_capsule`
 - `explain_interface`
@@ -144,11 +146,21 @@ When the world genuinely needs new code, Forge supports the authoring loop:
 - `validate_manifest`
 - `capsule_doctor`
 
-The agent inspects relevant contracts, implements the cohesive capability,
-validates its manifest, runs evidence appropriate to its consequences, builds
-an installable `.capsule`, and activates it through the AOS mechanisms and
-authority available to the user. New public IPC/WIT belongs in the canonical
-contract/RFC workflow.
+The compact Forge Skill routes the agent into progressively loaded
+`forge_guide` chapters for workspace selection, capsule anatomy, the full
+manifest and capability surface, IPC layering, WIT, Skills/plugins, authority,
+build, and security. The agent inspects relevant contracts, implements the
+cohesive capability, validates its manifest, runs evidence appropriate to its
+consequences, builds an installable `.capsule`, and activates it through the
+AOS mechanisms and authority available to the user. New public IPC/WIT belongs
+in the canonical contract/RFC workflow.
+
+Source construction and activation are separate. If the owning repository is
+clear, the agent follows its layout; otherwise it may use an isolated writable
+candidate workspace without assuming one machine's paths. Generated code
+cannot install or grant itself. Before activation, the agent presents the exact
+capability, IPC, import/export, lifecycle, secret, persistence, identity,
+uplink, and prompt-injection delta.
 
 Future Forge work can make this loop stronger with isolated candidate
 workspaces, trace replay, capability diffs, reproducible build evidence, and
@@ -229,14 +241,15 @@ change becomes part of the agent's world.
 This implementation establishes the discoverable foundation:
 
 1. Ship Forge in Community Edition.
-2. Install the `meta-harness` skill and expose `meta_harness_quickstart`.
+2. Vendor the `meta-harness` trigger Skill through host plugins and expose
+   `meta_harness_quickstart` plus `forge_guide` through the capsule bus.
 3. Teach agents to see AOS user space as their world and reach for extension
    during real work.
 4. Keep user instructions and memory as the natural steering surface while AOS
    capabilities remain the hard boundary.
 
-The next product increment should make the world more legible and testable: a
-unified inventory of harness artifacts, durable trace/evaluation archives,
+The next product increment can make the world still more testable: a unified
+inventory of harness artifacts, durable trace/evaluation archives, managed
 isolated candidate workspaces, and reusable evaluation runners. Durable
 platform workers are a valuable separate extension when a use case needs them.
 

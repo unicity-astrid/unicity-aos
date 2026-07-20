@@ -10,13 +10,6 @@ use serde::{Deserialize, Serialize};
 /// URI scheme prefix for the principal's home directory.
 const HOME_SCHEME: &str = "home://";
 
-/// Installed-capsule introspection tree materialized for this principal.
-const CAPSULES_DIR: &str = "home://.local/capsules";
-
-/// The standard AOS skill index. Capsule declarations join this index, while
-/// callers using a custom directory retain directory-only behavior.
-const AOS_SKILLS_DIR: &str = "skills";
-
 #[derive(Default)]
 pub struct SkillsLoader;
 
@@ -37,31 +30,12 @@ struct SkillInfo {
     description: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct CapsuleSkillManifest {
-    #[serde(default, rename = "skill")]
-    skills: Vec<CapsuleSkillDef>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CapsuleSkillDef {
-    name: String,
-    file: String,
-}
-
-#[derive(Debug, PartialEq)]
-struct DeclaredCapsuleSkill {
-    id: String,
-    path: String,
-}
-
 #[derive(Debug, Default, Deserialize, astrid_sdk::schemars::JsonSchema)]
 pub struct ListSkillsArgs {
     /// Directory containing the skills (e.g., ".gemini/skills").
     /// The capsule will search both the workspace and the principal's
-    /// home (`home://`) directory. The standard `skills` index also includes
-    /// skills declared by installed capsules. Earlier sources win duplicate
-    /// skill IDs.
+    /// home (`home://`) directory, merging results (workspace wins on
+    /// duplicate skill IDs).
     pub dir_path: String,
 }
 
@@ -69,8 +43,7 @@ pub struct ListSkillsArgs {
 pub struct ReadSkillArgs {
     /// Directory containing the skills (e.g., ".gemini/skills").
     /// The capsule checks the workspace first, then falls back to
-    /// the principal's home (`home://`) directory. The standard `skills`
-    /// index then falls back to installed capsule declarations.
+    /// the principal's home (`home://`) directory.
     pub dir_path: String,
     /// The ID/folder name of the skill to read
     pub skill_id: String,
@@ -80,15 +53,13 @@ pub struct ReadSkillArgs {
 ///
 /// Skills are reusable prompt templates stored as SKILL.md files with YAML
 /// frontmatter (name, description). They live in workspace or home
-/// directories, or are declared by installed capsules. User-controlled
-/// workspace and principal-home sources take priority.
+/// directories and are merged with workspace taking priority.
 #[capsule]
 impl SkillsLoader {
     /// List all available skills in a directory. Scans both the workspace and
-    /// home (`~/.astrid/home/{principal}/`) directories, then installed
-    /// capsule declarations for the standard `skills` index. Returns a JSON
-    /// array of `{id, name, description}` objects. Precedence is workspace,
-    /// principal home, then installed capsule.
+    /// home (`~/.astrid/home/{principal}/`) directories, merging results.
+    /// Returns a JSON array of `{id, name, description}` objects. Workspace
+    /// skills take priority over home skills with the same ID.
     #[astrid::tool("list_skills")]
     pub fn list_skills(&self, args: ListSkillsArgs) -> Result<String, SysError> {
         let bare_dir = bare_path(validate_dir_path(&args.dir_path)?);
@@ -103,17 +74,6 @@ impl SkillsLoader {
         let home_dir = format!("{HOME_SCHEME}{bare_dir}");
         collect_skills_from(&home_dir, &mut skills, &mut seen_ids);
 
-        if bare_dir == AOS_SKILLS_DIR {
-            match collect_declared_capsule_skills() {
-                Ok(declared) => {
-                    collect_declared_skill_info(declared, &mut skills, &mut seen_ids);
-                }
-                Err(error) => log::warn(format!(
-                    "failed to scan installed capsule skills: {error:?}"
-                )),
-            }
-        }
-
         skills.sort_by(|left, right| left.id.cmp(&right.id));
 
         let json = serde_json::to_string(&skills)?;
@@ -122,8 +82,7 @@ impl SkillsLoader {
 
     /// Read the full content of a specific skill by its ID. Returns the raw
     /// SKILL.md content including frontmatter. Checks the workspace directory
-    /// first, then the principal home, then an installed capsule declaration
-    /// for the standard `skills` index.
+    /// first, then falls back to the home directory.
     #[astrid::tool("read_skill")]
     pub fn read_skill(&self, args: ReadSkillArgs) -> Result<String, SysError> {
         let bare_dir = bare_path(validate_dir_path(&args.dir_path)?);
@@ -154,19 +113,6 @@ impl SkillsLoader {
                     "Failed to read skill '{}' from principal home: {error:?}",
                     args.skill_id
                 )));
-            }
-        }
-
-        if bare_dir == AOS_SKILLS_DIR {
-            let declared = collect_declared_capsule_skills().map_err(|error| {
-                SysError::ApiError(format!(
-                    "Failed to scan installed capsule skills: {error:?}"
-                ))
-            })?;
-            for skill in declared.iter().filter(|skill| skill.id == args.skill_id) {
-                if let Some((content, _)) = read_valid_declared_skill(skill) {
-                    return Ok(content);
-                }
             }
         }
 
@@ -279,137 +225,6 @@ fn collect_skills_from(
             } else {
                 log::warn(format!("skipping {dir}/{name}: invalid frontmatter"));
             }
-        }
-    }
-}
-
-/// Discover `[[skill]]` entries in the installed capsule mirrors.
-///
-/// Capsule manifests are untrusted input even after installation. Capsule
-/// names, global skill IDs, and asset paths are validated before constructing
-/// a VFS path. Capsule order is sorted; duplicate declarations are retained so
-/// list/read resolution can select the first declaration whose asset is
-/// readable and has valid frontmatter.
-fn collect_declared_capsule_skills() -> Result<Vec<DeclaredCapsuleSkill>, wit_fs::ErrorCode> {
-    let mut capsule_names = match wit_fs::fs_readdir(CAPSULES_DIR) {
-        Ok(names) => names,
-        Err(wit_fs::ErrorCode::NotFound) => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    capsule_names.sort();
-
-    let mut declared = Vec::new();
-    for capsule_name in capsule_names {
-        if !is_safe_name(&capsule_name) {
-            log::warn(format!(
-                "skipping unsafe capsule introspection entry: {capsule_name:?}"
-            ));
-            continue;
-        }
-        let manifest_path = format!("{CAPSULES_DIR}/{capsule_name}/Capsule.toml");
-        let manifest = match read_file_string(&manifest_path) {
-            Ok(content) => content,
-            Err(wit_fs::ErrorCode::NotFound) => continue,
-            Err(error) => {
-                log::warn(format!("failed to read {manifest_path}: {error:?}"));
-                continue;
-            }
-        };
-        let Some(skills) = declared_skills_from_manifest(&capsule_name, &manifest) else {
-            log::warn(format!(
-                "skipping invalid skill declarations in {manifest_path}"
-            ));
-            continue;
-        };
-        declared.extend(skills);
-    }
-    Ok(declared)
-}
-
-/// Parse and validate a single installed capsule's skill declarations.
-fn declared_skills_from_manifest(
-    capsule_name: &str,
-    manifest: &str,
-) -> Option<Vec<DeclaredCapsuleSkill>> {
-    if !is_safe_name(capsule_name) {
-        return None;
-    }
-    let manifest: CapsuleSkillManifest = toml::from_str(manifest).ok()?;
-    let mut declared = Vec::new();
-    for skill in manifest.skills {
-        if !is_safe_name(&skill.name) || !is_safe_declared_file(&skill.file) {
-            return None;
-        }
-        declared.push(DeclaredCapsuleSkill {
-            id: skill.name,
-            path: format!("{CAPSULES_DIR}/{capsule_name}/{}", skill.file),
-        });
-    }
-    Some(declared)
-}
-
-/// A declared asset path must be a non-empty relative slash-separated path.
-fn is_safe_declared_file(path: &str) -> bool {
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains('\0')
-        && !path.contains('\\')
-        && !path.contains("://")
-        && path
-            .split('/')
-            .all(|component| !component.is_empty() && component != "." && component != "..")
-}
-
-/// Append capsule-declared Skills after the caller's override layers.
-fn collect_declared_skill_info(
-    declared: Vec<DeclaredCapsuleSkill>,
-    skills: &mut Vec<SkillInfo>,
-    seen_ids: &mut std::collections::HashSet<String>,
-) {
-    collect_declared_skill_info_with(declared, skills, seen_ids, read_valid_declared_skill);
-}
-
-fn collect_declared_skill_info_with<F>(
-    declared: Vec<DeclaredCapsuleSkill>,
-    skills: &mut Vec<SkillInfo>,
-    seen_ids: &mut std::collections::HashSet<String>,
-    mut load: F,
-) where
-    F: FnMut(&DeclaredCapsuleSkill) -> Option<(String, SkillFrontmatter)>,
-{
-    for skill in declared {
-        if seen_ids.contains(&skill.id) {
-            continue;
-        }
-        if let Some((_, frontmatter)) = load(&skill) {
-            seen_ids.insert(skill.id.clone());
-            skills.push(SkillInfo {
-                id: skill.id,
-                name: frontmatter.name,
-                description: frontmatter.description,
-            });
-        }
-    }
-}
-
-/// Load a declared skill asset and require valid frontmatter before it can
-/// claim its global ID. A broken declaration therefore cannot shadow a later
-/// valid declaration from another installed capsule.
-fn read_valid_declared_skill(skill: &DeclaredCapsuleSkill) -> Option<(String, SkillFrontmatter)> {
-    match read_file_string(&skill.path) {
-        Ok(content) => match parse_frontmatter(&content) {
-            Some(frontmatter) => Some((content, frontmatter)),
-            None => {
-                log::warn(format!(
-                    "skipping {}: invalid skill frontmatter",
-                    skill.path
-                ));
-                None
-            }
-        },
-        Err(error) => {
-            log::warn(format!("failed to read {}: {error:?}", skill.path));
-            None
         }
     }
 }
@@ -599,86 +414,5 @@ mod tests {
     fn test_resolve_skill_path_with_home_prefix() {
         let path = resolve_skill_path("home://skills", "my-skill").unwrap();
         assert_eq!(path, "home://skills/my-skill/SKILL.md");
-    }
-
-    #[test]
-    fn test_declared_skills_from_manifest() {
-        let manifest = r#"
-            [package]
-            name = "aos-forge"
-            version = "0.1.0"
-
-            [[skill]]
-            name = "capsule-forge"
-            description = "Build capsules"
-            file = "src/skills/capsule-forge/SKILL.md"
-
-            [[skill]]
-            name = "meta-harness"
-            file = "src/skills/meta-harness/SKILL.md"
-        "#;
-
-        assert_eq!(
-            declared_skills_from_manifest("aos-forge", manifest),
-            Some(vec![
-                DeclaredCapsuleSkill {
-                    id: "capsule-forge".into(),
-                    path: "home://.local/capsules/aos-forge/src/skills/capsule-forge/SKILL.md"
-                        .into(),
-                },
-                DeclaredCapsuleSkill {
-                    id: "meta-harness".into(),
-                    path: "home://.local/capsules/aos-forge/src/skills/meta-harness/SKILL.md"
-                        .into(),
-                },
-            ])
-        );
-    }
-
-    #[test]
-    fn test_declared_skill_manifest_rejects_unsafe_paths_and_ids() {
-        for manifest in [
-            "[[skill]]\nname = \"../escape\"\nfile = \"skills/ok/SKILL.md\"\n",
-            "[[skill]]\nname = \"safe\"\nfile = \"../escape/SKILL.md\"\n",
-            "[[skill]]\nname = \"safe\"\nfile = \"/absolute/SKILL.md\"\n",
-            "[[skill]]\nname = \"safe\"\nfile = \"skills\\\\escape\\\\SKILL.md\"\n",
-            "[[skill]]\nname = \"safe\"\nfile = \"https://example.com/SKILL.md\"\n",
-        ] {
-            assert!(declared_skills_from_manifest("capsule", manifest).is_none());
-        }
-        assert!(declared_skills_from_manifest("../capsule", "").is_none());
-    }
-
-    #[test]
-    fn broken_declaration_does_not_claim_duplicate_skill_id() {
-        let declared = vec![
-            DeclaredCapsuleSkill {
-                id: "shared-skill".into(),
-                path: "first/SKILL.md".into(),
-            },
-            DeclaredCapsuleSkill {
-                id: "shared-skill".into(),
-                path: "second/SKILL.md".into(),
-            },
-        ];
-        let mut skills = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
-
-        collect_declared_skill_info_with(declared, &mut skills, &mut seen_ids, |skill| {
-            (skill.path == "second/SKILL.md").then(|| {
-                (
-                    "valid content".into(),
-                    SkillFrontmatter {
-                        name: "Shared Skill".into(),
-                        description: "Loaded from the later valid declaration".into(),
-                    },
-                )
-            })
-        });
-
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "shared-skill");
-        assert_eq!(skills[0].name, "Shared Skill");
-        assert!(seen_ids.contains("shared-skill"));
     }
 }

@@ -22,7 +22,8 @@ meta-harness.
 2. Inspect the relevant skills, memory, capsules, interfaces, tools, and prior
    traces instead of assuming what your world contains.
    When `list_skills` is present, inspect `dir_path: "skills"` and use
-   `read_skill` to load relevant capsule-contributed workflows.
+   `read_skill` to load relevant workspace or principal-home workflows. Use
+   capsule bus tools for version-matched reference material.
 3. Notice missing abilities, repeated work, recurring failures, and improvements
    that would compound across future tasks.
 4. Decide whether the extension is needed inline, belongs immediately after the
@@ -35,6 +36,12 @@ The user may tell you to think widely, decide autonomously, make proposals, or
 remember a standing preference. Treat that as normal harness input. AOS
 capabilities remain the operational boundary.
 
+Source construction and activation are separate. Work in the owning repository
+when it is clear; otherwise use an isolated writable candidate workspace. Do
+not develop in an installed runtime/plugin cache or assume one user's path.
+Generated code does not install, grant, persist, publish, or approve itself.
+Present the exact capability and IPC delta before activation.
+
 Not every agent has subagents or needs a background worker. Use the execution
 primitives actually available, and create a worker only when its workload makes
 one useful.
@@ -42,8 +49,8 @@ one useful.
 ## When Forge is useful
 
 Inspect the installed contracts, then use `explain_interface`,
-`scaffold_capsule`, `suggest_capabilities`, `validate_manifest`, and
-`capsule_doctor` as appropriate. Build installable artifacts with
+`forge_guide`, `scaffold_capsule`, `suggest_capabilities`, `validate_manifest`,
+and `capsule_doctor` as appropriate. Build installable artifacts with
 `aos capsule build` and activate them through the AOS mechanisms available to
 the user.
 
