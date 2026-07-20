@@ -228,11 +228,11 @@ impl ForgeTools {
     #[astrid::tool("forge_guide")]
     pub fn forge_guide(&self, args: ForgeGuideArgs) -> Result<String, SysError> {
         let topic = args.topic.as_deref().unwrap_or("index").trim();
-        if topic.is_empty() || matches!(topic, "index" | "list" | "help") {
+        let normalized = topic.to_ascii_lowercase().replace(['_', ' '], "-");
+        if normalized.is_empty() || matches!(normalized.as_str(), "index" | "list" | "help") {
             return Ok(guide_index());
         }
 
-        let normalized = topic.to_ascii_lowercase().replace(['_', ' '], "-");
         if let Some(chapter) = GUIDE_CHAPTERS
             .iter()
             .find(|chapter| chapter.topic == normalized)
@@ -752,8 +752,8 @@ fn collect_export_keys(map: &serde_json::Map<String, Value>, out: &mut Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        GUIDE_CHAPTERS, META_HARNESS_QUICKSTART_MD, guide_index, interface_lookup_name,
-        suggest_from_intent, wit_declares,
+        ForgeGuideArgs, ForgeTools, GUIDE_CHAPTERS, META_HARNESS_QUICKSTART_MD, guide_index,
+        interface_lookup_name, suggest_from_intent, wit_declares,
     };
 
     const CAPSULE_FORGE_SKILL: &str = include_str!("skills/capsule-forge/SKILL.md");
@@ -763,6 +763,19 @@ mod tests {
     fn interface_lookup_accepts_bare_and_wit_names() {
         assert_eq!(interface_lookup_name("tool"), "tool");
         assert_eq!(interface_lookup_name("tool.wit"), "tool");
+    }
+
+    #[test]
+    fn guide_index_aliases_are_case_insensitive() {
+        let forge = ForgeTools;
+        for topic in ["Index", "LIST", "Help"] {
+            let guide = forge
+                .forge_guide(ForgeGuideArgs {
+                    topic: Some(topic.to_string()),
+                })
+                .unwrap();
+            assert!(guide.contains("# Unicity AOS Author Manual"));
+        }
     }
 
     #[test]
