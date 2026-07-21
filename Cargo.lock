@@ -231,6 +231,9 @@ dependencies = [
 [[package]]
 name = "aos-realm-machine"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+]
 
 [[package]]
 name = "aos-realm-runtime"

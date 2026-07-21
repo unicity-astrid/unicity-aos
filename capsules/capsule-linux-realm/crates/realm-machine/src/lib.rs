@@ -8,8 +8,10 @@
 //! guest CPU state, admitted RAM, and virtual hardware. The outer Realm owns
 //! scheduling, authority, image admission, persistence, and all host effects.
 
+mod checkpoint;
 mod fdt;
 
+pub use checkpoint::{CheckpointBinding, CheckpointDecodeError, CheckpointDigest};
 use fdt::{LinuxFdtConfig, build_linux_fdt};
 use std::{collections::VecDeque, fmt};
 
@@ -229,6 +231,40 @@ impl fmt::Display for MachineError {
 }
 
 impl std::error::Error for MachineError {}
+
+/// Reason a machine cannot become a principal-independent prewarm checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckpointError {
+    /// A halted or trapped machine cannot become a boot template.
+    NotRunnable,
+    /// The machine must be stopped on an uncompleted, typed host request.
+    NoPendingHostRequest,
+    /// Principal or invocation input must never enter a reusable checkpoint.
+    PendingConsoleInput { bytes: usize },
+    /// Console bytes must be drained into the checkpoint build receipt first.
+    UndrainedConsoleOutput { bytes: usize },
+}
+
+impl fmt::Display for CheckpointError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRunnable => write!(f, "only a runnable machine can be checkpointed"),
+            Self::NoPendingHostRequest => {
+                write!(f, "prewarm checkpoint requires a pending host request")
+            }
+            Self::PendingConsoleInput { bytes } => write!(
+                f,
+                "prewarm checkpoint contains {bytes} bytes of principal console input"
+            ),
+            Self::UndrainedConsoleOutput { bytes } => write!(
+                f,
+                "prewarm checkpoint contains {bytes} bytes of undrained console output"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CheckpointError {}
 
 /// Exact admitted physical layout for one Linux boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -801,7 +837,7 @@ struct SbiFirmware {
     enabled: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Devices {
     ram: Vec<u8>,
     mtime: u64,
@@ -840,7 +876,7 @@ struct TranslationCacheEntry {
     context: TranslationContext,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TranslationCache {
     entries: [Option<TranslationCacheEntry>; TRANSLATION_CACHE_ENTRIES],
 }
@@ -1130,7 +1166,7 @@ impl Devices {
 }
 
 /// An admitted RV64 machine whose execution can only advance in explicit slices.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Machine {
     config: MachineConfig,
     cpu: Cpu,
@@ -1147,6 +1183,51 @@ pub struct Machine {
     pending_9p_request: Option<PendingPlan9Request>,
     metrics: MachineMetrics,
     translation_cache: TranslationCache,
+}
+
+/// Opaque, reusable copy of a machine stopped before a host effect completes.
+///
+/// This in-memory type establishes the checkpoint safety boundary. A durable
+/// codec must additionally bind bytes to the machine model, Linux image,
+/// distribution generation, and outer artifact signature before those bytes
+/// are admitted by a Realm.
+#[derive(Clone, Debug)]
+pub struct MachineCheckpoint {
+    machine: Machine,
+}
+
+impl MachineCheckpoint {
+    /// Exact RAM envelope encoded by this checkpoint.
+    #[must_use]
+    pub const fn ram_bytes(&self) -> usize {
+        self.machine.config.ram_bytes
+    }
+
+    /// Exact retained-console envelope encoded by this checkpoint.
+    #[must_use]
+    pub const fn max_console_bytes(&self) -> usize {
+        self.machine.config.max_console_bytes
+    }
+
+    /// Host request that every restored machine must complete through a newly
+    /// admitted principal-scoped provider.
+    #[must_use]
+    pub fn pending_host_request(&self) -> &Plan9Request {
+        &self
+            .machine
+            .pending_9p_request
+            .as_ref()
+            .expect("checkpoint constructor requires a pending request")
+            .request
+    }
+
+    /// Instantiate an isolated machine with the exact suspended guest state.
+    #[must_use]
+    pub fn restore(&self) -> Machine {
+        let mut machine = self.machine.clone();
+        machine.translation_cache.clear();
+        machine
+    }
 }
 
 impl Machine {
@@ -1402,6 +1483,32 @@ impl Machine {
     #[must_use]
     pub const fn metrics(&self) -> MachineMetrics {
         self.metrics
+    }
+
+    /// Capture a reusable prewarm point at a drained, input-free host
+    /// suspension. The pending request is retained and must be completed by a
+    /// fresh principal-scoped provider after every restore.
+    pub fn checkpoint_host_suspension(&self) -> Result<MachineCheckpoint, CheckpointError> {
+        if !matches!(self.state, RunState::Runnable) {
+            return Err(CheckpointError::NotRunnable);
+        }
+        if self.pending_9p_request.is_none() {
+            return Err(CheckpointError::NoPendingHostRequest);
+        }
+        if !self.devices.console_input.is_empty() {
+            return Err(CheckpointError::PendingConsoleInput {
+                bytes: self.devices.console_input.len(),
+            });
+        }
+        if !self.devices.console_output.is_empty() {
+            return Err(CheckpointError::UndrainedConsoleOutput {
+                bytes: self.devices.console_output.len(),
+            });
+        }
+
+        let mut machine = self.clone();
+        machine.translation_cache.clear();
+        Ok(MachineCheckpoint { machine })
     }
 
     /// Run at most `instruction_budget` instructions and return control to the Realm.
@@ -3785,6 +3892,59 @@ mod tests {
         assert_eq!(repeated.total_steps_executed, first.total_steps_executed);
         assert_eq!(machine.pc(), LINUX_KERNEL_BASE + 4);
 
+        let checkpoint = machine
+            .checkpoint_host_suspension()
+            .expect("drained host suspension is checkpointable");
+        assert_eq!(checkpoint.ram_bytes(), MIN_LINUX_RAM_BYTES);
+        assert_eq!(checkpoint.pending_host_request(), &host_request);
+        let binding = CheckpointBinding::new(
+            CheckpointDigest::new([0x11; 32]),
+            CheckpointDigest::new([0x22; 32]),
+        );
+        let encoded = checkpoint.encode(binding);
+        assert!(encoded.len() < 128 * 1024, "zero RAM pages remain sparse");
+        let decoded = MachineCheckpoint::decode(&encoded, binding).expect("decode checkpoint");
+        let mut restored = decoded.into_machine();
+        assert_eq!(restored.run_slice(10).outcome, first.outcome);
+        assert_eq!(
+            restored.physical_ram(LINUX_KERNEL_BASE + 4, 4),
+            Some(0x0000_0073_u32.to_le_bytes().as_slice())
+        );
+        assert_eq!(restored.pc(), LINUX_KERNEL_BASE + 4);
+        assert_eq!(restored.privilege(), Privilege::Supervisor);
+
+        let wrong_binding = CheckpointBinding::new(
+            CheckpointDigest::new([0x33; 32]),
+            CheckpointDigest::new([0x22; 32]),
+        );
+        assert!(matches!(
+            MachineCheckpoint::decode(&encoded, wrong_binding),
+            Err(CheckpointDecodeError::BindingMismatch)
+        ));
+        let mut corrupted = encoded.clone();
+        let last = corrupted.last_mut().expect("encoded checkpoint digest");
+        *last ^= 1;
+        assert!(matches!(
+            MachineCheckpoint::decode(&corrupted, binding),
+            Err(CheckpointDecodeError::IntegrityMismatch)
+        ));
+
+        machine.push_console_input(b"principal-input");
+        assert!(matches!(
+            machine.checkpoint_host_suspension(),
+            Err(CheckpointError::PendingConsoleInput { bytes: 15 })
+        ));
+        machine.devices.console_input.clear();
+        machine
+            .devices
+            .push_console_output(b'X')
+            .expect("test console byte");
+        assert!(matches!(
+            machine.checkpoint_host_suspension(),
+            Err(CheckpointError::UndrainedConsoleOutput { bytes: 1 })
+        ));
+        assert_eq!(machine.devices.take_new_console(), b"X");
+
         assert_eq!(
             machine.complete_9p_request(HostRequestId(host_request.id.get() + 1), &response),
             Err(HostCompletionError::RequestIdMismatch {
@@ -3824,6 +3984,34 @@ mod tests {
         assert_eq!(resumed.outcome, SliceOutcome::Yielded);
         assert_eq!(resumed.steps_executed, 1);
         assert_eq!(machine.register(11), Some(SBI_SPEC_VERSION_3_0));
+
+        restored
+            .complete_9p_request(host_request.id, &response)
+            .expect("restored machine independently completes its host request");
+        restored.cpu.registers[16] = 0;
+        restored.cpu.registers[17] = SBI_EXT_BASE;
+        let restored_resumed = restored.run_slice(1);
+        assert_eq!(restored_resumed, resumed);
+        assert_eq!(restored.register(11), Some(SBI_SPEC_VERSION_3_0));
+    }
+
+    #[test]
+    fn prewarm_checkpoint_rejects_unstable_or_principal_bearing_state() {
+        let mut machine = machine(64);
+        machine
+            .load_program(&RV64_SMOKE_PROGRAM)
+            .expect("load smoke program");
+        assert!(matches!(
+            machine.checkpoint_host_suspension(),
+            Err(CheckpointError::NoPendingHostRequest)
+        ));
+
+        let halted = machine.run_slice(64);
+        assert!(matches!(halted.outcome, SliceOutcome::Halted(_)));
+        assert!(matches!(
+            machine.checkpoint_host_suspension(),
+            Err(CheckpointError::NotRunnable)
+        ));
     }
 
     #[test]

@@ -28,6 +28,10 @@ impl LinuxMachine {
         Machine::new(config).map(Self::Reference)
     }
 
+    pub(crate) const fn from_reference(machine: Machine) -> Self {
+        Self::Reference(machine)
+    }
+
     pub(crate) const fn backend_id(&self) -> &'static str {
         match self {
             Self::Reference(_) => DEFAULT_LINUX_BACKEND_ID,

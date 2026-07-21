@@ -92,6 +92,16 @@ configuration before compiling, uses Buildroot's forced package-hash checks,
 and rejects a rootfs digest mismatch. `build-image.sh` similarly requires Linux
 6.18.39, Clang/LLD 18.1.3, the recorded rootfs, and a clean output directory.
 
+`prewarm-32m.aos-machine` is not another operating system or an imported VM. It
+is a sparse checkpoint produced by the AOS-owned RV64 machine after the exact
+checked-in image reaches its first, still-unanswered home 9P request. No
+principal filesystem response or console input has entered the machine at that
+point. The codec binds the state to BLAKE3 digests of `Image` and `SOURCES.lock`,
+checks its own payload integrity, validates every decoded resource and CPU field,
+and restores only for the exact 32 MiB envelope. The signed capsule artifact is
+the authenticity boundary. `PREWARM.lock` records the reproducible checkpoint
+receipt and outer file digests without creating a circular input binding.
+
 The active Buildroot output directory must be on a Linux filesystem. GNU
 package configure probes create path patterns that macOS file-sharing mounts do
 not reliably support. A container or Linux CI worker is only the reproducible
@@ -112,6 +122,22 @@ source tree or the container root filesystem.
 Both scripts default to fail-closed digest verification. `AOS_RECORD_USERLAND=1`
 and `AOS_RECORD_IMAGE=1` only print candidate digests for an intentional source
 refresh; recording them still requires review plus an independent clean rebuild.
+
+After reproducing `Image`, regenerate the prewarm artifact through the machine
+itself:
+
+```sh
+cargo run --release -p aos-realm-machine --example build_prewarm -- \
+  capsules/capsule-linux-realm/linux/Image \
+  capsules/capsule-linux-realm/linux/SOURCES.lock \
+  capsules/capsule-linux-realm/linux/prewarm-32m.aos-machine
+```
+
+The builder rejects a halt, trap, unexpected channel, missing init marker,
+undrained output, or principal-bearing console input. Default cold Realm startup
+then restores this state, attaches fresh principal home and invocation workspace
+sessions, and reaches `AOS READY`. A different admitted RAM size takes the full
+cold-boot path rather than coercing the checkpoint.
 
 The checked-in `Image` contains the GPL-2.0-only Linux kernel and GPL-2.0-only
 BusyBox; the in-kernel `trans_aos.c` transport is GPL-2.0-only because it is

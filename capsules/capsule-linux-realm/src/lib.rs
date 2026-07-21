@@ -13,8 +13,9 @@ mod resources;
 
 use aos_realm_9p::Session as Plan9Session;
 use aos_realm_machine::{
-    HostRequestFailure, Machine as Rv64Machine, MachineConfig as Rv64MachineConfig,
-    RV64_SMOKE_PROGRAM, RV64_SUPERVISOR_PROGRAM, SliceOutcome,
+    CheckpointBinding, CheckpointDigest, HostRequestFailure, Machine as Rv64Machine,
+    MachineCheckpoint, MachineConfig as Rv64MachineConfig, RV64_SMOKE_PROGRAM,
+    RV64_SUPERVISOR_PROGRAM, SliceOutcome,
 };
 use aos_realm_runtime::{
     CAT_GUEST, ECHO_GUEST, ExecutionReport, GUEST_PIPELINE_GUEST, HostFault, MINI_SHELL_GUEST,
@@ -47,8 +48,6 @@ const HARD_MAX_FUEL: u64 = 100_000;
 const HARD_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const HARD_MEMORY_BYTES: usize = 64 * 1024;
 const LINUX_SLICE_STEPS: u64 = 100_000;
-#[cfg(test)]
-const LINUX_INIT_MARKER: &[u8] = b"AOS LINUX /init";
 // `/dev/console` has the normal TTY output transformation enabled, so the
 // init protocol's line feeds emerge as CRLF on the SBI debug console.
 const LINUX_READY_MARKER: &[u8] = b"AOS READY\r\n";
@@ -61,6 +60,9 @@ const LINUX_DEFAULT_CWD: &str = "/home/agent";
 #[cfg(target_arch = "wasm32")]
 const LINUX_COOPERATE_TOPIC: &str = "realm.v1.linux.cooperate";
 const AOS_LINUX_IMAGE: &[u8] = include_bytes!("../linux/Image");
+const AOS_LINUX_SOURCES: &[u8] = include_bytes!("../linux/SOURCES.lock");
+const AOS_LINUX_PREWARM_32M: &[u8] = include_bytes!("../linux/prewarm-32m.aos-machine");
+const LINUX_PREWARM_RAM_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(not(test))]
 type WorkspacePlan9Session = Plan9Session<AstridWorkspace9p>;
@@ -219,6 +221,10 @@ struct StatusResponse {
     next_process_id: Option<u64>,
     linux_lifecycle: &'static str,
     linux_backend: &'static str,
+    linux_cold_start: &'static str,
+    linux_prewarm_ram_bytes: usize,
+    linux_prewarm_checkpoint_bytes: usize,
+    linux_prewarm_authority: &'static str,
     linux_state: &'static str,
     linux_residency: &'static str,
     linux_vcpus: u32,
@@ -762,21 +768,45 @@ fn execute_linux_resident_cooperatively(
 
     if booted {
         *workspace_9p = None;
-        let mut resident = LinuxMachine::new_reference(Rv64MachineConfig {
-            ram_bytes: limits.memory_bytes,
-            // Console chunks are drained after every scheduling slice. The
-            // invocation-wide output ceiling is enforced below.
-            max_console_bytes: HARD_MAX_OUTPUT_BYTES,
-        })
-        .map_err(|error| SysError::ApiError(error.to_string()))?;
-        resident
-            .boot_linux(
-                AOS_LINUX_IMAGE,
-                &[],
-                "earlycon=sbi console=hvc0 init=/init panic=-1",
-            )
+        let restored_prewarm = limits.memory_bytes == LINUX_PREWARM_RAM_BYTES;
+        let resident = if restored_prewarm {
+            let binding = CheckpointBinding::new(
+                CheckpointDigest::hash(AOS_LINUX_IMAGE),
+                CheckpointDigest::hash(AOS_LINUX_SOURCES),
+            );
+            let checkpoint = MachineCheckpoint::decode(AOS_LINUX_PREWARM_32M, binding)
+                .map_err(|error| SysError::ApiError(error.to_string()))?;
+            if checkpoint.ram_bytes() != limits.memory_bytes
+                || checkpoint.max_console_bytes() != HARD_MAX_OUTPUT_BYTES
+            {
+                return Err(SysError::ApiError(
+                    "Linux prewarm checkpoint resources do not match admitted resources"
+                        .to_string(),
+                ));
+            }
+            LinuxMachine::from_reference(checkpoint.into_machine())
+        } else {
+            let mut resident = LinuxMachine::new_reference(Rv64MachineConfig {
+                ram_bytes: limits.memory_bytes,
+                // Console chunks are drained after every scheduling slice. The
+                // invocation-wide output ceiling is enforced below.
+                max_console_bytes: HARD_MAX_OUTPUT_BYTES,
+            })
             .map_err(|error| SysError::ApiError(error.to_string()))?;
+            resident
+                .boot_linux(
+                    AOS_LINUX_IMAGE,
+                    &[],
+                    "earlycon=sbi console=hvc0 init=/init panic=-1",
+                )
+                .map_err(|error| SysError::ApiError(error.to_string()))?;
+            resident
+        };
         *machine = Some(resident);
+
+        if restored_prewarm {
+            stdout.extend_from_slice(b"AOS PREWARM RESTORED\r\n");
+        }
 
         let report = match drive_linux_until(
             machine.as_mut().expect("machine inserted"),
@@ -1573,6 +1603,10 @@ fn status_response(
         next_process_id: actor.machine.next_process_id.map(|process| process.get()),
         linux_lifecycle: "lazy-principal-resident",
         linux_backend: DEFAULT_LINUX_BACKEND_ID,
+        linux_cold_start: "bound-prewarm-32m-or-full-boot",
+        linux_prewarm_ram_bytes: LINUX_PREWARM_RAM_BYTES,
+        linux_prewarm_checkpoint_bytes: AOS_LINUX_PREWARM_32M.len(),
+        linux_prewarm_authority: "signed-capsule-artifact+fresh-principal-providers",
         linux_state: actor.linux.state,
         linux_residency: "principal-affine-store",
         linux_vcpus: 1,
@@ -1816,13 +1850,10 @@ mod tests {
         );
         assert!(machine.is_some());
         let stdout = String::from_utf8_lossy(&boot.stdout);
-        assert!(stdout.contains("Linux version 6.18.39"));
-        assert!(stdout.contains("Machine model: AOS RV64 virtual machine v0"));
-        assert!(stdout.contains("Run /init as init process"));
-        assert!(contains_bytes(&boot.stdout, LINUX_INIT_MARKER));
+        assert!(stdout.contains("AOS PREWARM RESTORED"));
         assert!(contains_bytes(&boot.stdout, LINUX_READY_MARKER));
-        assert!(boot.fuel_consumed < limits.fuel);
-        assert!(boot.suspensions > 100);
+        assert_eq!(boot.fuel_consumed, 277_798);
+        assert_eq!(boot.suspensions, 7);
 
         let first = execute_linux_resident_cooperatively(
             LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
@@ -2041,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_runner_cooperates_after_every_yielded_slice() {
+    fn prewarm_resume_cooperates_at_every_host_and_slice_boundary() {
         let mut cooperative_yields = 0_u64;
         let mut machine = None;
         let mut home_9p = None;
@@ -2064,11 +2095,11 @@ mod tests {
         )
         .expect("bounded Linux execution yields cooperatively");
 
-        assert_eq!(report.outcome, "fuel-exhausted");
+        assert_eq!(report.outcome, "ready");
         assert_eq!(report.fuel_consumed, LINUX_SLICE_STEPS * 2);
-        assert_eq!(report.suspensions, 2);
+        assert_eq!(report.suspensions, 7);
         assert_eq!(cooperative_yields, report.suspensions);
-        assert!(machine.is_none(), "partial boot RAM is discarded");
+        assert!(machine.is_some(), "ready prewarm RAM remains resident");
     }
 
     #[test]
@@ -2440,6 +2471,10 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert!(json.contains("\"realm_boot_sequence\":9"));
         assert!(json.contains("\"commands_completed\":4"));
         assert!(json.contains("\"linux_lifecycle\":\"lazy-principal-resident\""));
+        assert!(json.contains("\"linux_backend\":\"aos-rv64-interpreter\""));
+        assert!(json.contains("\"linux_cold_start\":\"bound-prewarm-32m-or-full-boot\""));
+        assert!(json.contains("\"linux_prewarm_ram_bytes\":33554432"));
+        assert!(json.contains("\"linux_prewarm_checkpoint_bytes\":8495869"));
         assert!(json.contains("\"linux-sh\""));
         assert!(json.contains("\"linux_state\":\"cold\""));
         assert!(json.contains("\"linux_boot_executions_this_actor_boot\":2"));

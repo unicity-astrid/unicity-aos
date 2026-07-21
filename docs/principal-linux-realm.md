@@ -247,11 +247,40 @@ page walks for this boot. It selects address translation as a proven fast path;
 it does not predict core-WASM throughput. The measurement example now emits
 these counters so native and Astrid-hosted builds can be compared explicitly.
 
+The next route is also implemented for the default 32 MiB Realm. The AOS machine
+boots the exact checked-in image to its first unanswered home-9P request, drains
+the boot console into the build receipt, verifies that no console input exists,
+and emits a sparse durable checkpoint. The current artifact is 8,495,869 bytes
+and represents 15,899,016 precomputed guest steps. It is bound to BLAKE3 digests
+of both `Image` and `SOURCES.lock`; its codec checksum, machine model, CPU state,
+CSR masks, RAM envelope, sparse-page order, pending request identity, response
+buffer, and trailing bytes all fail closed. The signed capsule containing the
+image, lock, and checkpoint supplies authenticity.
+
+Restoration does not restore authority. The checkpoint stops before Linux's
+first storage response, so each new principal still creates a fresh Astrid home
+9P session and a fresh invocation workspace session. Only then can Linux finish
+mounting and print `AOS READY`. Under the normal large boot budget that resume
+uses 277,798 charged steps and seven cooperative host/slice suspensions, about
+57 times fewer guest steps than replaying the cold kernel boot. A 200,000-step
+request also reaches the already-emitted ready marker at its final slice
+boundary; this is covered separately so fuel-boundary behavior remains explicit.
+Non-32-MiB envelopes use the measured full boot rather than accepting a mismatched
+checkpoint. Full capsule tests preserve UID-1000 commands, durable home readback,
+workspace remounting, shutdown, restart, denied paths, and accounting.
+
+A same-session attempt to prioritize RAM before MMIO dispatch and bypass the
+generic instruction-fetch device path measured 50,994,179 steps/s versus the
+cached reference's 51,270,155. That is noise, not a win, so the change was
+discarded. The next CPU experiment must target decoded dispatch or bounded
+blocks and must beat the committed measurement while preserving per-step
+interrupt and fuel semantics.
+
 The remaining performance routes are ordered by the boundary they remove:
 
 1. make RAM access and device dispatch cheap after translation;
-2. restore a signed prewarmed machine snapshot instead of replaying 15.9 million
-   boot steps for every cold principal;
+2. [implemented for 32 MiB] restore a signed-in prewarmed machine checkpoint
+   instead of replaying 15.9 million boot steps for every cold principal;
 3. add decoded instruction or bounded basic-block caching only if post-TLB
    measurements justify it, preserving an interrupt/fuel boundary per step;
 4. serve immutable distribution and toolchain bytes from shared content-addressed
@@ -2440,6 +2469,9 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   model;
 - [ ] pass reference-trace and denied-path conformance before selecting the
   accelerated backend for a principal;
+- [x] define a principal-free host-suspension checkpoint, add the sparse bound
+  codec and reproducible builder, embed the 32 MiB artifact, and prove each
+  restore attaches fresh home/workspace providers before ready;
 - [ ] build an immutable AOS Realm development generation with the current
   supported stable Rust/Cargo/linker/libc identities and enough measured memory
   for compiler workloads;
