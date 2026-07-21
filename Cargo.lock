@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,7 +71,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "aos-agents"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -89,7 +80,7 @@ dependencies = [
 name = "aos-cli"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -98,7 +89,7 @@ dependencies = [
 name = "aos-context-engine"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -107,7 +98,7 @@ dependencies = [
 name = "aos-forge"
 version = "0.1.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "toml",
@@ -117,7 +108,7 @@ dependencies = [
 name = "aos-fs"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -126,7 +117,7 @@ dependencies = [
 name = "aos-hook-bridge"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -135,7 +126,7 @@ dependencies = [
 name = "aos-http"
 version = "0.1.1"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -144,7 +135,7 @@ dependencies = [
 name = "aos-identity"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "toml",
@@ -154,7 +145,7 @@ dependencies = [
 name = "aos-memory"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -164,7 +155,7 @@ dependencies = [
 name = "aos-openai"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -174,7 +165,7 @@ dependencies = [
 name = "aos-openai-compat"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -184,7 +175,7 @@ dependencies = [
 name = "aos-prompt-builder"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -193,7 +184,7 @@ dependencies = [
 name = "aos-react"
 version = "0.2.2"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -203,7 +194,7 @@ dependencies = [
 name = "aos-registry"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -212,7 +203,7 @@ dependencies = [
 name = "aos-router"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -222,7 +213,7 @@ dependencies = [
 name = "aos-session"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -232,7 +223,7 @@ dependencies = [
 name = "aos-shell"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -241,7 +232,7 @@ dependencies = [
 name = "aos-skills"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -250,18 +241,7 @@ dependencies = [
 name = "aos-system"
 version = "0.2.0"
 dependencies = [
- "astrid-sdk 0.7.1",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aos-telegram"
-version = "0.1.0"
-dependencies = [
- "astrid-sdk 0.5.3",
- "extism-pdk",
- "regex",
+ "astrid-sdk",
  "serde",
  "serde_json",
 ]
@@ -270,7 +250,7 @@ dependencies = [
 name = "aos-users"
 version = "0.1.0"
 dependencies = [
- "astrid-sdk 0.7.1",
+ "astrid-sdk",
  "serde",
  "serde_json",
  "uuid",
@@ -329,30 +309,12 @@ dependencies = [
 
 [[package]]
 name = "astrid-sdk"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50f8f3eea2340ac3c442a6682066df82b6bab7d04d5e40617c505726942f6a91"
-dependencies = [
- "astrid-sdk-macros 0.5.3",
- "astrid-sys 0.5.3",
- "astrid-types 0.4.0",
- "borsh",
- "extism-pdk",
- "rmp-serde",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "astrid-sdk"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17e779297e0a366448eb331dd7ad3850184eb99ae90b4cb8ebda1ab1ee8df44c"
 dependencies = [
- "astrid-sdk-macros 0.7.1",
- "astrid-sys 0.7.1",
+ "astrid-sdk-macros",
+ "astrid-sys",
  "astrid-types 0.7.0",
  "borsh",
  "schemars",
@@ -360,17 +322,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "astrid-sdk-macros"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "000c8108bdc19d55b124d49ede5529ebb26ef4318f34eb60b75e88a388d3302b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -387,15 +338,6 @@ dependencies = [
 
 [[package]]
 name = "astrid-sys"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a89c4126edc3573d68ba0bddb8ae97d170dee094c572db60e3107314b0002c5"
-dependencies = [
- "extism-pdk",
-]
-
-[[package]]
-name = "astrid-sys"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a2f9a393a4f98789c088699f195e2b0b804cd04938b5300e6e4ff4b7dd1ad60"
@@ -403,19 +345,6 @@ dependencies = [
  "getrandom",
  "serde",
  "wit-bindgen",
-]
-
-[[package]]
-name = "astrid-types"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b8a7ebbcca88192b6cff6d9b54d10ef53833c8962e4f4703521b93c7db1ec11"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "thiserror",
- "uuid",
 ]
 
 [[package]]
@@ -610,12 +539,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "bytemuck"
-version = "1.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6aedf8ae72766347502cf3cb4f41cf5e9cc37d28bee90f1fdaaae15f9cf9424"
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,10 +584,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link",
 ]
 
@@ -816,82 +737,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "either"
-version = "1.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
-name = "extism-convert"
-version = "1.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad19858c4c462309a8f3a20abec53e8603bda1eefda26c8bfab51d5516b40cbb"
-dependencies = [
- "anyhow",
- "base64",
- "bytemuck",
- "extism-convert-macros",
- "prost",
- "rmp-serde",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "extism-convert-macros"
-version = "1.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f2932799f6d9f9646f97b65287f6bb2addc75a0ee61e40fb24559a7540dd928"
-dependencies = [
- "manyhow",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "extism-manifest"
-version = "1.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2f59c8dadb5e0bde9a48c6ed45312e6ef625cbcd5f67c28459dbc8fe8bc0383"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "extism-pdk"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "352fcb5a66eb74145a1c4a01f2bd15d59c62c85be73aac8471880c65b26b798f"
-dependencies = [
- "anyhow",
- "base64",
- "extism-convert",
- "extism-manifest",
- "extism-pdk-derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "extism-pdk-derive"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d086daea5fd844e3c5ac69ddfe36df4a9a43e7218cf7d1f888182b089b09806c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "fiat-crypto"
@@ -1142,15 +991,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1184,29 +1024,6 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
-
-[[package]]
-name = "manyhow"
-version = "0.11.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b33efb3ca6d3b07393750d4030418d594ab1139cee518f0dc88db70fec873587"
-dependencies = [
- "manyhow-macros",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "manyhow-macros"
-version = "0.11.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46fce34d199b78b6e6073abf984c9cf5fd3e9330145a93ee0738a7443e371495"
-dependencies = [
- "proc-macro-utils",
- "proc-macro2",
- "quote",
-]
 
 [[package]]
 name = "matchit"
@@ -1290,46 +1107,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-utils"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeaf08a13de400bc215877b5bdc088f241b12eb42f0a548d3390dc1c56bb7071"
-dependencies = [
- "proc-macro2",
- "quote",
- "smallvec",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "prost"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
-dependencies = [
- "bytes",
- "prost-derive",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
-dependencies = [
- "anyhow",
- "itertools",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -1363,54 +1146,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "regex"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a0e75113e14dc5acb068cd0786884f214f1312650a3d36d269f5c4f3cdee8a2"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.4.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f388202e4b80542a0921078cc23b6333bcf1409c1e3f86404cae4766a6131db"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "rmp"
-version = "0.8.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "rmp-serde"
-version = "1.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
-dependencies = [
- "rmp",
- "serde",
-]
 
 [[package]]
 name = "rustc_version"
