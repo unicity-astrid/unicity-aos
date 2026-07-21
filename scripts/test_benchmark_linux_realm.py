@@ -18,6 +18,22 @@ SPEC.loader.exec_module(BENCHMARK)
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_hardware_profile_keeps_performance_fields_only(self) -> None:
+        profile = BENCHMARK.parse_hardware_profile(
+            "Chip: Apple M2 Ultra\n"
+            "Model Identifier: Mac14,14\n"
+            "Memory: 192 GB\n"
+            "Serial Number (system): secret\n"
+        )
+        self.assertEqual(
+            profile,
+            {
+                "model": "Apple M2 Ultra",
+                "model_identifier": "Mac14,14",
+                "memory": "192 GB",
+            },
+        )
+
     def test_percentile_interpolates_without_mutating_input(self) -> None:
         values = [40, 10, 30, 20]
         self.assertEqual(BENCHMARK.percentile(values, 0.5), 25)

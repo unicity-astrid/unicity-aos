@@ -84,28 +84,52 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def parse_hardware_profile(text: str) -> dict[str, str]:
+    allowed = {
+        "Chip": "model",
+        "Model Identifier": "model_identifier",
+        "Memory": "memory",
+    }
+    result = {}
+    for line in text.splitlines():
+        key, separator, value = line.strip().partition(":")
+        field = allowed.get(key)
+        if separator and field and value.strip():
+            result[field] = value.strip()
+    return result
+
+
+def host_metadata() -> dict[str, Any]:
+    host: dict[str, Any] = {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "cpu_count": os.cpu_count(),
+    }
+    model = command_output(["sysctl", "-n", "machdep.cpu.brand_string"])
+    if model and model.lower() != "arm":
+        host["model"] = model
+    elif platform.system() == "Darwin":
+        profile = command_output(["system_profiler", "SPHardwareDataType"])
+        if profile:
+            host.update(parse_hardware_profile(profile))
+    elif platform.processor():
+        host["model"] = platform.processor()
+    return host
+
+
 def metadata() -> dict[str, Any]:
     return {
         "schema": SCHEMA,
         "kind": "metadata",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": command_output(["git", "rev-parse", "HEAD"]),
-        "host": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "machine": platform.machine(),
-            "model": command_output(["sysctl", "-n", "machdep.cpu.brand_string"])
-            or platform.processor()
-            or None,
-            "cpu_count": os.cpu_count(),
-        },
+        "host": host_metadata(),
         "tools": {
             "python": platform.python_version(),
             "rustc": command_output(["rustc", "-vV"]),
             "qemu": command_output(["qemu-system-riscv64", "--version"]),
-            "docker_client": command_output(
-                ["docker", "version", "--format", "{{.Client.Version}}"]
-            ),
+            "docker_client": command_output(["docker", "--version"]),
         },
         "artifacts": {
             "linux_image_sha256": sha256(IMAGE),
