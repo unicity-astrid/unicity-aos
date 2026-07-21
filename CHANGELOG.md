@@ -144,3 +144,15 @@
   `aos stop` only after every coordination marker is gone and the singleton
   lock is available; all other inherited runtime failures retain their output
   and exit status.
+
+### Removed
+
+- The vendored `capsules/capsule-telegram` copy. The capsule is maintained in
+  its own repository at `unicity-aos/capsule-telegram` and installs directly
+  from there with `aos capsule install @unicity-aos/capsule-telegram`, so the
+  in-tree duplicate had no consumer: it was absent from `Distro.toml` and
+  `release/community-capsules.txt`, and was therefore never built, signed, or
+  shipped. Keeping it only invited the drift it had already accumulated —
+  it was the sole workspace member still pinned to `astrid-sdk` 0.5.3 and
+  building for `wasm32-wasip1`, which is why CI had to exclude it from every
+  workspace job. Those exclusions and the `telegram-wasi` job go away with it.

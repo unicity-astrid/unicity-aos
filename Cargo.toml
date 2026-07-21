@@ -29,7 +29,6 @@ members = [
     "capsules/capsule-shell",
     "capsules/capsule-skills",
     "capsules/capsule-system",
-    "capsules/capsule-telegram",
     "capsules/capsule-users",
 ]
 resolver = "3"

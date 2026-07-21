@@ -71,8 +71,8 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo metadata --locked --format-version 1 --no-deps
-      - run: cargo check --locked --workspace --exclude aos-telegram --exclude unicity-aos-bootstrap --target wasm32-unknown-unknown
-      - run: cargo clippy --locked --workspace --exclude aos-telegram --exclude unicity-aos-bootstrap --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo check --locked --workspace --exclude unicity-aos-bootstrap --target wasm32-unknown-unknown
+      - run: cargo clippy --locked --workspace --exclude unicity-aos-bootstrap --target wasm32-unknown-unknown -- -D warnings
 
   product-native:
     name: Product native
@@ -100,16 +100,4 @@ jobs:
           toolchain: "1.95.0"
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo test --locked --workspace --exclude aos-telegram --exclude unicity-aos-bootstrap --target x86_64-unknown-linux-gnu
-
-  telegram-wasi:
-    name: Telegram WASI
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: "1.95.0"
-          targets: wasm32-wasip1
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo check --locked -p aos-telegram --target wasm32-wasip1
+      - run: cargo test --locked --workspace --exclude unicity-aos-bootstrap --target x86_64-unknown-linux-gnu
