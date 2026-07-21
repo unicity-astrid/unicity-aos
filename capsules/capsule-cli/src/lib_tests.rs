@@ -1,5 +1,12 @@
 use super::*;
 
+#[test]
+fn readiness_capacity_is_derived_from_poll_contract() {
+    assert_eq!(max_polled_clients(16), 239);
+    assert_eq!(max_polled_clients(255), 0);
+    assert_eq!(max_polled_clients(300), 0);
+}
+
 // --- principal format validation ---
 
 #[test]

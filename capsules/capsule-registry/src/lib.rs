@@ -750,6 +750,14 @@ impl Registry {
         let run_sub = ipc::subscribe(CLI_RUN_TOPIC)?;
         let selection_sub = ipc::subscribe("registry.v1.selection.callback")?;
         let capsules_loaded_sub = ipc::subscribe("astrid.v1.capsules_loaded")?;
+        // Pollables borrow their subscriptions host-side. They are declared
+        // after the parents so normal reverse local-drop order releases every
+        // pollable first.
+        let registry_ready = sub.subscribe_readiness();
+        let command_ready = cmd_sub.subscribe_readiness();
+        let run_ready = run_sub.subscribe_readiness();
+        let selection_ready = selection_sub.subscribe_readiness();
+        let capsules_loaded_ready = capsules_loaded_sub.subscribe_readiness();
 
         let _ = runtime::signal_ready();
 
@@ -779,48 +787,41 @@ impl Registry {
         reconcile_active_model(&mut state);
         auto_select_defaults(&mut state);
 
-        // Event loop — blocks on the primary subscription, then drains auxiliary.
-        // All five subscriptions are RAII (`Subscription`); their `Drop`
-        // releases the kernel-side resource at scope exit, so no manual
-        // `unsubscribe` is required.
+        // Event loop — one heterogeneous readiness wait, then drain only the
+        // subscriptions that fired. This removes the former five-second
+        // head-of-line delay for reload and CLI events.
         loop {
-            match sub.recv(5000) {
-                Ok(result) => dispatch_registry_messages(&result),
-                Err(_) => break,
-            }
-
-            // Drain CLI command messages (non-blocking).
-            if let Ok(result) = cmd_sub.poll() {
-                dispatch_command_messages(&result);
-            }
-
-            // Drain scriptable `models` verb runs (non-blocking).
-            if let Ok(result) = run_sub.poll() {
-                dispatch_cli_run_messages(&result);
-            }
-
-            // Drain model selection callbacks from the TUI picker.
-            if let Ok(result) = selection_sub.poll() {
-                dispatch_selection_messages(&result);
-            }
-
-            // Re-discover providers on capsule reload.
-            if let Ok(result) = capsules_loaded_sub.poll()
-                && has_kernel_message(&result)
-            {
-                log::info("Capsules reloaded - re-discovering providers");
-                let providers = discover_providers();
-                let mut state = load_state();
-                if !providers.is_empty() {
-                    state.providers = providers;
-                    save_state(&state);
-                    reconcile_active_model(&mut state);
-                    auto_select_defaults(&mut state);
+            let wait_set = [
+                &registry_ready,
+                &command_ready,
+                &run_ready,
+                &selection_ready,
+                &capsules_loaded_ready,
+            ];
+            for index in astrid_sdk::io::poll(&wait_set)? {
+                match index {
+                    0 => dispatch_registry_messages(&sub.poll()?),
+                    1 => dispatch_command_messages(&cmd_sub.poll()?),
+                    2 => dispatch_cli_run_messages(&run_sub.poll()?),
+                    3 => dispatch_selection_messages(&selection_sub.poll()?),
+                    4 => {
+                        let result = capsules_loaded_sub.poll()?;
+                        if has_kernel_message(&result) {
+                            log::info("Capsules reloaded - re-discovering providers");
+                            let providers = discover_providers();
+                            let mut state = load_state();
+                            if !providers.is_empty() {
+                                state.providers = providers;
+                                save_state(&state);
+                                reconcile_active_model(&mut state);
+                                auto_select_defaults(&mut state);
+                            }
+                        }
+                    }
+                    _ => unreachable!("poll returned an index outside the input wait set"),
                 }
             }
         }
-
-        Ok(())
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use astrid_sdk::net::{TcpStream, TryRecvError, bind_unix};
 use astrid_sdk::prelude::*;
@@ -39,6 +39,9 @@ struct CliProxy;
 /// per-principal connection counter is driven by host-emitted
 /// `client.v1.connect` / `client.v1.disconnect`, not by these fields.
 struct ProxyClient {
+    // Pollables borrow their source host-side and fields drop in declaration
+    // order, so readiness must precede the stream.
+    readable: astrid_sdk::io::Pollable,
     stream: TcpStream,
     principal: Option<String>,
     session_id: Option<String>,
@@ -46,7 +49,9 @@ struct ProxyClient {
 
 impl ProxyClient {
     fn new(stream: TcpStream) -> Self {
+        let readable = stream.subscribe_readable();
         Self {
+            readable,
             stream,
             principal: None,
             session_id: None,
@@ -185,8 +190,14 @@ const CHAT_DELTA_TOPIC: &str = "agent.v1.stream.delta";
 /// Upper bound on concurrently-streaming sessions the proxy accumulates text
 /// for. A turn always drops its entry on its terminal response, so this is only
 /// a defensive ceiling against a turn that never finalizes; far above the
-/// host-enforced 8-connection cap.
+/// readiness-set capacity derived from the host contract.
 const MAX_STREAM_SESSIONS: usize = 64;
+
+fn max_polled_clients(subscription_count: usize) -> usize {
+    astrid_sdk::io::MAX_POLLABLES_PER_CALL
+        .saturating_sub(subscription_count)
+        .saturating_sub(1)
+}
 
 /// Extract the top-level `"session_id"` string from a message payload, if any.
 ///
@@ -349,6 +360,10 @@ impl CliProxy {
             .iter()
             .map(|t| ipc::subscribe(t))
             .collect::<Result<Vec<_>, _>>()?;
+        let sub_readiness: Vec<astrid_sdk::io::Pollable> = subs
+            .iter()
+            .map(ipc::Subscription::subscribe_readiness)
+            .collect();
 
         // Signal readiness so the kernel can proceed with loading dependent capsules.
         // Best-effort: failure means the host mutex is poisoned (unrecoverable).
@@ -362,9 +377,15 @@ impl CliProxy {
 
         log::info(format!("CLI Proxy: accepting connections on {path}"));
         let listener = bind_unix()?;
+        let listener_readiness = listener.subscribe_readiness();
+        let max_clients = max_polled_clients(subs.len());
+        log::info(format!(
+            "CLI Proxy: readiness capacity is {max_clients} concurrent clients"
+        ));
 
         // 3. Multi-connection accept loop.
-        // Supports up to 8 concurrent CLI clients (enforced at host level).
+        // Capacity is derived from the WIT poll contract: one listener plus
+        // every IPC subscription and client stream must fit in one wait set.
         //
         // Each connection binds to exactly one principal on its first message
         // (see `ProxyClient` / `decide_ingress`) and stays bound for life, and
@@ -398,43 +419,49 @@ impl CliProxy {
         let mut stream_accum: HashMap<String, String> = HashMap::new();
 
         'proxy: loop {
-            // Phase A: block until at least one client is connected.
-            if clients.is_empty() {
-                let stream = match listener.accept() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn(format!("Accept error: {e:?}, backing off"));
-                        // `std::thread::sleep` panics on wasm32-unknown-unknown
-                        // ("can't sleep" — the unsupported thread shim), which
-                        // would kill the proxy run loop on the first accept
-                        // error. Use the host-backed sleep instead. Propagate a
-                        // sleep failure (`?`) rather than swallowing it: a failed
-                        // host sleep would otherwise let this arm `continue` with
-                        // no delay and busy-spin if `accept()` keeps erroring. The
-                        // host only errs here when tearing the capsule down, so
-                        // returning ends the loop cleanly.
-                        astrid_sdk::time::sleep(std::time::Duration::from_millis(100))?;
-                        continue;
+            // Wait once for the listener, every live client, and every IPC
+            // subscription. Idle cost is independent of client count.
+            let listen_included = clients.len() < max_clients;
+            let ready = {
+                let mut wait_set: Vec<&astrid_sdk::io::Pollable> = Vec::with_capacity(
+                    usize::from(listen_included) + clients.len() + sub_readiness.len(),
+                );
+                if listen_included {
+                    wait_set.push(&listener_readiness);
+                }
+                wait_set.extend(clients.iter().map(|client| &client.readable));
+                wait_set.extend(sub_readiness.iter());
+                astrid_sdk::io::poll(&wait_set)?
+            };
+
+            let client_offset = usize::from(listen_included);
+            let subscription_offset = client_offset + clients.len();
+            let mut ready_clients = Vec::new();
+            let mut ready_subscriptions = Vec::new();
+            let mut accept_ready = false;
+            for index in ready {
+                if listen_included && index == 0 {
+                    accept_ready = true;
+                } else if index < subscription_offset {
+                    ready_clients.push(index - client_offset);
+                } else {
+                    ready_subscriptions.push(index - subscription_offset);
+                }
+            }
+
+            if accept_ready {
+                match listener.accept() {
+                    Ok(stream) => {
+                        log::info("CLI client connected to proxy");
+                        clients.push(ProxyClient::new(stream));
                     }
-                };
-                log::info("CLI client connected to proxy");
-                clients.push(ProxyClient::new(stream));
+                    Err(error) => log::warn(format!("Accept error: {error:?}")),
+                }
             }
 
-            // Phase B: poll for one additional connection (non-blocking).
-            // Max one per iteration to bound handshake stall to ~5s worst case.
-            // The new try_accept takes a timeout - 0 means non-blocking, matching
-            // the pre-#752 semantics.
-            if let Ok(Some(new_stream)) = listener.try_accept(0) {
-                log::info("Additional CLI client connected to proxy");
-                clients.push(ProxyClient::new(new_stream));
-            }
-
-            // Phase C: read from all streams.
-            // NOTE: 50ms timeout per stream = linear scaling (N*50ms per iteration).
-            // Acceptable for CLI use (2-3 typical, 8 max = 400ms worst case).
-            let mut dead_indices: Vec<usize> = Vec::new();
-            for (i, client) in clients.iter_mut().enumerate() {
+            let mut dead_indices: HashSet<usize> = HashSet::new();
+            for i in ready_clients {
+                let client = &mut clients[i];
                 match client.stream.try_recv() {
                     Ok(bytes) => {
                         // Apply the binding state machine and forward if allowed.
@@ -457,27 +484,13 @@ impl CliProxy {
                     Err(TryRecvError::Empty) => {}
                     Err(TryRecvError::Closed) => {
                         log::info("CLI client disconnected from proxy");
-                        dead_indices.push(i);
+                        dead_indices.insert(i);
                     }
                 }
             }
 
-            // Remove dead streams in reverse order to preserve indices.
-            // Dropping the `ProxyClient` drops its `TcpStream`, which releases
-            // the host-side stream entry — and that drop is exactly where the
-            // host emits `client.v1.disconnect` for the kernel connection
-            // tracker, stamped with the connection's verified principal. The
-            // proxy no longer emits it (the old proxy-side emission fired after
-            // the connection's verified identity was gone, so the kernel
-            // stamped it `anonymous` and the per-principal count leaked).
-            for &i in dead_indices.iter().rev() {
-                clients.remove(i);
-            }
-
-            // Phase D: poll IPC subscriptions and broadcast to all live streams.
-            // NOTE: broadcast_dead indices are into clients AFTER Phase C removals.
-            let mut broadcast_dead: Vec<usize> = Vec::new();
-            for sub in &subs {
+            for sub_index in ready_subscriptions {
+                let sub = &subs[sub_index];
                 match sub.poll() {
                     Ok(result) => {
                         if !result.messages.is_empty() {
@@ -485,7 +498,7 @@ impl CliProxy {
                                 &clients,
                                 &result,
                                 &mut stream_accum,
-                                &mut broadcast_dead,
+                                &mut dead_indices,
                             );
                         }
                     }
@@ -496,17 +509,11 @@ impl CliProxy {
                 }
             }
 
-            // Remove streams that failed during broadcast.
-            // Multiple subscriptions may flag the same stream as dead in one
-            // iteration. sort + dedup before removal prevents double-removal panics.
-            broadcast_dead.sort_unstable();
-            broadcast_dead.dedup();
-            for &i in broadcast_dead.iter().rev() {
+            let mut dead_indices: Vec<usize> = dead_indices.into_iter().collect();
+            dead_indices.sort_unstable();
+            for i in dead_indices.into_iter().rev() {
                 clients.remove(i);
-                log::info("CLI client disconnected during broadcast");
-                // See the Phase-C removal above: the host emits
-                // `client.v1.disconnect` when the dropped stream's resource is
-                // torn down, so the proxy does not.
+                log::info("CLI client disconnected from proxy");
             }
         }
 
@@ -632,6 +639,33 @@ struct OutboundMessage {
     session: Option<String>,
 }
 
+fn send_outbound_to<I>(
+    clients: &[ProxyClient],
+    message: &OutboundMessage,
+    dead: &mut HashSet<usize>,
+    recipients: I,
+) where
+    I: IntoIterator<Item = usize>,
+{
+    for index in recipients {
+        if dead.contains(&index) {
+            continue;
+        }
+        debug_assert!(should_deliver(
+            message.target.as_deref(),
+            message.session.as_deref(),
+            clients[index].principal.as_deref(),
+            clients[index].session_id.as_deref(),
+        ));
+        if let Err(error) = clients[index].stream.send(&message.bytes) {
+            log::warn(format!(
+                "Socket send error, client likely disconnected: {error:?}"
+            ));
+            dead.insert(index);
+        }
+    }
+}
+
 /// Fan a `PollResult` out to connected clients, demultiplexed by principal AND
 /// session so a bound connection only sees IPC stamped with its own principal
 /// (plus unprincipaled system events), and a chat response only when it is on
@@ -644,7 +678,7 @@ fn broadcast_poll_messages(
     clients: &[ProxyClient],
     poll_result: &ipc::PollResult,
     stream_accum: &mut HashMap<String, String>,
-    dead: &mut Vec<usize>,
+    dead: &mut HashSet<usize>,
 ) {
     if poll_result.dropped > 0 {
         log::warn(format!(
@@ -686,32 +720,49 @@ fn broadcast_poll_messages(
         })
         .collect();
 
-    for (i, client) in clients.iter().enumerate() {
-        // Skip streams already marked dead by a previous subscription's broadcast.
-        if dead.contains(&i) {
-            continue;
+    let mut by_principal: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_session: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_principal_session: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (index, client) in clients.iter().enumerate() {
+        if let Some(principal) = client.principal.as_deref() {
+            by_principal.entry(principal).or_default().push(index);
+            if let Some(session) = client.session_id.as_deref() {
+                by_principal_session
+                    .entry((principal, session))
+                    .or_default()
+                    .push(index);
+            }
         }
-        for msg in &outbound {
-            // Demux on principal AND session: a principaled message reaches only
-            // the matching bound client, and a session-scoped one only the
-            // client on that session (so same-principal connections on different
-            // sessions don't cross-talk). Unprincipaled/unsessioned messages go
-            // to everyone that clears the gates.
-            if !should_deliver(
-                msg.target.as_deref(),
-                msg.session.as_deref(),
-                client.principal.as_deref(),
-                client.session_id.as_deref(),
-            ) {
-                continue;
-            }
-            if let Err(e) = client.stream.send(&msg.bytes) {
-                log::warn(format!(
-                    "Socket send error, client likely disconnected: {e:?}"
-                ));
-                dead.push(i);
-                break; // Skip remaining messages for this dead stream.
-            }
+        if let Some(session) = client.session_id.as_deref() {
+            by_session.entry(session).or_default().push(index);
+        }
+    }
+
+    for message in &outbound {
+        match (message.target.as_deref(), message.session.as_deref()) {
+            (Some(principal), Some(session)) => send_outbound_to(
+                clients,
+                message,
+                dead,
+                by_principal_session
+                    .get(&(principal, session))
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            ),
+            (Some(principal), None) => send_outbound_to(
+                clients,
+                message,
+                dead,
+                by_principal.get(principal).into_iter().flatten().copied(),
+            ),
+            (None, Some(session)) => send_outbound_to(
+                clients,
+                message,
+                dead,
+                by_session.get(session).into_iter().flatten().copied(),
+            ),
+            (None, None) => send_outbound_to(clients, message, dead, 0..clients.len()),
         }
     }
 }

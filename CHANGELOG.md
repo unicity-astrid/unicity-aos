@@ -41,6 +41,11 @@
   changing runtime state, and proves clean daemon shutdown before publication.
 - Native `aos status` output for authenticated running state and verified
   stopped state without invoking the runtime CLI.
+- A system-served `capacity-planning` Skill and deterministic `model_capacity`
+  tool. Agents can fit shared-plus-marginal memory, distinguish configured
+  ceilings from measured saturation, and derive memory, persistent-stream, and
+  readiness-set bounds without an invented universal agent count. Workspace and
+  principal-home Skills retain override priority over the built-in.
 - An opt-in daily nightly train with deterministic run-dated versions, exact
   Astrid compatibility pins, protected publication and promotion, and
   idempotent recovery after interrupted release or pointer updates. It is
@@ -78,6 +83,10 @@
   Astrid 0.9.4 home shape and a final-candidate runtime boot hook.
 - Present product-facing capsule copy consistently as Unicity AOS while
   preserving stable Astrid Runtime crate, WIT, topic, artifact, and ABI names.
+- Drive the CLI uplink and model registry from Component Model readiness. Idle
+  proxy cost no longer grows with connected clients, targeted egress uses a
+  principal/session index, and registry reload or CLI events no longer wait
+  behind a five-second primary-subscription timeout.
 - Treat the runtime's expected shutdown-response disconnect as a successful
   `aos stop` only after every coordination marker is gone and the singleton
   lock is available; all other inherited runtime failures retain their output

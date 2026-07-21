@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 /// URI scheme prefix for the principal's home directory.
 const HOME_SCHEME: &str = "home://";
 
+struct BuiltinSkill {
+    id: &'static str,
+    content: &'static str,
+}
+
+const BUILTIN_SKILLS: &[BuiltinSkill] = &[BuiltinSkill {
+    id: "capacity-planning",
+    content: include_str!("skills/capacity-planning/SKILL.md"),
+}];
+
 #[derive(Default)]
 pub struct SkillsLoader;
 
@@ -49,6 +59,52 @@ pub struct ReadSkillArgs {
     pub skill_id: String,
 }
 
+#[derive(Debug, Deserialize, astrid_sdk::schemars::JsonSchema)]
+pub struct CapacityModelArgs {
+    /// Shared steady-state memory in MiB with zero external agents attached.
+    pub shared_mib: f64,
+    /// Marginal steady-state memory in MiB per attached agent.
+    pub marginal_mib_per_agent: f64,
+    /// Attached-agent count at which to evaluate total memory and density.
+    pub agents: Option<u64>,
+    /// Operator-supplied memory budget in MiB after any desired reserve.
+    pub usable_memory_mib: Option<f64>,
+    /// Process-wide persistent network-stream limit.
+    pub host_net_streams: Option<u64>,
+    /// Persistent streams consumed independently of attached agents.
+    pub fixed_net_streams: Option<u64>,
+    /// Persistent streams required by each attached agent.
+    pub net_streams_per_agent: Option<f64>,
+    /// Operator-supplied file-descriptor budget after reserving headroom for
+    /// the OS and unrelated processes.
+    pub usable_file_descriptors: Option<u64>,
+    /// File descriptors consumed by the shared runtime before agents attach.
+    pub fixed_file_descriptors: Option<u64>,
+    /// Additional file descriptors consumed by each attached agent.
+    pub file_descriptors_per_agent: Option<f64>,
+    /// IPC subscriptions held by a multiplexing capsule. When supplied, the
+    /// tool derives its client capacity from the 256-entry poll contract.
+    pub ipc_subscriptions: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct CapacityModel {
+    formula: &'static str,
+    shared_mib: f64,
+    marginal_mib_per_agent: f64,
+    asymptotic_density_gain: f64,
+    evaluated_agents: Option<u64>,
+    evaluated_total_mib: Option<f64>,
+    evaluated_mib_per_agent: Option<f64>,
+    evaluated_density_gain: Option<f64>,
+    memory_bound_agents: Option<u64>,
+    net_stream_bound_agents: Option<u64>,
+    file_descriptor_bound_agents: Option<u64>,
+    poll_set_bound_clients: Option<u64>,
+    derived_bound_agents: Option<u64>,
+    bound_sources: Vec<&'static str>,
+}
+
 /// Skill discovery and loading tools.
 ///
 /// Skills are reusable prompt templates stored as SKILL.md files with YAML
@@ -57,7 +113,8 @@ pub struct ReadSkillArgs {
 #[capsule]
 impl SkillsLoader {
     /// List all available skills in a directory. Scans both the workspace and
-    /// home (`~/.astrid/home/{principal}/`) directories, merging results.
+    /// home (`~/.astrid/home/{principal}/`) directories and system built-ins,
+    /// merging results.
     /// Returns a JSON array of `{id, name, description}` objects. Workspace
     /// skills take priority over home skills with the same ID.
     #[astrid::tool("list_skills")]
@@ -74,6 +131,10 @@ impl SkillsLoader {
         let home_dir = format!("{HOME_SCHEME}{bare_dir}");
         collect_skills_from(&home_dir, &mut skills, &mut seen_ids);
 
+        // Built-ins are the final fallback. A workspace or principal-home skill
+        // with the same ID intentionally overrides the shipped version.
+        collect_builtin_skills(&mut skills, &mut seen_ids);
+
         skills.sort_by(|left, right| left.id.cmp(&right.id));
 
         let json = serde_json::to_string(&skills)?;
@@ -82,7 +143,7 @@ impl SkillsLoader {
 
     /// Read the full content of a specific skill by its ID. Returns the raw
     /// SKILL.md content including frontmatter. Checks the workspace directory
-    /// first, then falls back to the home directory.
+    /// first, then falls back to the home directory and system built-ins.
     #[astrid::tool("read_skill")]
     pub fn read_skill(&self, args: ReadSkillArgs) -> Result<String, SysError> {
         let bare_dir = bare_path(validate_dir_path(&args.dir_path)?);
@@ -116,11 +177,169 @@ impl SkillsLoader {
             }
         }
 
+        if let Some(content) = builtin_skill(&args.skill_id) {
+            return Ok(content.to_string());
+        }
+
         Err(SysError::ApiError(format!(
             "Skill '{}' could not be read",
             args.skill_id
         )))
     }
+
+    /// Evaluate the shared-plus-marginal capacity model and any resource
+    /// envelopes the caller measured. No safety factor is invented: pass an
+    /// already-reserved usable memory budget when a memory bound is wanted.
+    #[astrid::tool("model_capacity")]
+    pub fn model_capacity(&self, args: CapacityModelArgs) -> Result<String, SysError> {
+        serde_json::to_string(&calculate_capacity(&args)?).map_err(Into::into)
+    }
+}
+
+fn builtin_skill(skill_id: &str) -> Option<&'static str> {
+    BUILTIN_SKILLS
+        .iter()
+        .find(|skill| skill.id == skill_id)
+        .map(|skill| skill.content)
+}
+
+fn collect_builtin_skills(
+    skills: &mut Vec<SkillInfo>,
+    seen_ids: &mut std::collections::HashSet<String>,
+) {
+    for builtin in BUILTIN_SKILLS {
+        if seen_ids.contains(builtin.id) {
+            continue;
+        }
+        let Some(frontmatter) = parse_frontmatter(builtin.content) else {
+            log::warn(format!(
+                "built-in skill '{}' has invalid frontmatter",
+                builtin.id
+            ));
+            continue;
+        };
+        seen_ids.insert(builtin.id.to_string());
+        skills.push(SkillInfo {
+            id: builtin.id.to_string(),
+            name: frontmatter.name,
+            description: frontmatter.description,
+        });
+    }
+}
+
+fn finite_positive(value: f64, field: &str) -> Result<f64, SysError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(SysError::ApiError(format!(
+            "{field} must be finite and greater than zero"
+        )))
+    }
+}
+
+fn floor_to_u64(value: f64) -> u64 {
+    if value <= 0.0 {
+        0
+    } else if value >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        value.floor() as u64
+    }
+}
+
+fn calculate_capacity(args: &CapacityModelArgs) -> Result<CapacityModel, SysError> {
+    let shared = finite_positive(args.shared_mib, "shared_mib")?;
+    let marginal = finite_positive(args.marginal_mib_per_agent, "marginal_mib_per_agent")?;
+    if args.agents == Some(0) {
+        return Err(SysError::ApiError(
+            "agents must be greater than zero when supplied".to_string(),
+        ));
+    }
+
+    let evaluated = args.agents.map(|agents| {
+        let count = agents as f64;
+        let total = shared + count * marginal;
+        (total, total / count, count * (shared + marginal) / total)
+    });
+
+    let memory_bound = match args.usable_memory_mib {
+        Some(budget) if budget.is_finite() && budget >= 0.0 => {
+            Some(floor_to_u64((budget - shared).max(0.0) / marginal))
+        }
+        Some(_) => {
+            return Err(SysError::ApiError(
+                "usable_memory_mib must be finite and non-negative".to_string(),
+            ));
+        }
+        None => None,
+    };
+
+    let net_stream_bound = match (args.host_net_streams, args.net_streams_per_agent) {
+        (Some(limit), Some(per_agent)) => {
+            let per_agent = finite_positive(per_agent, "net_streams_per_agent")?;
+            let available = limit.saturating_sub(args.fixed_net_streams.unwrap_or(0));
+            Some(floor_to_u64(available as f64 / per_agent))
+        }
+        (None, Some(per_agent)) => {
+            finite_positive(per_agent, "net_streams_per_agent")?;
+            None
+        }
+        _ => None,
+    };
+
+    let file_descriptor_bound = match (
+        args.usable_file_descriptors,
+        args.file_descriptors_per_agent,
+    ) {
+        (Some(limit), Some(per_agent)) => {
+            let per_agent = finite_positive(per_agent, "file_descriptors_per_agent")?;
+            let available = limit.saturating_sub(args.fixed_file_descriptors.unwrap_or(0));
+            Some(floor_to_u64(available as f64 / per_agent))
+        }
+        (None, Some(per_agent)) => {
+            finite_positive(per_agent, "file_descriptors_per_agent")?;
+            None
+        }
+        _ => None,
+    };
+
+    const POLLABLES_PER_CALL: u64 = 256;
+    let poll_set_bound = args.ipc_subscriptions.map(|subscriptions| {
+        POLLABLES_PER_CALL
+            .saturating_sub(subscriptions)
+            .saturating_sub(1)
+    });
+
+    let candidates = [
+        ("memory", memory_bound),
+        ("net_streams", net_stream_bound),
+        ("file_descriptors", file_descriptor_bound),
+        ("poll_set", poll_set_bound),
+    ];
+    let derived_bound = candidates.iter().filter_map(|(_, value)| *value).min();
+    let bound_sources = derived_bound.map_or_else(Vec::new, |minimum| {
+        candidates
+            .iter()
+            .filter_map(|(name, value)| (*value == Some(minimum)).then_some(*name))
+            .collect()
+    });
+
+    Ok(CapacityModel {
+        formula: "M(N) = shared_mib + N * marginal_mib_per_agent",
+        shared_mib: shared,
+        marginal_mib_per_agent: marginal,
+        asymptotic_density_gain: (shared + marginal) / marginal,
+        evaluated_agents: args.agents,
+        evaluated_total_mib: evaluated.map(|value| value.0),
+        evaluated_mib_per_agent: evaluated.map(|value| value.1),
+        evaluated_density_gain: evaluated.map(|value| value.2),
+        memory_bound_agents: memory_bound,
+        net_stream_bound_agents: net_stream_bound,
+        file_descriptor_bound_agents: file_descriptor_bound,
+        poll_set_bound_clients: poll_set_bound,
+        derived_bound_agents: derived_bound,
+        bound_sources,
+    })
 }
 
 /// Read a file as UTF-8 via the typed WIT fs host fn.
@@ -283,6 +502,61 @@ fn parse_frontmatter(content: &str) -> Option<SkillFrontmatter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_capacity_skill_has_valid_frontmatter() {
+        let content = builtin_skill("capacity-planning").expect("built-in skill");
+        let frontmatter = parse_frontmatter(content).expect("valid frontmatter");
+        assert_eq!(frontmatter.name, "capacity-planning");
+        assert!(frontmatter.description.contains("attached agents"));
+    }
+
+    #[test]
+    fn capacity_model_matches_measured_shared_runtime_example() {
+        let model = calculate_capacity(&CapacityModelArgs {
+            shared_mib: 223.0,
+            marginal_mib_per_agent: 5.734,
+            agents: Some(8),
+            usable_memory_mib: Some(1024.0),
+            host_net_streams: Some(512),
+            fixed_net_streams: Some(8),
+            net_streams_per_agent: Some(1.0),
+            usable_file_descriptors: Some(4096),
+            fixed_file_descriptors: Some(128),
+            file_descriptors_per_agent: Some(3.0),
+            ipc_subscriptions: Some(16),
+        })
+        .expect("valid model");
+
+        assert!((model.evaluated_total_mib.expect("total") - 268.872).abs() < 0.001);
+        assert!((model.evaluated_density_gain.expect("gain") - 6.806).abs() < 0.01);
+        assert!((model.asymptotic_density_gain - 39.894).abs() < 0.01);
+        assert_eq!(model.memory_bound_agents, Some(139));
+        assert_eq!(model.net_stream_bound_agents, Some(504));
+        assert_eq!(model.file_descriptor_bound_agents, Some(1322));
+        assert_eq!(model.poll_set_bound_clients, Some(239));
+        assert_eq!(model.derived_bound_agents, Some(139));
+        assert_eq!(model.bound_sources, vec!["memory"]);
+    }
+
+    #[test]
+    fn capacity_model_rejects_arbitrary_or_invalid_inputs() {
+        let error = calculate_capacity(&CapacityModelArgs {
+            shared_mib: 0.0,
+            marginal_mib_per_agent: 1.0,
+            agents: None,
+            usable_memory_mib: None,
+            host_net_streams: None,
+            fixed_net_streams: None,
+            net_streams_per_agent: None,
+            usable_file_descriptors: None,
+            fixed_file_descriptors: None,
+            file_descriptors_per_agent: None,
+            ipc_subscriptions: None,
+        })
+        .expect_err("zero shared cost is not a measured model");
+        assert!(error.to_string().contains("shared_mib"));
+    }
 
     #[test]
     fn test_parse_valid_frontmatter() {
