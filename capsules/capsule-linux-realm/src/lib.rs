@@ -13,9 +13,8 @@ mod resources;
 
 use aos_realm_9p::Session as Plan9Session;
 use aos_realm_machine::{
-    CheckpointBinding, CheckpointDigest, HostRequestFailure, Machine as Rv64Machine,
-    MachineCheckpoint, MachineConfig as Rv64MachineConfig, RV64_SMOKE_PROGRAM,
-    RV64_SUPERVISOR_PROGRAM, SliceOutcome,
+    HostRequestFailure, Machine as Rv64Machine, MachineConfig as Rv64MachineConfig,
+    RV64_SMOKE_PROGRAM, RV64_SUPERVISOR_PROGRAM, SliceOutcome,
 };
 use aos_realm_runtime::{
     CAT_GUEST, ECHO_GUEST, ExecutionReport, GUEST_PIPELINE_GUEST, HostFault, MINI_SHELL_GUEST,
@@ -26,7 +25,9 @@ use aos_realm_runtime::{
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
-use backend::{DEFAULT_LINUX_BACKEND_ID, LinuxMachine};
+use backend::{
+    DEFAULT_LINUX_BACKEND_ID, LINUX_PREWARM_CHECKPOINT_BYTES, LinuxMachine, LinuxSliceOutcome,
+};
 #[cfg(test)]
 use host::NativeTestWorkspace9p;
 #[cfg(not(test))]
@@ -59,9 +60,6 @@ const MAX_LINUX_CWD_BYTES: usize = 64;
 const LINUX_DEFAULT_CWD: &str = "/home/agent";
 #[cfg(target_arch = "wasm32")]
 const LINUX_COOPERATE_TOPIC: &str = "realm.v1.linux.cooperate";
-const AOS_LINUX_IMAGE: &[u8] = include_bytes!("../linux/Image");
-const AOS_LINUX_SOURCES: &[u8] = include_bytes!("../linux/SOURCES.lock");
-const AOS_LINUX_PREWARM_32M: &[u8] = include_bytes!("../linux/prewarm-32m.aos-machine");
 const LINUX_PREWARM_RAM_BYTES: usize = 32 * 1024 * 1024;
 
 #[cfg(not(test))]
@@ -170,6 +168,31 @@ struct ExecResponse {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StatusArgs {}
+
+const CLI_RUN_COMMAND: &str = "realm";
+const CLI_RESULT_TOPIC_PREFIX: &str = "cli.v1.command.result.";
+const MAX_CLI_REQUEST_ID_BYTES: usize = 64;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CliRunRequest {
+    req_id: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Debug)]
+enum CliAction {
+    Status,
+    Exec(ExecArgs),
+}
+
+#[derive(Debug)]
+struct CliRunOutput {
+    output: String,
+    exit_code: u8,
+}
 
 #[derive(Debug, Serialize)]
 struct MountStatus {
@@ -394,6 +417,178 @@ impl LinuxRealm {
         let principal = caller_principal()?;
         actor::status_resident(&principal, args, RealmResources::load()?)
     }
+
+    /// Serve the provider-scoped `astrid capsule ... realm` command without
+    /// requiring an MCP broker. The CLI remains an authenticated Astrid
+    /// uplink; this is not a host shell escape hatch.
+    #[astrid::interceptor("cli_run_linux_realm")]
+    fn cli_run(&self, request: CliRunRequest) -> Result<(), SysError> {
+        if !is_valid_cli_request_id(&request.req_id) {
+            log::warn("linux-realm: rejected malformed CLI request id");
+            return Ok(());
+        }
+
+        let req_id = request.req_id.clone();
+        let topic = format!("{CLI_RESULT_TOPIC_PREFIX}{req_id}");
+        let result = run_cli_request(request);
+        let payload = match result {
+            Ok(result) => serde_json::json!({
+                "req_id": req_id,
+                "exit_code": result.exit_code,
+                "output": ensure_trailing_newline(result.output),
+            }),
+            Err(error) => serde_json::json!({
+                "req_id": req_id,
+                "exit_code": 1,
+                "output": "",
+                "error": error.to_string(),
+            }),
+        };
+        ipc::publish_json(&topic, &payload)
+    }
+}
+
+fn run_cli_request(request: CliRunRequest) -> Result<CliRunOutput, SysError> {
+    if request.command != CLI_RUN_COMMAND {
+        return Err(SysError::ApiError(format!(
+            "unsupported CLI command `{}`; expected `{CLI_RUN_COMMAND}`",
+            request.command
+        )));
+    }
+    let action = parse_cli_action(&request.args).map_err(SysError::ApiError)?;
+    let principal = caller_principal()?;
+    let (output, exit_code) = match action {
+        CliAction::Status => (
+            actor::status_resident(&principal, StatusArgs::default(), RealmResources::load()?)?,
+            0,
+        ),
+        CliAction::Exec(args) => {
+            let output = actor::execute_resident(&principal, args, RealmResources::load()?)?;
+            let parsed = parse_realm_json(&output)?;
+            let exit_code = cli_exit_code(&parsed);
+            return Ok(CliRunOutput {
+                output: pretty_json_value(&parsed)?,
+                exit_code,
+            });
+        }
+    };
+    Ok(CliRunOutput {
+        output: pretty_json(&output)?,
+        exit_code,
+    })
+}
+
+fn parse_cli_action(args: &[String]) -> Result<CliAction, String> {
+    let Some(action) = args.first().map(String::as_str) else {
+        return Err(cli_usage());
+    };
+    match action {
+        "status" if args.len() == 1 => Ok(CliAction::Status),
+        "boot" if args.len() == 1 => Ok(CliAction::Exec(cli_exec("linux-boot", vec![], None))),
+        "shutdown" if args.len() == 1 => {
+            Ok(CliAction::Exec(cli_exec("linux-shutdown", vec![], None)))
+        }
+        "sh" => {
+            let (cwd, operands) = parse_cli_cwd(&args[1..])?;
+            if operands.len() != 1 {
+                return Err(format!(
+                    "realm sh requires exactly one quoted script\n{}",
+                    cli_usage()
+                ));
+            }
+            Ok(CliAction::Exec(cli_exec(
+                "linux-sh",
+                vec![operands[0].clone()],
+                cwd,
+            )))
+        }
+        "exec" => {
+            let (cwd, operands) = parse_cli_cwd(&args[1..])?;
+            let Some((command, command_args)) = operands.split_first() else {
+                return Err(format!("realm exec requires a command\n{}", cli_usage()));
+            };
+            Ok(CliAction::Exec(cli_exec(
+                command,
+                command_args.to_vec(),
+                cwd,
+            )))
+        }
+        "help" | "--help" | "-h" => Err(cli_usage()),
+        _ => Err(format!(
+            "unknown or malformed realm action `{action}`\n{}",
+            cli_usage()
+        )),
+    }
+}
+
+fn parse_cli_cwd(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    if args.first().map(String::as_str) != Some("--cwd") {
+        return Ok((None, args.to_vec()));
+    }
+    let Some(cwd) = args.get(1) else {
+        return Err("--cwd requires an absolute guest path".to_string());
+    };
+    Ok((Some(cwd.clone()), args[2..].to_vec()))
+}
+
+fn cli_exec(command: &str, args: Vec<String>, cwd: Option<String>) -> ExecArgs {
+    ExecArgs {
+        program: None,
+        command: Some(command.to_string()),
+        args,
+        cwd,
+        fuel: None,
+        max_output_bytes: None,
+    }
+}
+
+fn cli_usage() -> String {
+    "usage: realm status | boot | sh [--cwd PATH] '<script>' | shutdown | exec [--cwd PATH] <command> [args...]".to_string()
+}
+
+fn is_valid_cli_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CLI_REQUEST_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f') || byte == b'-')
+}
+
+fn pretty_json(value: &str) -> Result<String, SysError> {
+    pretty_json_value(&parse_realm_json(value)?)
+}
+
+fn parse_realm_json(value: &str) -> Result<serde_json::Value, SysError> {
+    serde_json::from_str(value)
+        .map_err(|error| SysError::ApiError(format!("Realm returned malformed JSON: {error}")))
+}
+
+fn pretty_json_value(value: &serde_json::Value) -> Result<String, SysError> {
+    serde_json::to_string_pretty(value)
+        .map_err(|error| SysError::ApiError(format!("failed to render Realm result: {error}")))
+}
+
+fn cli_exit_code(response: &serde_json::Value) -> u8 {
+    let outcome = response
+        .get("outcome")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let status = response
+        .get("exit_status")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| u8::try_from(value).ok());
+    if matches!(outcome, "ready" | "completed" | "stopped" | "exited") {
+        status.unwrap_or(0)
+    } else {
+        status.filter(|status| *status != 0).unwrap_or(1)
+    }
+}
+
+fn ensure_trailing_newline(mut value: String) -> String {
+    if !value.ends_with('\n') {
+        value.push('\n');
+    }
+    value
 }
 
 fn caller_principal() -> Result<String, SysError> {
@@ -769,39 +964,16 @@ fn execute_linux_resident_cooperatively(
     if booted {
         *workspace_9p = None;
         let restored_prewarm = limits.memory_bytes == LINUX_PREWARM_RAM_BYTES;
-        let resident = if restored_prewarm {
-            let binding = CheckpointBinding::new(
-                CheckpointDigest::hash(AOS_LINUX_IMAGE),
-                CheckpointDigest::hash(AOS_LINUX_SOURCES),
-            );
-            let checkpoint = MachineCheckpoint::decode(AOS_LINUX_PREWARM_32M, binding)
-                .map_err(|error| SysError::ApiError(error.to_string()))?;
-            if checkpoint.ram_bytes() != limits.memory_bytes
-                || checkpoint.max_console_bytes() != HARD_MAX_OUTPUT_BYTES
-            {
-                return Err(SysError::ApiError(
-                    "Linux prewarm checkpoint resources do not match admitted resources"
-                        .to_string(),
-                ));
-            }
-            LinuxMachine::from_reference(checkpoint.into_machine())
-        } else {
-            let mut resident = LinuxMachine::new_reference(Rv64MachineConfig {
+        let resident = LinuxMachine::new(
+            Rv64MachineConfig {
                 ram_bytes: limits.memory_bytes,
                 // Console chunks are drained after every scheduling slice. The
                 // invocation-wide output ceiling is enforced below.
                 max_console_bytes: HARD_MAX_OUTPUT_BYTES,
-            })
-            .map_err(|error| SysError::ApiError(error.to_string()))?;
-            resident
-                .boot_linux(
-                    AOS_LINUX_IMAGE,
-                    &[],
-                    "earlycon=sbi console=hvc0 init=/init panic=-1",
-                )
-                .map_err(|error| SysError::ApiError(error.to_string()))?;
-            resident
-        };
+            },
+            restored_prewarm,
+        )
+        .map_err(SysError::ApiError)?;
         *machine = Some(resident);
 
         if restored_prewarm {
@@ -878,7 +1050,8 @@ fn execute_linux_resident_cooperatively(
     machine
         .as_mut()
         .expect("booted or pre-existing machine")
-        .push_console_input(input.as_bytes());
+        .push_console_input(input.as_bytes())
+        .map_err(SysError::ApiError)?;
 
     let remaining_fuel = limits.fuel.saturating_sub(fuel_consumed);
     let remaining_output = limits.output_bytes.saturating_sub(stdout.len());
@@ -971,7 +1144,9 @@ fn drive_linux_until(
                 suspensions,
             });
         }
-        let report = machine.run_slice(remaining.min(LINUX_SLICE_STEPS));
+        let report = machine
+            .run_slice(remaining.min(LINUX_SLICE_STEPS))
+            .map_err(SysError::ApiError)?;
         fuel_consumed = fuel_consumed.saturating_add(report.steps_executed);
         if stdout.len().saturating_add(report.console.len()) > output_bytes {
             return Ok(LinuxDriveReport {
@@ -983,7 +1158,7 @@ fn drive_linux_until(
         }
         stdout.extend_from_slice(&report.console);
 
-        if matches!(report.outcome, SliceOutcome::Yielded) {
+        if matches!(report.outcome, LinuxSliceOutcome::Yielded) {
             suspensions = suspensions.saturating_add(1);
             cooperate()?;
         }
@@ -1007,12 +1182,12 @@ fn drive_linux_until(
         }
 
         match report.outcome {
-            SliceOutcome::Yielded => {}
-            SliceOutcome::Halted(status) => {
-                let status = if status.passed {
+            LinuxSliceOutcome::Yielded => {}
+            LinuxSliceOutcome::Halted { passed, code } => {
+                let status = if passed {
                     0
                 } else {
-                    i32::try_from(status.code).unwrap_or(i32::MAX)
+                    i32::try_from(code).unwrap_or(i32::MAX)
                 };
                 return Ok(LinuxDriveReport {
                     outcome: LinuxDriveOutcome::Halted(status),
@@ -1021,7 +1196,7 @@ fn drive_linux_until(
                     suspensions,
                 });
             }
-            SliceOutcome::HostRequest(request) => {
+            LinuxSliceOutcome::HostRequest(request) => {
                 if request.channel == LINUX_HOME_9P_CHANNEL {
                     if plan9.home.is_none() {
                         *plan9.home = Some(new_home_9p_session()?);
@@ -1032,6 +1207,14 @@ fn drive_linux_until(
                         .expect("home session inserted")
                         .serve(&request.message);
                     log_plan9_failure("home", &request.message, &response);
+                    if response.len() > request.max_response_bytes {
+                        machine
+                            .fail_9p_request(request.id, HostRequestFailure::Failed)
+                            .map_err(SysError::ApiError)?;
+                        return Err(SysError::ApiError(
+                            "home 9P response exceeds the machine's admitted maximum".to_string(),
+                        ));
+                    }
                     machine
                         .complete_9p_request(request.id, &response)
                         .map_err(|error| SysError::ApiError(error.to_string()))?;
@@ -1045,6 +1228,15 @@ fn drive_linux_until(
                         .expect("workspace session inserted")
                         .serve(&request.message);
                     log_plan9_failure("workspace", &request.message, &response);
+                    if response.len() > request.max_response_bytes {
+                        machine
+                            .fail_9p_request(request.id, HostRequestFailure::Failed)
+                            .map_err(SysError::ApiError)?;
+                        return Err(SysError::ApiError(
+                            "workspace 9P response exceeds the machine's admitted maximum"
+                                .to_string(),
+                        ));
+                    }
                     machine
                         .complete_9p_request(request.id, &response)
                         .map_err(|error| SysError::ApiError(error.to_string()))?;
@@ -1056,9 +1248,9 @@ fn drive_linux_until(
                 suspensions = suspensions.saturating_add(1);
                 cooperate()?;
             }
-            SliceOutcome::Trapped(trap) => {
+            LinuxSliceOutcome::Trapped(trap) => {
                 return Ok(LinuxDriveReport {
-                    outcome: LinuxDriveOutcome::Trapped(trap.to_string()),
+                    outcome: LinuxDriveOutcome::Trapped(trap),
                     stdout,
                     fuel_consumed,
                     suspensions,
@@ -1114,7 +1306,11 @@ fn linux_failure_report(
         LinuxDriveOutcome::FuelExhausted => ("fuel-exhausted", None, None),
         LinuxDriveOutcome::OutputLimit => ("host-fault", None, Some("output-limit".to_string())),
         LinuxDriveOutcome::Trapped(message) => ("trapped", None, Some(message)),
-        LinuxDriveOutcome::Halted(status) => ("exited", Some(status), None),
+        LinuxDriveOutcome::Halted(status) => (
+            "halted",
+            Some(if status == 0 { 1 } else { status }),
+            Some("Linux halted before reaching the requested supervisor boundary".to_string()),
+        ),
         LinuxDriveOutcome::Ready | LinuxDriveOutcome::Command(_) => (
             "trapped",
             None,
@@ -1605,7 +1801,7 @@ fn status_response(
         linux_backend: DEFAULT_LINUX_BACKEND_ID,
         linux_cold_start: "bound-prewarm-32m-or-full-boot",
         linux_prewarm_ram_bytes: LINUX_PREWARM_RAM_BYTES,
-        linux_prewarm_checkpoint_bytes: AOS_LINUX_PREWARM_32M.len(),
+        linux_prewarm_checkpoint_bytes: LINUX_PREWARM_CHECKPOINT_BYTES,
         linux_prewarm_authority: "signed-capsule-artifact+fresh-principal-providers",
         linux_state: actor.linux.state,
         linux_residency: "principal-affine-store",
@@ -1690,6 +1886,97 @@ fn io_error_name(error: RealmIoError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_actions_are_structured_and_preserve_one_quoted_script() {
+        let action = parse_cli_action(&[
+            "sh".to_string(),
+            "--cwd".to_string(),
+            "/workspace/project".to_string(),
+            "set -e; cargo test".to_string(),
+        ])
+        .expect("valid shell action");
+        let CliAction::Exec(args) = action else {
+            panic!("shell action must execute the Realm");
+        };
+        assert_eq!(args.command.as_deref(), Some("linux-sh"));
+        assert_eq!(args.cwd.as_deref(), Some("/workspace/project"));
+        assert_eq!(args.args, ["set -e; cargo test"]);
+
+        let action = parse_cli_action(&[
+            "exec".to_string(),
+            "--cwd".to_string(),
+            "/home/agent".to_string(),
+            "write-file".to_string(),
+            "proof.txt".to_string(),
+            "durable".to_string(),
+        ])
+        .expect("valid generic action");
+        let CliAction::Exec(args) = action else {
+            panic!("generic action must execute the Realm");
+        };
+        assert_eq!(args.command.as_deref(), Some("write-file"));
+        assert_eq!(args.cwd.as_deref(), Some("/home/agent"));
+        assert_eq!(args.args, ["proof.txt", "durable"]);
+    }
+
+    #[test]
+    fn cli_actions_reject_ambiguous_or_incomplete_shell_input() {
+        let error = parse_cli_action(&["sh".to_string(), "echo".to_string(), "split".to_string()])
+            .expect_err("a shell script must remain one CLI argument");
+        assert!(error.contains("one quoted script"));
+
+        let error = parse_cli_action(&["sh".to_string(), "--cwd".to_string()])
+            .expect_err("cwd needs a value");
+        assert!(error.contains("--cwd requires"));
+    }
+
+    #[test]
+    fn cli_request_ids_cannot_steer_result_topics() {
+        assert!(is_valid_cli_request_id("0123456789abcdef0123456789abcdef"));
+        assert!(is_valid_cli_request_id(
+            "01234567-89ab-cdef-0123-456789abcdef"
+        ));
+        for invalid in ["", "ABC", "../../escape", "segment.result", "wild*"] {
+            assert!(!is_valid_cli_request_id(invalid), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn cli_exit_status_cannot_report_a_failed_boot_as_success() {
+        assert_eq!(
+            cli_exit_code(&serde_json::json!({"outcome": "ready", "exit_status": null})),
+            0
+        );
+        assert_eq!(
+            cli_exit_code(&serde_json::json!({"outcome": "completed", "exit_status": 7})),
+            7
+        );
+        assert_eq!(
+            cli_exit_code(&serde_json::json!({"outcome": "halted", "exit_status": 0})),
+            1
+        );
+        assert_eq!(
+            cli_exit_code(&serde_json::json!({"outcome": "host-fault", "exit_status": null})),
+            1
+        );
+    }
+
+    #[test]
+    fn an_unrequested_linux_halt_is_a_failure_even_when_sbi_reports_success() {
+        let report = linux_failure_report(
+            DEFAULT_LINUX_BACKEND_ID,
+            LinuxDriveOutcome::Halted(0),
+            b"AOS STORAGE FAILED\r\n".to_vec(),
+            42,
+            3,
+            true,
+        );
+        assert_eq!(report.outcome, "halted");
+        assert_eq!(report.exit_status, Some(1));
+        assert!(report.fault.is_some());
+        assert!(!report.command_completed);
+    }
 
     #[derive(Default)]
     struct TestHost;
@@ -2489,7 +2776,7 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
             )
         );
         assert!(json.contains("\"reconfigure_on_next_exec\":false"));
-        assert!(json.contains("\"path_contract_version\":2"));
+        assert!(json.contains("\"path_contract_version\":3"));
         assert!(json.contains("\"physical_host_paths_visible\":false"));
         assert!(json.contains(
             "\"cwd_defaults\":[{\"consumer\":\"nested-core-wasm\",\"cwd\":\"/workspace\"},{\"consumer\":\"linux-guest\",\"cwd\":\"/home/agent\"},{\"consumer\":\"bare-rv64\",\"cwd\":null}]"

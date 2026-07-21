@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::host::{REALM_HOME, REALM_TMP, canonical_guest_path, resolve_guest_path};
 
-pub(crate) const PATH_CONTRACT_VERSION: u32 = 2;
+pub(crate) const PATH_CONTRACT_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -41,7 +41,7 @@ pub(crate) enum ReferenceStability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum MountDurability {
-    OuterCow,
+    HostManaged,
     PrincipalPersistent,
     Ephemeral,
     RealmRam,
@@ -50,7 +50,7 @@ pub(crate) enum MountDurability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CommitPolicy {
-    OuterPromotion,
+    HostManaged,
     AtomicGeneration,
     DiscardOnRealmStop,
 }
@@ -234,8 +234,8 @@ fn mount_descriptors(consumer: PathConsumer) -> Vec<MountDescriptor> {
             guest_root: "/workspace",
             declared_resource_root: "cwd://",
             mode: "read-write",
-            durability: MountDurability::OuterCow,
-            commit_policy: CommitPolicy::OuterPromotion,
+            durability: MountDurability::HostManaged,
+            commit_policy: CommitPolicy::HostManaged,
             projection: workspace_projection,
             reference_stability: ReferenceStability::Invocation,
         },
@@ -283,7 +283,7 @@ mod tests {
             9,
         )
         .expect("workspace path context");
-        let cwd = context.active_cwd.expect("active cwd");
+        let cwd = context.active_cwd.as_ref().expect("active cwd");
 
         assert_eq!(cwd.mount, MountRole::Workspace);
         assert_eq!(cwd.mount_id, None);
@@ -293,6 +293,13 @@ mod tests {
         assert_eq!(cwd.display_path, "Workspace/src/lib.rs");
         assert_eq!(cwd.reference_stability, ReferenceStability::Invocation);
         assert_eq!(cwd.generation_at_admission, None);
+        let workspace = context
+            .mounts
+            .iter()
+            .find(|mount| mount.role == MountRole::Workspace)
+            .expect("workspace descriptor");
+        assert_eq!(workspace.durability, MountDurability::HostManaged);
+        assert_eq!(workspace.commit_policy, CommitPolicy::HostManaged);
     }
 
     #[test]

@@ -8,6 +8,8 @@ members = [
     "capsules/capsule-linux-realm/crates/realm-9p",
     "capsules/capsule-linux-realm/crates/realm-runtime",
     "capsules/capsule-linux-realm/crates/realm-vfs",
+    "capsules/capsule-linux-realm/crates/realm-vcpu-protocol",
+    "capsules/capsule-linux-realm/crates/realm-vcpu-worker",
     "capsules/capsule-agents",
     "capsules/capsule-cli",
     "capsules/capsule-context-engine",
@@ -42,6 +44,8 @@ aos-realm-machine = { path = "capsules/capsule-linux-realm/crates/realm-machine"
 aos-realm-9p = { path = "capsules/capsule-linux-realm/crates/realm-9p" }
 aos-realm-runtime = { path = "capsules/capsule-linux-realm/crates/realm-runtime" }
 aos-realm-vfs = { path = "capsules/capsule-linux-realm/crates/realm-vfs" }
+aos-realm-vcpu-protocol = { path = "capsules/capsule-linux-realm/crates/realm-vcpu-protocol" }
+aos-realm-vcpu-worker = { path = "capsules/capsule-linux-realm/crates/realm-vcpu-worker" }
 axum = "0.8"
 blake3 = "1.8.5"
 clap = { version = "4.6", features = ["derive"] }

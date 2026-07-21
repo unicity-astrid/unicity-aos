@@ -1,0 +1,17 @@
+format=astrid-compute-core-wasm-1
+worker_id=linux-vcpu
+protocol=aos-linux-vcpu-1
+target=wasm32-unknown-unknown
+rust_toolchain=nightly-2026-04-04
+rustc_commit=2972b5e59f1c5529b6ba770437812fd83ab4ebd4
+build_std=std,panic_abort
+source_paths=remapped
+target_features=atomics,bulk-memory,mutable-globals
+link_import_memory=true
+link_shared_memory=true
+link_stack_after_static_data=true
+static_data_base=65536
+initial_memory_bytes=67108864
+maximum_memory_bytes=536870912
+worker_bytes=13341894
+worker_blake3=d935bf594b0282f29fe2cb90ab5c4cd10fed0446feab1df70fe7d0edd9f4a9fb

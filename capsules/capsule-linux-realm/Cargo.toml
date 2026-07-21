@@ -19,7 +19,8 @@ aos-realm-machine = { workspace = true }
 aos-realm-9p = { workspace = true }
 aos-realm-runtime = { workspace = true }
 aos-realm-vfs = { workspace = true }
-astrid-sdk = { workspace = true }
+aos-realm-vcpu-protocol = { workspace = true }
+astrid-sdk = { git = "https://github.com/astrid-runtime/sdk-rust.git", rev = "1c7382c545c152eb242fb782a2c13559b8f6c09a", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

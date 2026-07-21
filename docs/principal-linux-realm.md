@@ -309,16 +309,19 @@ of individual principal KV values. A build gets three distinct stores:
 ```text
 /usr and /nix/store-like package paths   immutable signed system generation
 /home/agent                              principal-durable config and caches
-/workspace                               invocation-admitted COW work tree
+/workspace                               invocation-admitted host-managed work tree
 ```
 
-The first development implementation may materialize the admitted workspace into
-a block-local staging generation, run the build there, and return a typed diff for
-outer promotion. `cwd://` remains the authority and source identity; staging does
-not grant access to a physical host path or silently commit changes. This avoids
-making compiler performance depend on one audited 9P round trip for every small
-metadata operation while preserving the user's ability to inspect and promote the
-Linux-produced artifact.
+The first development implementation may materialize an admitted workspace into
+a block-local staging generation, run the build there, and return a typed diff
+when the outer attachment requires promotion. `cwd://` remains the authority and
+source identity. Git-managed Astrid workspaces are deliberately direct today, so
+Linux edits are immediately visible and Git is the rollback mechanism; non-Git
+workspaces may instead use Astrid's OS-level COW backend. The capsule must report
+that distinction as host-managed rather than inventing a universal transaction.
+Block-local staging remains valuable for avoiding one audited 9P round trip per
+small compiler metadata operation, but its final commit semantics belong to the
+outer workspace policy.
 
 The first Rust acceptance proof is deliberately difficult to fake:
 
@@ -441,9 +444,9 @@ This is now the first useful agent-workbench slice: static musl 1.2.6, BusyBox
 1.38.0, `ash`, `/proc`, `/sys`, and a UID/GID-1000 agent home execute inside the
 measured RV64 guest. It is not Bash, Debian, or the completed distribution. It
 has no Python, in-guest compiler, package manager, network, PTY, or durable disk.
-It does mount the current invocation's Astrid COW workspace through synchronous
-9P before each shell call. Its static `/dev` contract is only console, null, zero,
-random, and urandom: there are no raw-memory, block, network, graphics,
+It does mount the current invocation's host-managed Astrid workspace through
+synchronous 9P before each shell call. Its static `/dev` contract is only
+console, null, zero, random, and urandom: there are no raw-memory, block, network, graphics,
 additional TTY, or PTY nodes. The kernel disables legacy `TIOCSTI`, both PTY
 families, IP/Unix networking, network devices, raw memory/port devices, input,
 and media support. `CONFIG_NET` remains only because Linux's 9P core depends on
@@ -690,17 +693,18 @@ The executable seed uses that shape through two different consumers. Their
 workspace plumbing differs, while the home object is shared:
 
 - nested core-WASM programs see the principal-scoped versioned `/home/agent`, the
-  invocation's Astrid `cwd://` copy-on-write `/workspace`, and the principal's
+  invocation's host-managed Astrid `cwd://` workspace, and the principal's
   ephemeral `/tmp` through audited host imports;
 - Linux sees the same selected principal-home generation at `/home/agent` and
-  the current invocation's Astrid `cwd://` COW workspace at `/workspace` through
-  separate bounded 9P channels. Its `/tmp` and root filesystem remain warm-RAM
-  state.
+  the current invocation's host-managed Astrid `cwd://` workspace at
+  `/workspace` through separate bounded 9P channels. Its `/tmp` and root
+  filesystem remain warm-RAM state.
 
-That distinction is intentional. A command running inside the realm cannot silently
-commit source-tree changes merely because it can write its projected workspace.
-Promotion is an outer authority decision and must produce an audit record. The
-current seed does not yet expose a realm-side commit tool. Linux accepts
+That distinction is intentional. The outer runtime chooses the workspace policy:
+Git-managed workspaces are direct and mutations are immediately visible, while a
+non-Git workspace may be COW-backed and require an audited outer promotion. The
+Realm cannot select or widen that policy and does not expose a realm-side commit
+tool. Linux accepts
 `/workspace` and normalized descendants as CWDs only because the file transport
 now mounts that exact capability. `/home/agent` names the same durable Realm home
 for both consumers; the execution receipt carries the generation selected before
@@ -742,7 +746,7 @@ PathRef {
 }
 
 MountContext {
-  version: 2
+  version: 3
   consumer: NestedCoreWasm | LinuxGuest | BareRv64
   active_cwd: Optional<PathRef>
   mounts: [MountDescriptor]
@@ -760,7 +764,7 @@ The current projection matrix is deliberately candid:
 
 | Role | Person display | Guest spelling | Astrid resource | Nested WASM | Linux now | Stability |
 | --- | --- | --- | --- | --- | --- | --- |
-| Workspace | `Workspace/src/lib.rs` | `/workspace/src/lib.rs` | `cwd://src/lib.rs` | mounted COW | mounted COW during invocation | invocation |
+| Workspace | `Workspace/src/lib.rs` | `/workspace/src/lib.rs` | `cwd://src/lib.rs` | host-managed mount | host-managed mount during invocation | invocation |
 | Agent home | `Agent Home/.config/aos` | `/home/agent/.config/aos` | principal Realm home URI | mounted durable generation | mounted durable generation | principal generation |
 | Temporary | `Temporary Files/job.log` | `/tmp/job.log` | principal Realm temp URI | mounted ephemeral | guest RAM only | Realm boot |
 
@@ -830,7 +834,7 @@ attachment ID nor an epoch: all prior workspace FIDs are discarded before a new
 invocation can bind its workspace. The remaining identity work is to have the
 runtime supply an opaque attachment ID and epoch, carry it through typed receipts
 and audit, and reject a stale reference before entering Linux. Transport choice
-does not change the path identity or Astrid's outer promotion requirement.
+does not change the path identity or Astrid's outer workspace policy.
 
 ### 6.2 What is the driver?
 
@@ -844,7 +848,7 @@ Linux VFS and 9P client
   -> bounded Rust 9P server
   -> channel 1: CAS-selected principal-home adapter
      channel 2: Astrid cwd:// adapter
-  -> invocation-scoped COW workspace capability
+  -> invocation-scoped host-managed workspace capability
 ```
 
 The in-kernel transport is the guest driver in the conventional Linux sense. It
@@ -1225,7 +1229,7 @@ output-limit failure, or cooperative-host failure also discards uncertain RAM.
 Runtime idle eviction, unload, and daemon restart destroy the Store and therefore
 the VM. Principal Realm home state is attached to Linux over channel 1 and remains
 durable across those boundaries. The invocation workspace is attached
-independently on every shell call and retains Astrid's COW/promotion semantics.
+independently on every shell call and retains Astrid's host-selected semantics.
 `linux_realm_status` exposes home and workspace as mounted, temporary storage as
 guest-RAM-only, `linux_home_persistent=true`, and
 `linux_rootfs_persistent=false` rather than calling the whole VM durable.
@@ -1295,14 +1299,15 @@ harts in one host thread with a fixed scheduling quantum. True host-parallel har
 remain optional because they add races to snapshots, metering, devices, and
 reproducibility without improving cross-principal isolation.
 
-### 7.2 Generic parallel compute boundary — design only, not active
+### 7.2 Generic parallel compute boundary — implemented, pre-1.0 contract held
 
 True host-parallel harts must not become a Linux-specific host function or an
 implicit runtime optimization. They require one generic Astrid compute-group
 boundary that can also serve tensor kernels, media transforms, local inference,
 game simulation, compilation, databases, and other bounded parallel capsule
-workloads. This is a proposed public runtime surface; no current manifest field
-or WIT name should be treated as implemented.
+workloads. That substrate is now implemented on the coordinated feature
+branches. It is executable development evidence, not a released interface: the
+canonical WIT draft remains deliberately unmerged until Astrid 1.0.
 
 The stable public contract owns control and authority:
 
@@ -1363,20 +1368,24 @@ onto its worker pool. “Automatic” means no smaller arbitrary capsule ceiling
 never means unbounded native thread creation. A changed active envelope requires
 a cold Realm restart until CPU hotplug semantics are explicitly implemented.
 
-This public surface requires an Astrid RFC, canonical WIT and manifest-schema
-work, runtime implementation, and additive SDK bindings. The WIT should expose
-typed resources, region slices, budgets, lifecycle, cancellation, outcomes, and
-accounting rather than pretending application payload bytes are a universal
-type. SDKs can then layer ergonomic `ComputeGroup`, parallel-map, tensor, and
-Realm-hart adapters over the same primitive.
+The feature branches now carry the RFC, WIT draft, `[[component]]` with
+`type = "compute-worker"`, runtime implementation, and additive SDK bindings.
+The WIT exposes typed resources, region slices, budgets, lifecycle,
+cancellation, outcomes, and accounting rather than pretending application
+payload bytes are a universal type. SDKs can layer ergonomic `ComputeGroup`,
+parallel-map, tensor, and Realm-hart adapters over the same primitive without
+putting those application meanings in the kernel.
 
-Before activation it must prove aggregate fuel charging under simultaneous
-workers, shared memory counted exactly once, principal separation, worker-pool
-backpressure, cancellation fan-out, no worker survival after foreground return,
-deterministic-mode replay, worker crash containment, and denial of undeclared
-worker artifacts or excess parallelism. Wasmtime shared-memory support is not
-enough by itself: its current resource-limiter gaps must be closed by Astrid's
-own admission and ledger before the feature is safe for managed use.
+The current executable tests prove deterministic queue ordering, true concurrent
+workers over one shared memory, forced interruption of non-cooperative startup
+and jobs, crash containment, operator fuel ceilings, aggregate ledger release,
+principal-separated reservations, up-front memory reservation including direct
+worker growth, and denial of invalid hashes, imports, ranges, symlinks, and path
+escapes. The host boundary separately proves that live groups and jobs are bound
+to the opening principal. Fleet-scale pool fairness, repeated cancellation races,
+and long-lived service pressure still need soak evidence before release.
+Wasmtime shared-memory support is not treated as policy: Astrid admission and
+ledgers remain the authority.
 
 Current upstream references:
 
@@ -1765,8 +1774,8 @@ compatibility.
 - live `pwd` returned `/workspace`; `write-file` followed by `cat` returned exact
   bytes from both `/workspace` and `/home/agent`;
 - after a full daemon stop/start, `/home/agent/persist.txt` retained its exact
-  contents while the unpromoted `/workspace/realm-live.txt` disappeared, matching
-  the declared outer-promotion contract;
+  contents while the unpromoted `/workspace/realm-live.txt` in that non-Git
+  fixture disappeared, matching its selected outer-promotion contract;
 - a second authenticated principal, `realm_alice`, received its own tool result
   identity and an `io-not-found` fault for the default principal's durable
   `persist.txt`; it wrote and read `alice-only.txt`, while the default principal
@@ -2058,6 +2067,53 @@ was changed by the Realm increment. The Realm still must not enter the default
 distribution until a current broker and invocation path are part of the supported
 CE set rather than test-installed companions.
 
+### Generic-compute Linux evidence recorded on 2026-07-21
+
+- Astrid core commit `43c1282b23c13b3c50cfebd94eafe6ca88d4c7e0`
+  admits hash-pinned `compute-worker` assets, retains principal-bound groups
+  between calls, reserves worker memory before execution, and implements the
+  already-frozen Astrid file-handle resource. It also gives the frozen
+  filesystem contract real `stat` versus `lstat` semantics: following metadata
+  cannot traverse an escaping final link, while non-following metadata can
+  inspect the confined link entry itself. The paired SDK commit is
+  `1c7382c545c152eb242fb782a2c13559b8f6c09a`; RFC commit `b0c77e4` and WIT
+  draft commit `0a90e89` remain feature-branch artifacts. No WIT PR is opened or
+  merged before the planned 1.0 contract decision;
+- the Linux vCPU worker is a 13,341,894-byte core-Wasm module built by exact
+  `nightly-2026-04-04` rustc commit
+  `2972b5e59f1c5529b6ba770437812fd83ab4ebd4` and
+  admitted as
+  `blake3:d935bf594b0282f29fe2cb90ab5c4cd10fed0446feab1df70fe7d0edd9f4a9fb`.
+  Its build remaps toolchain, Cargo registry, and repository source paths, so
+  the signed module does not encode a builder's home directory or depend on a
+  moving `nightly` alias.
+  Its controller retains Astrid host authority; the worker imports only the
+  shared compute memory and operates the RV64 machine protocol;
+- core validation passed all 580 `astrid-capsule` tests, all 34 `astrid-vfs`
+  tests, and warning-denied clippy. The Realm passed 58 controller/machine tests
+  and three worker tests, including restoration inside the real generic compute
+  runtime rather than a mock;
+- current Astrid 0.10.4 `astrid-build` produced a 4.4 MiB archive with SHA-256
+  `5135109a68f561cc55cf1250f31a08364add1ad40359e08807f416f83047cdec`.
+  Its archive contains `aos_linux_realm.wasm`, the manifest, and both the signed
+  worker bytes and lock metadata. The isolated daemon loaded component hash
+  `605a8cdef2b3a6bd6ee85b50927bc259e52c85161fb158e36f795f0020b7d6ee`;
+- a live guest restored the prewarm checkpoint as Realm boot 10, executed Linux
+  6.18.39 on `riscv64` as UID/GID 1000, and returned a version-3 path receipt.
+  The receipt identifies `/workspace` as the real `cwd://` resource with
+  `host-managed` durability and commit policy, never as a physical host path;
+- from Linux, BusyBox read the host workspace's real Cargo manifest, created a
+  file, read it, renamed it, appended to it, and reported the exact 35-byte
+  length. The host observed the renamed file with exact bytes and no source-name
+  residue. After a full daemon restart Linux read the same workspace bytes and
+  also recovered `built-inside-linux` from the principal's generation-2
+  `/home/agent/boot-proof.txt`;
+- the host ran out of disk during one isolated shutdown and audit SST flush.
+  After only regenerable build outputs were reclaimed, SurrealKV replayed all
+  1,254 pending WAL batches, removed the orphaned partial SST, and Astrid verified
+  the complete audit chain before loading any capsule. This is recovery evidence,
+  not permission to operate without a disk-capacity reserve.
+
 ## 16. Ordered implementation milestones
 
 ### Milestone A: nested process proof
@@ -2073,7 +2129,7 @@ CE set rather than test-installed companions.
 ### Milestone B: files and persistence
 
 - [x] implement normalized, non-escaping path resolution;
-- [x] mount a principal-private durable home, projected COW workspace, and
+- [x] mount a principal-private durable home, host-managed workspace, and
   principal-private temporary namespace for nested core-WASM programs;
 - [x] define a versioned typed path context that distinguishes guest, Astrid, and
   person-facing paths and reports Linux's mounted home/workspace and boot-local
@@ -2240,8 +2296,9 @@ The design must be tested against at least these scenarios:
 | Revocation occurs during network I/O | Connection closes and stale descriptor fails |
 | Delegated caller uses realm | Only exact delegated realm rights are available |
 | Realm is deleted | Keys/handles revoked and durable blocks become collectible |
-| Guest writes projected workspace | Change remains in Astrid COW until outer promotion |
-| Daemon restarts before promotion | Durable home remains; staged workspace is discarded |
+| Guest writes a Git-managed workspace | Host workspace changes immediately; Git remains the rollback mechanism |
+| Guest writes a non-Git COW workspace | Change remains staged until outer promotion |
+| Daemon restarts before COW promotion | Durable home remains; staged workspace is discarded |
 | Actor restarts and PID 1 is reused | Boot sequence advances; the identity tuple remains unique |
 | Principal B executes while A is warm | B receives a distinct machine, PID namespace, counters, and boot sequence |
 | Actor principal bound is exhausted | New execution fails before Realm state is initialized |
@@ -2583,8 +2640,9 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
 - [ ] add principal-owned background job handles with status, logs, wait,
   cancel, deadline, output sink, and eviction policy before allowing any guest
   process to survive a foreground result;
-- [ ] stream outer workspace COW copy-up and promotion so modifying a lower
-  file is no longer subject to the runtime's separate 50 MiB transition limit;
+- [ ] stream the optional outer workspace COW copy-up and promotion so modifying
+  a lower file is no longer subject to the runtime's separate 50 MiB transition
+  limit;
 - [ ] specify portable workspace mode mutation in the canonical filesystem WIT
   and SDK rather than inventing a Linux-Realm-only host call;
 - [x] attach Linux `/home/agent` over a second 9P channel to the selected
@@ -2625,21 +2683,21 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   principal;
 - [ ] add deterministic virtual SMP within one principal-owned Realm after that
   lifecycle and metering boundary is executable;
-- [ ] specify the generic principal-owned compute-group RFC and canonical WIT
-  before adding true host-parallel harts; keep lifecycle, budgets, cancellation,
-  shared-region ownership, and accounting generic while Linux remains an SDK
-  consumer;
-- [ ] implement aggregate-metered signed worker groups and prove deterministic
-  and parallel modes against the same protocol before allowing
-  `linux_vcpus=auto` to allocate multiple native workers;
+- [x] specify the generic principal-owned compute-group RFC and WIT draft while
+  keeping the canonical WIT branch deliberately unmerged until 1.0; lifecycle,
+  budgets, cancellation, shared-region ownership, and accounting remain generic
+  while Linux is an SDK consumer;
+- [x] implement aggregate-metered signed worker groups and prove deterministic
+  and parallel modes against the same protocol; Linux remains one vCPU until its
+  guest-visible SMP, device, and snapshot semantics are separately implemented;
 - [x] expose bounded pipe creation, signed child creation, direct-child wait, and
   direct-child signal through the private guest ABI without allowing jobs to
   escape foreground actor accounting;
 - [ ] restore duplicate-delivery safety at the SDK/runtime direct-tool boundary;
   the former manual actor replay cache is not reachable from the affined tool
   method because the call ID is not exposed;
-- [ ] add an outer workspace diff/promote workflow; realm code must not silently
-  commit its own COW projection;
+- [ ] add an outer workspace diff/promote workflow for attachments that request
+  staging; realm code must not override the host-selected workspace policy;
 - [ ] put a supported MCP broker/invocation front door in the CE distribution
   before selecting the realm by default; the live fresh-principal proof required
   separately installing the current capsule CLI and `sage-mcp`;
@@ -2698,8 +2756,8 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
 The Linux-bearing executable artifact is now a useful static workbench: pinned
 Linux 6.18.39 serial-boots the Buildroot 2026.05.1 rootfs, executes token-bound
 BusyBox `ash` commands as UID 1000 across separate invocations, preserves warm
-userspace RAM, mounts the invocation's COW workspace through a bounded 9P/SBI
-portal, mounts the selected principal-home generation through a second channel,
+userspace RAM, mounts the invocation's host-managed workspace through a bounded
+9P/SBI portal, mounts the selected principal-home generation through a second channel,
 powers down cleanly, restarts, and reads the same home bytes after cold boot.
 The next storage artifact is an immutable base plus durable root overlay; the
 workspace remains a narrower invocation-scoped capability. The firmware contract

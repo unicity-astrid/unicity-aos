@@ -1,0 +1,16 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+    # Keep the low 64 KiB outside Rust data, stack, and heap as a guard against
+    # invalid low descriptor offsets. Static data starts there; the stack
+    # follows the data. The controller's bounded descriptor lives at 63 MiB.
+    "-C", "link-arg=--no-stack-first",
+    "-C", "link-arg=--global-base=65536",
+    "-C", "link-arg=--import-memory=astrid_compute,memory",
+    "-C", "link-arg=--shared-memory",
+    "-C", "link-arg=--initial-memory=67108864",
+    "-C", "link-arg=--max-memory=536870912",
+]

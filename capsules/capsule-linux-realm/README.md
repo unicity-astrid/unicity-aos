@@ -82,7 +82,7 @@ boot state:
 
 ```text
 /home/agent   durable realm home
-/workspace    Astrid COW projection of the invocation workspace
+/workspace    host-managed projection of the invocation workspace
 /tmp          principal-private temporary subtree
 ```
 
@@ -90,10 +90,13 @@ The nested core-WASM lane can use all three projections today. Its `/home/agent`
 is a versioned filesystem. One principal-scoped KV value atomically selects its
 current generation; immutable manifests and file contents are stored as
 BLAKE3-addressed blobs beneath the caller's private realm store. It survives
-daemon restart. Its `/workspace` is deliberately transactional: writes enter
-Astrid's copy-on-write view and do not change the source workspace until the
-outer Astrid workflow promotes them. An unpromoted workspace overlay is
-discarded on daemon restart. `/tmp` is not durable state.
+daemon restart. Its `/workspace` follows the policy of the outer Astrid
+attachment. Git-managed workspaces are shared directly so edits are immediately
+visible to the person and ordinary Git remains the rollback mechanism. A
+non-Git workspace may instead be supplied through Astrid's OS-level copy-on-write
+backend and require outer promotion. The capsule cannot distinguish or enlarge
+that policy, so its receipt reports `host-managed` rather than claiming one
+durability model. `/tmp` is not durable state.
 
 The Linux lane mounts the principal's selected Realm generation at
 `/home/agent` and the invocation's `cwd://` resource at `/workspace` before
@@ -119,10 +122,11 @@ frame maps to positional read or write, truncate maps to `set-len`, flush maps
 to the appropriate host sync operation, and rename is atomic inside the same
 workspace VFS. Large files therefore stream without the former 10 MiB
 whole-file compatibility ceiling. File handles are scoped to the admitted
-invocation and cannot become hidden durable state. Astrid's existing 50 MiB
-outer COW copy-up/promotion ceiling still applies when an operation must copy a
-lower-layer workspace file; removing that separate boundary requires a
-streaming COW implementation, not a larger capsule buffer.
+invocation and cannot become hidden durable state. When the outer runtime uses
+its current copy-on-write backend, its separate 50 MiB copy-up/promotion ceiling
+still applies to lower-layer files; direct Git-managed workspaces do not take
+that path. Removing the conditional COW ceiling requires a streaming outer
+implementation, not a larger capsule buffer.
 
 The default realm name is `default`, giving one durable home per principal. The
 principal is never accepted from tool input. It comes from the kernel-stamped
@@ -311,8 +315,9 @@ failure, runtime eviction, daemon restart, or capsule unload destroys RAM.
 RAM residency is therefore an evictable cache, not durable process state.
 Linux `/home/agent` is the durable Realm home and status reports that persistent
 storage separately from `linux_rootfs_persistent=false`. `/workspace` has
-Astrid's outer COW and promotion semantics; it is not evidence of a durable
-Linux root filesystem.
+the outer attachment's host-managed semantics—direct for Git-managed workspaces,
+conditionally COW-backed otherwise. It is not evidence of a durable Linux root
+filesystem.
 
 Resource authority is hierarchical. Astrid's admin-owned principal profile is
 the outer CPU, linear-memory, storage, process, and timeout boundary. The capsule
@@ -364,6 +369,8 @@ invocation-scoped workspace are now behind this lifecycle.
 From the `aos-ce` repository:
 
 ```sh
+rustup toolchain install nightly-2026-04-04 --profile minimal --component rust-src
+capsules/capsule-linux-realm/scripts/build-vcpu-worker.sh --check
 cargo test -p aos-realm-abi -p aos-realm-core -p aos-realm-machine -p aos-realm-runtime \
   -p aos-realm-vfs -p aos-linux-realm \
   --target "$(rustc -vV | sed -n 's/^host: //p')"

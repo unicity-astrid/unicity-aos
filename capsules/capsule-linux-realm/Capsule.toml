@@ -16,6 +16,14 @@ id = "linux-realm"
 file = "aos_linux_realm.wasm"
 type = "executable"
 
+# Hash-pinned core-Wasm machine object. It imports only shared memory; the
+# executable controller retains every Astrid host capability and 9P provider.
+[[component]]
+id = "linux-vcpu"
+file = "assets/linux-vcpu.wasm"
+type = "compute-worker"
+hash = "blake3:d935bf594b0282f29fe2cb90ab5c4cd10fed0446feab1df70fe7d0edd9f4a9fb"
+
 # The realm sees only the invocation CWD, its private subtree of the caller's
 # principal home, and its principal-scoped tmp subtree. It has no host_process.
 [capabilities]
@@ -35,12 +43,19 @@ linux_max_file_bytes = { type = "integer", default = "0", request = "Maximum byt
 [publish]
 "tool.v1.execute.*.result" = { wit = "@unicity-astrid/wit/types/tool-call-result" }
 "tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response" }
+"cli.v1.command.result.*" = { wit = "opaque" }
 
 [subscribe]
 "tool.v1.execute.linux_realm_exec" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_linux_realm_exec" }
 "tool.v1.execute.linux_realm_status" = { wit = "@unicity-astrid/wit/types/tool-call", handler = "tool_execute_linux_realm_status" }
 "tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request", handler = "tool_describe" }
+"cli.v1.command.run.aos-linux-realm" = { wit = "opaque", handler = "cli_run_linux_realm" }
 # No capsule publishes this topic. Linux execution owns a private subscription
 # and performs recv(0) between RV64 slices so the Astrid run-loop watchdog sees
 # a real cooperative host yield instead of one long CPU-bound WASM turn.
 "realm.v1.linux.cooperate" = "opaque"
+
+[[command]]
+name = "realm"
+kind = "cli"
+description = "Inspect, boot, and run commands in the principal's Linux Realm"
