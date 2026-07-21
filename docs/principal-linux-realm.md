@@ -142,6 +142,7 @@ The decision was made against current upstream state rather than project names:
 | v86 tag `latest`, commit [`2f1346b`](https://github.com/copy/v86/tree/2f1346b0e7d88d4cbbbcc05fe15b4e369c3de23f) | BSD-licensed full x86 PC with Linux and virtio devices | Browser/JavaScript orchestration and runtime generation of new WebAssembly modules are fundamental to its fast path; Astrid's nested interpreter does not provide that host |
 | `rvemu` 0.0.11, current commit [`f55eb5b`](https://github.com/d0iasm/rvemu/tree/f55eb5b376f22a73c0cf2630848c03f8d5c93922) | MIT Rust RV64GC, Sv39, PLIC/CLINT/virtio, and a `wasm32-unknown-unknown` build | The Wasm UART calls the browser DOM, construction runs host `dtc`, RAM eagerly allocates 1 GiB, execution is unbounded, and its Linux recipe remains on 4.19; it is a reference donor, not a dependency |
 | `semu` commit [`fd08129`](https://github.com/sysprog21/semu/tree/fd0812970c3c934b46e4897284894e9705355b50) with rolling `prebuilt` tag [`c722c11`](https://github.com/sysprog21/semu/tree/c722c1140770a67e638fd8154446825563ebd738) | Active MIT full-system Linux proof with virtio block, filesystem, network, input, sound, and 2D GPU | It is an RV32IMA C host program with native host integrations, not an embeddable RV64 core-WASM component; its device behavior remains valuable comparison evidence |
+| `vpod` release [`v0.4.0`](https://github.com/capsulerun/vpod/tree/v0.4.0), tag commit `3e56b8b`, audited main `08bf0fb` | Apache-2.0 Rust RV64GC, decoded-block cache, copy-on-write RAM, virtio devices, delta snapshots, and a working Alpine 3.23 RV64 snapshot | Its shipped product wraps the machine in a WASI 0.2 component and Wasmtime CLI, and its filesystem/network devices currently own ambient host effects. Those wrappers are not an Astrid backend, but the engine-free core is a viable implementation donor |
 
 The first `aos-rv64-virt-v0` slice is intentionally smaller than all four. It has
 explicitly admitted contiguous RAM, a slice-driven interpreter for the initial
@@ -151,6 +152,124 @@ instructions, returns `AOS RV64\n` from virtual UART, and halts with the standar
 pass value. The result names `aos-rv64-interpreter` as its backend. Fuel exhaustion,
 architectural traps, RAM bounds, and serial-output exhaustion all remain bounded
 by the outer Realm rather than escaping into host behavior.
+
+### 2.5 Development backend and WASI boundary, 2026-07-21
+
+The first Linux image proved the machine, policy, lifecycle, and workspace portal,
+but it also established a hard workload boundary. Its 32 MiB Buildroot initramfs,
+256 MiB machine ceiling, instruction-at-a-time RV64 interpreter, and synchronous
+per-file 9P path are not a credible Rust compiler environment. Adding `rustc` to
+that initramfs would make an image larger without making compilation useful.
+
+The current direction is therefore two conforming backends, not two operating
+systems:
+
+| Profile | Purpose | Required property |
+|---|---|---|
+| `aos-rv64-interpreter` | Executable specification, recovery image, exact traps, denied-path tests, trace oracle | Small, deterministic, wholly AOS-owned, and allowed to be slow |
+| `aos-rv64-block` | Agent development workbench, package tools, compilation, and larger repositories | Engine-free core-WASM implementation with decoded-block execution, snapshot boot, local block storage, and the same outer Realm contract |
+
+The official `vpod` v0.4.0 macOS launcher was used only as comparison evidence.
+Its snapshot booted Linux 6.18.0-3-lts and Alpine 3.23.0 as `riscv64`; it did not
+contain Rust, and package networking was not usable in that run. Separately, its
+unmodified `riscv-core` and `machine` crates both passed `cargo check` for
+`wasm32-unknown-unknown`. This proves that the useful CPU, memory, virtio, and
+snapshot layers do not require Wasmtime, a browser, JavaScript workers, or a WASI
+engine. It does not yet prove compiler performance, Astrid device integration, or
+semantic equivalence.
+
+The adaptation boundary is strict:
+
+```text
+Linux process
+  -> Linux syscall and VFS
+  -> AOS-owned virtual CPU and devices
+  -> typed backend suspension or portal request
+  -> Realm policy and principal-scoped resource admission
+  -> existing astrid:* host import
+  -> runtime capability check, meter, audit, and physical provider
+```
+
+No embedded Wasmtime instance, browser worker, JavaScript shim, sidecar daemon,
+ambient host directory, or independent network stack may sit beside that path.
+The backend may retire guest instructions and model devices; it may not decide
+which principal, file tree, endpoint, clock, secret, GPU, or durable generation is
+authorised.
+
+WASI is not itself an execution engine and is not rejected as an interface
+lineage. Astrid may expose WASI-derived or WASI-compatible host functions where
+their resource semantics are useful. Such a provider must be an Astrid provider:
+
+- every file descriptor or stream originates from an admitted Astrid resource;
+- preopens are derived from principal capabilities rather than ambient process
+  directories;
+- sockets are created only through an admitted network portal;
+- wall clock, monotonic clock, entropy, terminal, and poll behavior remain typed,
+  metered host effects;
+- revocation, attenuation, audit, and principal identity remain Astrid concepts;
+- implementing a WASI interface does not select Wasmtime, WASI Preview 2's
+  reference host, or any other engine.
+
+For the first accelerated backend, the engine-free CPU/machine source should be
+isolated behind an AOS-owned backend interface and pinned to exact upstream bytes
+with its Apache-2.0 notices. Floating Git dependencies and the upstream WASI/CLI
+crates are not admissible distribution dependencies. The adapter must replace or
+disable upstream `std::fs`, socket, clock, terminal, registry, and snapshot-path
+behavior before the backend is allowed to serve a principal.
+
+The backend interface is private until two implementations exist. It needs typed
+operations for admission, bounded execution, console input/output, device
+requests, clean shutdown, checkpoint/restore, and accounting. A backend result
+must carry the stable semantic outcome plus backend-specific counters; callers
+must never branch on an implementation's Rust type or ambient host feature.
+
+Backend admission requires differential conformance against the reference
+machine:
+
+1. boot the same minimal kernel/userland and replay a fixed command corpus;
+2. compare exit status, stdout/stderr bytes, filesystem diff, device-request
+   sequence, halt reason, and policy denials;
+3. prove malformed DMA ranges, forged completions, output exhaustion, step
+   exhaustion, revocation, and cancellation fail closed;
+4. record where instruction counters differ and retain an outer work unit that is
+   stable enough for principal policy;
+5. run compiler and repository workloads only after semantic cases pass.
+
+Compiler storage must also change. Immutable distro and toolchain bytes belong in
+a content-addressed block image or snapshot, not the initramfs and not thousands
+of individual principal KV values. A build gets three distinct stores:
+
+```text
+/usr and /nix/store-like package paths   immutable signed system generation
+/home/agent                              principal-durable config and caches
+/workspace                               invocation-admitted COW work tree
+```
+
+The first development implementation may materialize the admitted workspace into
+a block-local staging generation, run the build there, and return a typed diff for
+outer promotion. `cwd://` remains the authority and source identity; staging does
+not grant access to a physical host path or silently commit changes. This avoids
+making compiler performance depend on one audited 9P round trip for every small
+metadata operation while preserving the user's ability to inspect and promote the
+Linux-produced artifact.
+
+The first Rust acceptance proof is deliberately difficult to fake:
+
+1. status names the accelerated backend, exact distro generation, exact Rust and
+   Cargo versions, compiler digest, and admitted memory/CPU/storage budgets;
+2. the Realm creates `Cargo.toml` and `src/main.rs` under its mounted
+   `/workspace`, without a host-side compiler preparing the result;
+3. `cargo build --release` executes inside the RV64 Linux guest;
+4. `file target/release/<name>` reports a RISC-V 64-bit Linux ELF, not Mach-O and
+   not a host cross-build;
+5. the same guest executes that exact ELF and returns the expected output;
+6. the outer workspace exposes the artifact through its typed diff/promotion
+   flow; and
+7. the receipt binds principal, source generation, distro, toolchain, dependency
+   set, backend, budgets, output digest, exit status, and promotion decision.
+
+Until all seven pass, the accurate claim is “Linux Realm with a shell and mounted
+workspace,” not “Rust development environment.”
 
 The second slice is pinned to the January 2026 ratified
 [RISC-V privileged release](https://docs.riscv.org/reference/isa/v20260120/priv/priv-index.html):
@@ -1876,6 +1995,9 @@ CE set rather than test-installed companions.
 
 - choose and document the WASM-Linux toolchain target;
 - build a reproducible package set;
+- publish an immutable development generation containing exact Rust, Cargo,
+  linker, libc, Git, and certificate identities;
+- pass the seven-step in-guest Rust acceptance proof and retain its receipt;
 - run Bash conformance cases;
 - add Node or another agent CLI runtime only after its JIT/process assumptions are
   explicit;
@@ -1884,9 +2006,14 @@ CE set rather than test-installed companions.
 
 ### Milestone F: backend substitution
 
-- run the same realm contract over a faster host-managed nested-WASM runtime;
+- define the private backend interface at the principal-machine boundary;
+- isolate and pin an engine-free decoded-block RV64 candidate without its WASI
+  launcher or ambient host devices;
+- implement Astrid filesystem, block, console, clock, and optional network
+  adapters over existing principal-scoped imports;
+- run the same Realm contract over the accelerated core-WASM backend;
 - optionally add a hardware Linux VM backend for native hosts;
-- compare behavior with the interpreter oracle;
+- compare behavior and denied paths with the interpreter oracle;
 - retain the same principal storage and capability boundaries.
 
 ## 17. Theory and adversarial scenario matrix
@@ -1941,14 +2068,20 @@ Record rather than assume:
 - process spawn and pipe latency;
 - filesystem small-file and sequential throughput;
 - overlay amplification and flush latency;
+- decoded-block cache hit rate and invalidation cost;
+- snapshot restore latency, dirty-page count, and checkpoint size;
+- workspace staging and diff/promotion latency;
 - memory per process and per realm;
 - fuel-to-wall-time stability;
 - Git, Python, compilation, and capsule-build workloads;
 - artifact export and verification time.
 
-The interpreter may be slow and still be the right first reference backend. A
-faster backend is admitted only after it reproduces the reference traces and
-preserves revocation and accounting.
+The interpreter is now classified as the reference backend rather than the first
+compiler backend. A faster engine-free core-WASM backend is admitted only after it
+reproduces the reference traces and preserves revocation and accounting. A quick
+shell boot from a prewarmed snapshot is evidence for snapshot design, not evidence
+that `rustc`, Cargo dependency traversal, linking, or large workspace I/O is
+usable.
 
 ## 19. AOS Realm distribution and image policy
 
@@ -1988,6 +2121,15 @@ and agent applications become signed packages or selected system generations
 inside that distribution, not separately branded distros. The minimal system
 must remain capable of verifying and selecting a repaired generation even when a
 larger toolchain generation does not boot.
+
+“Latest” is resolved at generation-build time and then frozen. As of this design
+audit on 2026-07-21, the initial development-generation target is
+[Rust 1.97.1](https://blog.rust-lang.org/releases/latest/), released 2026-07-16,
+rather than the older compiler available in a convenient base distro. If that
+release cannot yet be reproduced for the selected RV64 libc, the image manifest
+must name the newest supported version and the blocking delta; it must not report
+the host's Rust version. Distribution updates create a new signed generation and
+never mutate a running principal's toolchain in place.
 
 Every image is immutable and identified by its manifest and block hashes. Package
 installation mutates only a realm overlay. Reproducible jobs name an exact base and
@@ -2094,10 +2236,11 @@ interfaces preserve every current capsule and let services opt in one at a time.
 
 The first implementation must resolve these with executable evidence:
 
-1. Is the measured Wasmi reference backend fast enough for the first filesystem
-   and compiler workloads, or should it remain only the semantic oracle?
-2. Should the internal guest ABI use named functions, a syscall dispatcher, WASI
-   compatibility, or generated shims?
+1. Which exact engine-free RV64 source subset should AOS pin or adapt, and should
+   its long-term ownership remain an in-tree backend or graduate to a separately
+   versioned machine crate after conformance is established?
+2. Which WASI resource interfaces are useful enough to implement as Astrid host
+   providers, without introducing a second engine, scheduler, or authority model?
 3. Which image shell should follow the WAT mini-shell once redirection and job
    records are available, before Bash becomes a conformance workload?
 4. Which retention and garbage-collection policy should preserve named
@@ -2106,8 +2249,9 @@ The first implementation must resolve these with executable evidence:
    single private block volume?
 6. How are guest continuations represented for `fork`, signals, and blocking calls?
 7. Which dynamic-code mechanism is allowed for Node and other JIT runtimes?
-8. Can BrowserPod/Cheerp technology be licensed or upstreamed usefully, or should it
-   remain comparison evidence only?
+8. Can BrowserPod/Cheerp technology be licensed or upstreamed usefully, or should
+   it remain comparison evidence only now that an Apache-2.0 engine-free RV64
+   candidate exists?
 9. Should binary compatibility target RV64, x86-64, or neither until the
    WASM-native package set is measured?
 10. At what stable boundary does a public realm WIT RFC become necessary?
@@ -2117,6 +2261,11 @@ The first implementation must resolve these with executable evidence:
     calls before principals may keep background jobs?
 13. Should idle principal machines be evicted, and if so which process, descriptor,
     and boot-generation conditions make eviction observable and safe?
+14. What outer work unit fairly meters decoded-block execution when exact retired
+    instruction counts and wall time differ from the reference interpreter?
+15. Should workspace staging become a general Astrid resource snapshot/diff
+    primitive, or remain a private Realm implementation until another capsule
+    needs the same operation?
 
 Decision 13 for the eventual explicit lifecycle: evict only an idle Realm with
 no foreground job, refuse implicit eviction of background work, flush its selected
@@ -2239,6 +2388,22 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   privileged-ISA semantics: reset M-mode, `mret` entry to S-mode, delegated
   S-mode ECALL, `sret`, exact `STR\n`, 31 charged steps, and 30 retired
   instructions;
+- [x] audit the Apache-2.0 `vpod` v0.4.0/current-main split, prove its engine-free
+  `riscv-core` and `machine` crates compile for `wasm32-unknown-unknown`, and run
+  its official snapshot only as separately labelled RV64 Linux comparison
+  evidence;
+- [ ] define and implement the private backend interface without changing the
+  Realm tool schema, then keep `aos-rv64-interpreter` as its first production
+  implementation;
+- [ ] pin or adapt the engine-free decoded-block CPU/machine subset, excluding
+  the upstream Wasmtime/WASI CLI and replacing ambient filesystem, socket, clock,
+  terminal, registry, and snapshot paths with Astrid-owned adapters;
+- [ ] pass reference-trace and denied-path conformance before selecting the
+  accelerated backend for a principal;
+- [ ] build an immutable AOS Realm development generation with the current
+  supported stable Rust/Cargo/linker/libc identities and enough measured memory
+  for compiler workloads;
+- [ ] complete the seven-step in-guest Rust build/run/artifact receipt proof;
 - [ ] define the attenuating capsule-to-realm job contract and migrate Forge as the
   first non-interactive consumer after artifact verification exists;
 - [ ] replace `aos-shell` in the default distro only after interactive and

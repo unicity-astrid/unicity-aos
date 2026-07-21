@@ -79,7 +79,7 @@ impl PrincipalRealm {
 
 #[derive(Default)]
 struct LinuxActivity {
-    machine: Option<Rv64Machine>,
+    machine: Option<LinuxMachine>,
     home_9p: Option<HomePlan9Session>,
     workspace_9p: Option<WorkspacePlan9Session>,
     boot_executions: u64,
@@ -171,7 +171,7 @@ impl LinuxActivity {
             realm: REALM_NAME,
             owner_principal: principal.to_string(),
             program: selected.name.to_string(),
-            execution_backend: selected.execution.backend(),
+            execution_backend: report.backend,
             argv: selected.argv,
             requested_cwd,
             cwd,
@@ -591,7 +591,7 @@ mod tests {
                 .realm_with_boot("alice", default, || Ok(7))
                 .expect("bind Alice");
             realm.linux.machine = Some(
-                Rv64Machine::new(Rv64MachineConfig {
+                LinuxMachine::new_reference(Rv64MachineConfig {
                     ram_bytes: HARD_MEMORY_BYTES,
                     max_console_bytes: HARD_MAX_OUTPUT_BYTES,
                 })

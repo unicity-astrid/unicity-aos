@@ -6,6 +6,7 @@
 //! Principal-scoped command and workspace adapter for the first AOS Realm.
 
 mod actor;
+mod backend;
 mod host;
 mod paths;
 mod resources;
@@ -24,6 +25,7 @@ use aos_realm_runtime::{
 use aos_realm_vfs::FsStatus;
 use astrid_sdk::prelude::*;
 use astrid_sdk::schemars;
+use backend::{DEFAULT_LINUX_BACKEND_ID, LinuxMachine};
 #[cfg(test)]
 use host::NativeTestWorkspace9p;
 #[cfg(not(test))]
@@ -216,6 +218,7 @@ struct StatusResponse {
     reserved_pipe_bytes: usize,
     next_process_id: Option<u64>,
     linux_lifecycle: &'static str,
+    linux_backend: &'static str,
     linux_state: &'static str,
     linux_residency: &'static str,
     linux_vcpus: u32,
@@ -594,6 +597,7 @@ fn execute_rv64(program: &[u8], limits: RunLimits) -> Result<ExecutionReport, Sy
 
 #[derive(Debug)]
 struct LinuxInvocationReport {
+    backend: &'static str,
     outcome: &'static str,
     exit_status: Option<i32>,
     fault: Option<String>,
@@ -624,7 +628,7 @@ struct LinuxDriveReport {
 }
 
 fn execute_linux_resident(
-    machine: &mut Option<Rv64Machine>,
+    machine: &mut Option<LinuxMachine>,
     home_9p: &mut Option<HomePlan9Session>,
     workspace_9p: &mut Option<WorkspacePlan9Session>,
     action: LinuxAction,
@@ -685,7 +689,7 @@ impl From<RunLimits> for LinuxInvocationLimits {
 }
 
 struct LinuxResidentState<'a> {
-    machine: &'a mut Option<Rv64Machine>,
+    machine: &'a mut Option<LinuxMachine>,
     home_9p: &'a mut Option<HomePlan9Session>,
     workspace_9p: &'a mut Option<WorkspacePlan9Session>,
 }
@@ -697,7 +701,7 @@ struct LinuxPlan9State<'a> {
 
 impl<'a> LinuxResidentState<'a> {
     fn new(
-        machine: &'a mut Option<Rv64Machine>,
+        machine: &'a mut Option<LinuxMachine>,
         home_9p: &'a mut Option<HomePlan9Session>,
         workspace_9p: &'a mut Option<WorkspacePlan9Session>,
     ) -> Self {
@@ -727,6 +731,9 @@ fn execute_linux_resident_cooperatively(
         home_9p,
         workspace_9p,
     } = state;
+    let backend = machine
+        .as_ref()
+        .map_or(DEFAULT_LINUX_BACKEND_ID, LinuxMachine::backend_id);
     if matches!(action, LinuxAction::Console | LinuxAction::Shell) && command.is_none() {
         return Err(SysError::ApiError(
             "Linux execution requires a validated command".to_string(),
@@ -735,6 +742,7 @@ fn execute_linux_resident_cooperatively(
     if action == LinuxAction::Shutdown && machine.is_none() {
         *workspace_9p = None;
         return Ok(LinuxInvocationReport {
+            backend,
             outcome: "stopped",
             exit_status: Some(0),
             fault: None,
@@ -754,7 +762,7 @@ fn execute_linux_resident_cooperatively(
 
     if booted {
         *workspace_9p = None;
-        let mut resident = Rv64Machine::new(Rv64MachineConfig {
+        let mut resident = LinuxMachine::new_reference(Rv64MachineConfig {
             ram_bytes: limits.memory_bytes,
             // Console chunks are drained after every scheduling slice. The
             // invocation-wide output ceiling is enforced below.
@@ -796,6 +804,7 @@ fn execute_linux_resident_cooperatively(
             *machine = None;
             *workspace_9p = None;
             return Ok(linux_failure_report(
+                backend,
                 report.outcome,
                 stdout,
                 fuel_consumed,
@@ -807,6 +816,7 @@ fn execute_linux_resident_cooperatively(
 
     if action == LinuxAction::Boot {
         return Ok(LinuxInvocationReport {
+            backend,
             outcome: "ready",
             exit_status: None,
             fault: None,
@@ -867,6 +877,7 @@ fn execute_linux_resident_cooperatively(
 
     match report.outcome {
         LinuxDriveOutcome::Command(status) => Ok(LinuxInvocationReport {
+            backend,
             outcome: "completed",
             exit_status: Some(status),
             fault: None,
@@ -881,6 +892,7 @@ fn execute_linux_resident_cooperatively(
             *machine = None;
             *workspace_9p = None;
             Ok(LinuxInvocationReport {
+                backend,
                 outcome: "stopped",
                 exit_status: Some(0),
                 fault: None,
@@ -896,6 +908,7 @@ fn execute_linux_resident_cooperatively(
             *machine = None;
             *workspace_9p = None;
             Ok(linux_failure_report(
+                backend,
                 outcome,
                 stdout,
                 fuel_consumed,
@@ -907,7 +920,7 @@ fn execute_linux_resident_cooperatively(
 }
 
 fn drive_linux_until(
-    machine: &mut Rv64Machine,
+    machine: &mut LinuxMachine,
     plan9: LinuxPlan9State<'_>,
     fuel: u64,
     output_bytes: usize,
@@ -1060,6 +1073,7 @@ fn log_plan9_failure(channel: &str, request: &[u8], response: &[u8]) {
 }
 
 fn linux_failure_report(
+    backend: &'static str,
     outcome: LinuxDriveOutcome,
     stdout: Vec<u8>,
     fuel_consumed: u64,
@@ -1078,6 +1092,7 @@ fn linux_failure_report(
         ),
     };
     LinuxInvocationReport {
+        backend,
         outcome,
         exit_status,
         fault,
@@ -1557,6 +1572,7 @@ fn status_response(
         reserved_pipe_bytes: actor.machine.reserved_pipe_bytes,
         next_process_id: actor.machine.next_process_id.map(|process| process.get()),
         linux_lifecycle: "lazy-principal-resident",
+        linux_backend: DEFAULT_LINUX_BACKEND_ID,
         linux_state: actor.linux.state,
         linux_residency: "principal-affine-store",
         linux_vcpus: 1,
