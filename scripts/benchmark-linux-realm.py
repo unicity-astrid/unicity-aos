@@ -94,7 +94,18 @@ def metadata() -> dict[str, Any]:
             "system": platform.system(),
             "release": platform.release(),
             "machine": platform.machine(),
+            "model": command_output(["sysctl", "-n", "machdep.cpu.brand_string"])
+            or platform.processor()
+            or None,
             "cpu_count": os.cpu_count(),
+        },
+        "tools": {
+            "python": platform.python_version(),
+            "rustc": command_output(["rustc", "-vV"]),
+            "qemu": command_output(["qemu-system-riscv64", "--version"]),
+            "docker_client": command_output(
+                ["docker", "version", "--format", "{{.Client.Version}}"]
+            ),
         },
         "artifacts": {
             "linux_image_sha256": sha256(IMAGE),
