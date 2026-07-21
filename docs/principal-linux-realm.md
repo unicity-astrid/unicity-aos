@@ -1295,6 +1295,95 @@ harts in one host thread with a fixed scheduling quantum. True host-parallel har
 remain optional because they add races to snapshots, metering, devices, and
 reproducibility without improving cross-principal isolation.
 
+### 7.2 Generic parallel compute boundary — design only, not active
+
+True host-parallel harts must not become a Linux-specific host function or an
+implicit runtime optimization. They require one generic Astrid compute-group
+boundary that can also serve tensor kernels, media transforms, local inference,
+game simulation, compilation, databases, and other bounded parallel capsule
+workloads. This is a proposed public runtime surface; no current manifest field
+or WIT name should be treated as implemented.
+
+The stable public contract owns control and authority:
+
+- open one named, signed, package-declared worker group for the verified
+  principal;
+- resolve requested or automatic parallelism against the principal profile and
+  global runtime pool;
+- allocate one fixed, principal-charged shared region and a bounded set of
+  worker instances;
+- dispatch typed work descriptors containing worker identity, an admitted
+  shared-region slice, entrypoint, and work budget;
+- join, cancel, query status, and return typed terminal reasons and aggregate
+  accounting;
+- select deterministic interleaving or true parallel execution without changing
+  the application protocol;
+- tie workers to the foreground invocation unless an independently admitted
+  durable job owns them.
+
+The runtime implementation beneath that contract is intentionally hidden:
+
+```text
+capsule supervisor
+  -> generic compute-group resource
+       -> signed worker Store 0 ---\
+       -> signed worker Store 1 ----+-> one bounded shared memory
+       -> signed worker Store N ---/
+       -> principal CPU ledger, deadline, cancellation, audit
+```
+
+Wasmtime compilation, native thread pooling, Store construction, shared-memory
+linking, wakeups, and scheduling are kernel mechanism. The kernel does not know
+about Linux harts, tensor dimensions, compiler jobs, or game entities. Those
+meanings remain in the capsule and its signed worker protocol. Worker module
+bytes cannot come from a tool argument; they are content-identified package
+assets admitted at install/load time.
+
+The worker data plane must not cross a host function per instruction or memory
+access. Workers operate directly on the admitted shared region for a bounded
+quantum and surface only scheduling boundaries or serialized effects. Device,
+filesystem, network, identity, and durable-state effects still return through
+the supervisor and their existing Astrid capabilities; joining a compute group
+grants no new effect authority.
+
+The resource hierarchy follows the existing Realm zero-means-delegate rule:
+
+```text
+effective parallelism = min(
+  requested value or automatic allocatable capacity,
+  operator principal vCPU/worker allowance,
+  runtime global worker-pool capacity,
+  implementation hard maximum
+)
+```
+
+Guest task count, virtual CPU count, and native worker count are separate. Linux
+may schedule many tasks onto fewer vCPUs, and Astrid may multiplex those vCPUs
+onto its worker pool. “Automatic” means no smaller arbitrary capsule ceiling; it
+never means unbounded native thread creation. A changed active envelope requires
+a cold Realm restart until CPU hotplug semantics are explicitly implemented.
+
+This public surface requires an Astrid RFC, canonical WIT and manifest-schema
+work, runtime implementation, and additive SDK bindings. The WIT should expose
+typed resources, region slices, budgets, lifecycle, cancellation, outcomes, and
+accounting rather than pretending application payload bytes are a universal
+type. SDKs can then layer ergonomic `ComputeGroup`, parallel-map, tensor, and
+Realm-hart adapters over the same primitive.
+
+Before activation it must prove aggregate fuel charging under simultaneous
+workers, shared memory counted exactly once, principal separation, worker-pool
+backpressure, cancellation fan-out, no worker survival after foreground return,
+deterministic-mode replay, worker crash containment, and denial of undeclared
+worker artifacts or excess parallelism. Wasmtime shared-memory support is not
+enough by itself: its current resource-limiter gaps must be closed by Astrid's
+own admission and ledger before the feature is safe for managed use.
+
+Current upstream references:
+
+- [Wasmtime shared-memory API](https://docs.wasmtime.dev/api/wasmtime/struct.SharedMemory.html)
+- [Wasmtime proposal support and resource-limiter caveats](https://docs.wasmtime.dev/stability-wasm-proposals.html)
+- [WebAssembly Component Model roadmap](https://github.com/WebAssembly/component-model)
+
 ## 8. Executable compatibility lanes
 
 There are two compatible long-term execution lanes behind the same realm API.
@@ -2536,6 +2625,13 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   principal;
 - [ ] add deterministic virtual SMP within one principal-owned Realm after that
   lifecycle and metering boundary is executable;
+- [ ] specify the generic principal-owned compute-group RFC and canonical WIT
+  before adding true host-parallel harts; keep lifecycle, budgets, cancellation,
+  shared-region ownership, and accounting generic while Linux remains an SDK
+  consumer;
+- [ ] implement aggregate-metered signed worker groups and prove deterministic
+  and parallel modes against the same protocol before allowing
+  `linux_vcpus=auto` to allocate multiple native workers;
 - [x] expose bounded pipe creation, signed child creation, direct-child wait, and
   direct-child signal through the private guest ABI without allowing jobs to
   escape foreground actor accounting;
