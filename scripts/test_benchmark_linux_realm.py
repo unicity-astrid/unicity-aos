@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -15,9 +16,33 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load Linux Realm benchmark")
 BENCHMARK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BENCHMARK)
+BASELINE = (
+    SCRIPT.parent.parent
+    / "benchmarks"
+    / "linux-realm"
+    / "2026-07-21-m2-ultra-9aa1885.jsonl"
+)
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_committed_baseline_is_complete_and_recomputes(self) -> None:
+        records = [json.loads(line) for line in BASELINE.read_text().splitlines()]
+        self.assertEqual(records[0]["git_commit"][:7], "9aa1885")
+        self.assertEqual(
+            len([record for record in records if record["kind"] == "sample"]),
+            120,
+        )
+        recorded = {
+            (record["engine"], record["scenario"]): record
+            for record in records
+            if record["kind"] == "summary"
+        }
+        recomputed = {
+            (record["engine"], record["scenario"]): record
+            for record in BENCHMARK.summarize(records)
+        }
+        self.assertEqual(recorded, recomputed)
+
     def test_hardware_profile_keeps_performance_fields_only(self) -> None:
         profile = BENCHMARK.parse_hardware_profile(
             "Chip: Apple M2 Ultra\n"

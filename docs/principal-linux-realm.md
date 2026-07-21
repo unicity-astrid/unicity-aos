@@ -2226,6 +2226,33 @@ peak and retained RSS, concurrent-principal scaling, and—after the development
 generation exists—compiler workloads. Native reference results must never be
 presented as end-to-end Astrid latency.
 
+### 18.2 First recorded baseline, 2026-07-21
+
+The raw 30-sample baseline after three discarded warmups is
+`benchmarks/linux-realm/2026-07-21-m2-ultra-9aa1885.jsonl`. It ran commit
+`9aa1885` on an Apple M2 Ultra with Rust 1.95.0 and QEMU 11.0.2. Both cold lanes
+used the exact checked-in Linux Image; QEMU was pinned to one vCPU and
+single-threaded TCG.
+
+| Engine and boundary | Median | p95 | Interpretation |
+| --- | ---: | ---: | --- |
+| AOS native reference, cold to PID 1 marker | 276.619 ms | 323.653 ms | Allocation, admission, and 15,899,016 charged steps |
+| AOS native reference, cold to principal bind | 276.619 ms | 323.653 ms | The home request occurs in the same observed slice |
+| QEMU TCG, process start to PID 1 marker | 263.929 ms | 313.747 ms | Exact Image; includes QEMU process and OpenSBI startup |
+| AOS checkpoint to bindable machine | 4.862 ms | 5.027 ms | Full digest/binding validation and sparse 32 MiB materialization; no provider completion |
+
+The AOS reference median is 4.8% behind QEMU TCG at the shared cold marker.
+Checkpoint admission is 56.9 times faster than the AOS cold median. This is the
+first evidence that the 57-times guest-work reduction also survives as a
+similar host-latency reduction inside the native machine boundary. It is not yet
+a claim that an MCP-visible shell returns in 4.862 ms: fresh principal provider
+completion, the remaining 277,798 guest steps, outer Wasm execution, broker
+routing, and client transport are outside this sample.
+
+Docker 29.1.2 was installed but its server was unavailable, so the raw result
+contains an explicit skip. No container, CRIU, QEMU snapshot, end-to-end AOS,
+RSS, or concurrent-principal comparison is inferred from that absence.
+
 ## 19. AOS Realm distribution and image policy
 
 The project should own the image recipe, package selection, signatures, and update
@@ -2547,6 +2574,11 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
 - [x] measure the reference interpreter, then implement the first justified fast
   path in the AOS-owned machine without importing another runtime or authority
   model;
+- [x] add a versioned raw-sample benchmark harness and record a 30-sample
+  exact-Image cold comparison against QEMU TCG plus integrity-checked checkpoint
+  admission on identified hardware;
+- [ ] extend that matrix through the signed outer-Wasm/MCP route, QEMU snapshot,
+  Docker start/unpause and CRIU where available, RSS, and concurrent principals;
 - [ ] pass reference-trace and denied-path conformance before selecting the
   accelerated backend for a principal;
 - [x] define a principal-free host-suspension checkpoint, add the sparse bound
