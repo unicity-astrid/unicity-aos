@@ -1919,6 +1919,47 @@ compatibility.
   status call reported the Linux machine warm with one completed command and
   no process or pipe records.
 
+### Principal-affine live evidence recorded on 2026-07-21
+
+- the final installable Realm archive is 4.4 MiB with SHA-256
+  `413ecb61369b6cf1654fd9a141deca589f4b6f88e16c5f40bbd0d9d274c2894e`.
+  Astrid installed content hash
+  `ffa5ce4c3d2d44a8c23750af0a1fae69833abd9f57a6d7039320f2ad9520e73a`,
+  admitted its `astrid-version >=0.10.2` requirement and
+  `component-residency = "principal"`, and loaded it without `host_process`;
+- AOS 2026.1.1 still bundles Astrid 0.10.1, so the proof deliberately ran the
+  exact locally built Astrid 0.10.4 daemon rather than weakening the capsule's
+  compatibility gate. Product startup still needs to pin and verify that
+  companion identity instead of relying on whichever daemon happens to be
+  installed;
+- the default principal restored the bound prewarm checkpoint, printed
+  `AOS PREWARM RESTORED` and `AOS READY`, and reached ready in 277,798 charged
+  guest steps and seven cooperative suspensions. The following shell reported
+  UID 1000, Linux 6.18.39, RV64, Buildroot 2026.05.1, and `/home/agent`;
+- the default principal wrote `realm-persisted` to `/home/agent/live-proof.txt`.
+  A separately provisioned `linux-realm-alice` principal booted its own Realm,
+  proved that file absent, and wrote `alice-only` to its own
+  `/home/agent/alice-proof.txt`. After the entire daemon restarted, default
+  read its original bytes and proved Alice's file absent. This is a live proof
+  of durable home recovery and cross-principal isolation, not merely a unit
+  model;
+- invoking from the AOS repository with Linux CWD `/workspace` returned
+  `/workspace` and read the repository's real `[workspace]` Cargo manifest
+  through `cwd://`. Neither the tool response nor guest path surface exposed a
+  physical host path;
+- the fresh principal exposed an Astrid runtime defect: a Store constructed
+  after the epoch ticker advanced inherited `u64::MAX` as a relative deadline,
+  which wrapped behind the current epoch and trapped during instantiation. The
+  signed runtime fix `6fd75db9` gives construction a finite five-minute window
+  until the admitted invocation installs its principal deadline. Its regression
+  advances the real engine epoch and asynchronously instantiates a real module,
+  so the failure cannot return as an arithmetic-only unit-test blind spot;
+- the fresh principal also made the supported ecosystem dependency explicit:
+  the Realm is a tool provider, not its own ingress server. A principal needs a
+  current capsule CLI and MCP broker such as `sage-mcp` before an MCP client can
+  enumerate and call Realm tools. That route worked live, but those companions
+  are still test-installed rather than a coherent CE default set.
+
 The earlier persistence E2E run used the then-current `astrid-mcp` capsule as its
 front door. The actor E2E used the product `aos-cli` proxy and current `sage-mcp`
 broker. The privileged proof used the test-installed Codex broker; its legacy
@@ -2429,6 +2470,10 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
 - [x] implement the principal-affine resident service lease in Astrid Runtime;
 - [x] move Linux lifecycle ownership onto it by retaining one RV64 machine and
   defining a bounded command/result channel, clean shutdown, and lazy restart;
+- [x] prove two principal-affine Stores through the real MCP front door, retain
+  separate warm machines and durable homes, survive a daemon restart, and fix
+  the late-epoch Store-construction deadline wrap exposed by the second
+  principal;
 - [ ] add deterministic virtual SMP within one principal-owned Realm after that
   lifecycle and metering boundary is executable;
 - [x] expose bounded pipe creation, signed child creation, direct-child wait, and
@@ -2440,9 +2485,11 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
 - [ ] add an outer workspace diff/promote workflow; realm code must not silently
   commit its own COW projection;
 - [ ] put a supported MCP broker/invocation front door in the CE distribution
-  before selecting the realm by default;
+  before selecting the realm by default; the live fresh-principal proof required
+  separately installing the current capsule CLI and `sage-mcp`;
 - [ ] make product startup verify and launch the exact pinned Astrid daemon rather
-  than an older installed companion;
+  than an older installed companion; AOS 2026.1.1 currently selected Astrid
+  0.10.1 while this principal-affine proof required the locally built 0.10.4;
 - [x] generalize the signed executable catalog and spawn record, then add a small
   shell over the now-live guest-created process/pipe/wait/signal substrate;
 - [x] generate that catalog from one validated manifest, move file descriptor
