@@ -18,6 +18,12 @@ use serde_json::{Map, Value, json};
 const MAX_MESSAGE_BYTES: usize = 4096;
 const SAFE_APPROVAL_CHOICES: &[&str] =
     &["approve_once", "approve_session", "approve_always", "deny"];
+#[cfg(unix)]
+const GPG_ERR_CANCELED: u32 = 99;
+#[cfg(unix)]
+const GPG_ERR_NOT_CONFIRMED: u32 = 114;
+#[cfg(unix)]
+const GPG_ERR_CODE_MASK: u32 = 0xffff;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct InteractionRequest {
@@ -160,6 +166,11 @@ fn parse_request(request: &Value) -> Result<InteractionRequest, InteractionError
     let property = property
         .as_object()
         .ok_or(InteractionError::Invalid("form property must be an object"))?;
+    if property.get("format").and_then(Value::as_str) == Some("password") {
+        return Err(InteractionError::Unsupported(
+            "local interaction refuses password-shaped fields",
+        ));
+    }
 
     let (response, options) = match property.get("type").and_then(Value::as_str) {
         Some("boolean") => (
@@ -298,7 +309,7 @@ fn present_appkit(request: &InteractionRequest) -> Result<Option<usize>, Interac
 #[cfg(target_os = "windows")]
 fn present_platform(request: &InteractionRequest) -> Result<Option<usize>, InteractionError> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TASKMODAL, MB_YESNO, MessageBoxW,
+        IDNO, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TASKMODAL, MB_YESNO, MessageBoxW,
     };
 
     let affirmative = request
@@ -308,6 +319,11 @@ fn present_platform(request: &InteractionRequest) -> Result<Option<usize>, Inter
         .ok_or(InteractionError::Invalid(
             "interaction has no affirmative choice",
         ))?;
+    let deny = request
+        .options
+        .iter()
+        .position(|option| !option.affirmative)
+        .ok_or(InteractionError::Invalid("interaction has no deny choice"))?;
     let mut message = request.message.encode_utf16().collect::<Vec<_>>();
     message.push(0);
     let mut title = "Unicity AOS approval".encode_utf16().collect::<Vec<_>>();
@@ -322,7 +338,17 @@ fn present_platform(request: &InteractionRequest) -> Result<Option<usize>, Inter
             MB_YESNO | MB_ICONWARNING | MB_TASKMODAL | MB_SETFOREGROUND,
         )
     };
-    Ok((response == IDYES).then_some(affirmative))
+    match response {
+        IDYES => Ok(Some(affirmative)),
+        IDNO => Ok(Some(deny)),
+        0 => Err(InteractionError::Unavailable(format!(
+            "Windows approval dialog failed: {}",
+            std::io::Error::last_os_error()
+        ))),
+        other => Err(InteractionError::Unavailable(format!(
+            "Windows approval dialog returned unknown response {other}"
+        ))),
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -393,21 +419,35 @@ fn present_pinentry(request: &InteractionRequest) -> Result<Option<usize>, Inter
     pinentry_command(
         &mut stdin,
         &mut reader,
-        &format!(
-            "SETCANCEL {}",
-            pinentry_escape(&request.options[deny].label)
-        ),
+        &format!("SETNOTOK {}", pinentry_escape(&request.options[deny].label)),
     )?;
+    pinentry_command(&mut stdin, &mut reader, "SETCANCEL Cancel")?;
     stdin
         .write_all(b"CONFIRM\n")
         .and_then(|()| stdin.flush())
         .map_err(|error| {
             InteractionError::Unavailable(format!("pinentry write failed: {error}"))
         })?;
-    let accepted = read_pinentry_status(&mut reader)?;
+    let status = read_pinentry_status(&mut reader)?;
     let _ = stdin.write_all(b"BYE\n");
     let _ = child.wait();
-    Ok(accepted.then_some(affirmative))
+    pinentry_selection(status, affirmative, deny)
+}
+
+#[cfg(unix)]
+fn pinentry_selection(
+    status: PinentryStatus,
+    affirmative: usize,
+    deny: usize,
+) -> Result<Option<usize>, InteractionError> {
+    match status {
+        PinentryStatus::Ok => Ok(Some(affirmative)),
+        PinentryStatus::Error(GPG_ERR_NOT_CONFIRMED) => Ok(Some(deny)),
+        PinentryStatus::Error(GPG_ERR_CANCELED) => Ok(None),
+        PinentryStatus::Error(code) => Err(InteractionError::Unavailable(format!(
+            "pinentry confirmation failed with error code {code}"
+        ))),
+    }
 }
 
 #[cfg(unix)]
@@ -421,28 +461,33 @@ fn pinentry_command(
         .map_err(|error| {
             InteractionError::Unavailable(format!("pinentry write failed: {error}"))
         })?;
-    if read_pinentry_status(reader)? {
-        Ok(())
-    } else {
-        Err(InteractionError::Unavailable(
-            "pinentry rejected its setup command".into(),
-        ))
+    match read_pinentry_status(reader)? {
+        PinentryStatus::Ok => Ok(()),
+        PinentryStatus::Error(code) => Err(InteractionError::Unavailable(format!(
+            "pinentry rejected its setup command with error code {code}"
+        ))),
     }
 }
 
 #[cfg(unix)]
 fn expect_pinentry_ok(reader: &mut impl BufRead) -> Result<(), InteractionError> {
-    if read_pinentry_status(reader)? {
-        Ok(())
-    } else {
-        Err(InteractionError::Unavailable(
-            "pinentry rejected the connection".into(),
-        ))
+    match read_pinentry_status(reader)? {
+        PinentryStatus::Ok => Ok(()),
+        PinentryStatus::Error(code) => Err(InteractionError::Unavailable(format!(
+            "pinentry rejected the connection with error code {code}"
+        ))),
     }
 }
 
 #[cfg(unix)]
-fn read_pinentry_status(reader: &mut impl BufRead) -> Result<bool, InteractionError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinentryStatus {
+    Ok,
+    Error(u32),
+}
+
+#[cfg(unix)]
+fn read_pinentry_status(reader: &mut impl BufRead) -> Result<PinentryStatus, InteractionError> {
     let mut line = String::new();
     loop {
         line.clear();
@@ -455,10 +500,19 @@ fn read_pinentry_status(reader: &mut impl BufRead) -> Result<bool, InteractionEr
             ));
         }
         if line.starts_with("OK") {
-            return Ok(true);
+            return Ok(PinentryStatus::Ok);
         }
-        if line.starts_with("ERR") {
-            return Ok(false);
+        if let Some(error) = line.strip_prefix("ERR ") {
+            let encoded = error
+                .split_ascii_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    InteractionError::Unavailable(
+                        "pinentry returned a malformed error status".into(),
+                    )
+                })?;
+            return Ok(PinentryStatus::Error(encoded & GPG_ERR_CODE_MASK));
         }
     }
 }
@@ -580,6 +634,11 @@ mod tests {
         for property in [
             json!({ "type": "string" }),
             json!({ "type": "string", "format": "password" }),
+            json!({
+                "type": "string",
+                "format": "password",
+                "enum": ["approve_once", "deny"]
+            }),
             json!({ "type": "string", "enum": ["yes", "no"] }),
         ] {
             let request = request(json!({
@@ -617,5 +676,42 @@ mod tests {
     fn pinentry_escaping_cannot_inject_commands() {
         assert_eq!(pinentry_escape("hello%\nBYE\r"), "hello%25%0ABYE%0D");
         assert_eq!(pinentry_escape("Autoriser ✓"), "Autoriser ✓");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinentry_status_distinguishes_deny_cancel_and_failure() {
+        let mut denied = std::io::Cursor::new("ERR 83886194 Not confirmed <Pinentry>\n");
+        assert_eq!(
+            read_pinentry_status(&mut denied).expect("deny status"),
+            PinentryStatus::Error(GPG_ERR_NOT_CONFIRMED)
+        );
+
+        let mut cancelled = std::io::Cursor::new("ERR 83886179 Operation cancelled <Pinentry>\n");
+        assert_eq!(
+            read_pinentry_status(&mut cancelled).expect("cancel status"),
+            PinentryStatus::Error(GPG_ERR_CANCELED)
+        );
+
+        let mut failed = std::io::Cursor::new("ERR 83886140 Not supported <Pinentry>\n");
+        assert_eq!(
+            read_pinentry_status(&mut failed).expect("failure status"),
+            PinentryStatus::Error(60)
+        );
+
+        assert_eq!(
+            pinentry_selection(PinentryStatus::Error(GPG_ERR_NOT_CONFIRMED), 0, 1)
+                .expect("deny selection"),
+            Some(1)
+        );
+        assert_eq!(
+            pinentry_selection(PinentryStatus::Error(GPG_ERR_CANCELED), 0, 1)
+                .expect("cancel selection"),
+            None
+        );
+        assert!(matches!(
+            pinentry_selection(PinentryStatus::Error(60), 0, 1),
+            Err(InteractionError::Unavailable(_))
+        ));
     }
 }
