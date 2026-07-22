@@ -95,6 +95,13 @@
   workbench for the resident Linux guest, with an unprivileged `agent` shell,
   token-bound command framing, bounded process resources, descendant cleanup,
   exact exit-status propagation, and a deliberately explicit `linux-sh` surface.
+- A reproducible RV64GC/glibc development-image generation with the official
+  Rust 1.97.1 compiler, Cargo, rustfmt, Clippy, and
+  `wasm32-unknown-unknown` standard library; guest-native rustup 1.29.0 and
+  `astrid-build` 0.10.4; and principal-local Cargo/rustup state rooted in the
+  durable Realm home. Per-principal process and open-file ceilings now cross
+  the versioned command frame alongside the existing RAM, CPU, output, and
+  file-size envelope.
 - A private Realm `pipe`/`spawn-signed`/`wait`/`signal` ABI and signed
   `guest-pipe-echo` workload, with generation-checked process handles, bounded
   descendant admission, pre-partitioned request budgets, unified file/pipe

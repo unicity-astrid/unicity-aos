@@ -1185,7 +1185,7 @@ that owner.
 The current Linux adapter is lazy and principal-resident. The affined Store owns
 one optional 1–64-hart machine with host-admitted automatic RAM and vCPU defaults,
 plus explicit 512 MiB–3 GiB RAM and 1–64-vCPU per-principal overrides. `linux-boot`, `linux-console`, or
-`linux-sh` creates it when cold, advances Linux in bounded 1,000,000-step slices
+`linux-sh` creates it when cold, advances Linux in bounded 10,000,000-step slices
 until the controlled `/init` reports ready, and retains its CPU and RAM for later
 invocations. A `counter` probe reaches 1 and then 2 across separate calls, and a
 file written by UID 1000 under `/home/agent` is readable by a later shell call.
@@ -2360,9 +2360,11 @@ CE set rather than test-installed companions.
   audited suspensions before readiness, and interpreter auto-topology had
   mirrored host parallelism even though all logical harts run on one worker.
   Auto mode now selects at most 1 GiB and two SMP harts; explicit configuration
-  still admits 512 MiB–3 GiB and 1–64 harts. Cooperative slices use the private
-  protocol's existing 1,000,000-step maximum instead of 100,000, preserving
-  metering while reducing host crossings and audit pressure;
+  still admits 512 MiB–3 GiB and 1–64 harts. Cooperative slices first moved from
+  100,000 to 1,000,000 steps, then a live compiler-image boot demonstrated that
+  even the latter forced thousands of durable generic-compute submissions. The
+  private protocol now admits 10,000,000-step slices while returning and charging
+  the exact completed count at every boundary;
 - current Astrid `astrid-build` produced installable capsule SHA-256
   `4f2ec2cdb6069dadc0bd2b2057152d9ab427c8455dc9ab39a5d23028440437fe`.
   Its 1,719,135-byte controller has BLAKE3
@@ -2385,6 +2387,42 @@ CE set rather than test-installed companions.
   at the configured 300-second budget was separately observed as a real Wasm
   trap; turning that trap into a correlated terminal command result remains an
   explicit lifecycle task.
+
+### Reproducible Rust workbench generation recorded on 2026-07-22
+
+- the pinned Buildroot 2026.05.1 generation now targets RV64GC/LP64D with glibc
+  2.43 and includes the official Rust 1.97.1 RISC-V host toolchain, Cargo,
+  rustfmt, Clippy, and the `wasm32-unknown-unknown` standard library. rustup
+  1.29.0 and `astrid-build` 0.10.4 are cross-built from pinned source into
+  native RISC-V executables; no host executable is copied into the guest;
+- two independent final-rootfs assemblies were byte-identical at 361,698,176
+  bytes with SHA-256
+  `54223181822b9a31526d6b74c8744dc0d6b1355ec79d663abf92fba9de4c7980`.
+  The resulting 364,642,752-byte Linux image has SHA-256
+  `5186aab9673e2bd2a403bdecdb65e9678de5cc9ae74593961d4745aee7b55bcf`
+  and BLAKE3
+  `a9c0b37ea9bf7163f493361d60c61cb8b121d053fcaaa22a576a0fb5fd4065d3`;
+- the stripped guest `rustup` and `astrid-build` binaries have SHA-256
+  `5540d4f33a0010336789b472338d4b1da0dc5cfefbca0da6ea1147602994c190`
+  and `b9d84ea9a961cefadf6c28e7492034f718e4251930bd4c4ebbce7b8395ef5922`
+  respectively. Build-only transaction logs and uninstall metadata are removed
+  so absolute workshop paths cannot leak into the immutable system image;
+- `/usr/libexec/aos/realm-env` links the immutable compiler into rustup as the
+  `aos-system` toolchain on first use. The rustup and Cargo databases live under
+  the invoking principal's durable `/home/agent`; Realm commands set
+  `RUSTUP_TOOLCHAIN=aos-system` so a repository-local channel file cannot turn
+  into an undeclared network acquisition;
+- the worker's immutable-asset ceiling is now a tested 512 MiB rather than the
+  earlier 256 MiB. The reproduced 183,331-byte worker has BLAKE3
+  `67467b9e020bed847a04ba55b4f7d8728bb172714eb0a4d23543752635773ad1`;
+  the larger ceiling grants no path, mutation, or ambient filesystem access;
+- a staging-only manifest bound this image without committing a 348 MiB binary
+  to Git and produced a 360,556,287-byte installable capsule with SHA-256
+  `c18f7906c6d48d5108c55788d5efe259eb68219440f2707c8ba29fd00dbe931f`.
+  Distribution still needs a content-addressed release object rather than a
+  Git blob. A live `codex-code` install authenticated, passed the explicit
+  capsule-grant gate, and reported the requested 3 GiB/automatic-vCPU envelope;
+  cold-start and in-guest compiler acceptance remain independent gates.
 
 ## 16. Ordered implementation milestones
 
@@ -3102,8 +3140,10 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   graduates from an eager initramfs to a verified, demand-paged SquashFS or
   content-block portal; do not spend every principal's RAM on cold compiler
   bytes merely because initramfs was sufficient for the seed proof;
-- [ ] replace fixed guest `RLIMIT_NOFILE` and `RLIMIT_NPROC` values with bounded
-  per-principal resource fields before claiming large-project support;
+- [x] replace fixed guest `RLIMIT_NOFILE` and `RLIMIT_NPROC` values with bounded
+  per-principal resource fields, preserve the original and intermediate command
+  frames for already admitted images, and leave zero delegated to the inherited
+  Linux and mandatory outer-principal ceilings;
 - [ ] replace the fixed 64 KiB captured-result ceiling with principal-configured
   bounded streaming or durable job logs; a compiler must not lose its diagnostic
   tail merely because a foreground result envelope is intentionally small;
@@ -3112,16 +3152,17 @@ clean shutdown and eviction to restartable `cold`; a future operator-disabled
   unobserved invocation running, and an interrupted capsule must not leave the
   CLI waiting for a result it can no longer publish;
 - [ ] aggregate or batch per-slice compute audit persistence without weakening
-  exact principal accounting; benchmark the current one-million-step slice and
-  fail closed on audit-pipeline saturation instead of producing warning storms;
-- [ ] build an immutable AOS Realm development generation with the current
-  supported stable Rust/Cargo/linker/libc identities and enough measured memory
-  for compiler workloads;
-- [ ] implement and architecture-test RV64C plus RV64F/RV64D, evolve machine
+  exact principal accounting; benchmark the new ten-million-step slice selected
+  after the live compiler-image cold-boot trace, and fail closed on audit-pipeline
+  saturation instead of producing warning storms;
+- [x] build a reproducible immutable AOS Realm development-image candidate with
+  glibc 2.43/LP64D, the official Rust 1.97.1 RISC-V host toolchain, guest-native
+  rustup 1.29.0 and `astrid-build` 0.10.4, and enough admitted memory for the
+  eager compiler image; distribution and cold-start acceptance remain separate;
+- [x] implement and architecture-test RV64C plus RV64F/RV64D, evolve machine
   checkpoints for the new register state, and enable Linux FPU context support;
-- [ ] switch the compatibility generation to glibc 2.43/LP64D, install official
-  Rust 1.97.1 host tools, and source-build Node 24.18.0 LTS with its RISC-V
-  experimental status visible in provenance;
+- [ ] source-build Node 24.18.0 LTS with its RISC-V experimental status visible
+  in provenance; the glibc/Rust half of this compatibility generation is built;
 - [ ] complete the seven-step in-guest Rust build/run/artifact receipt proof;
 - [ ] define the attenuating capsule-to-realm job contract and migrate Forge as the
   first non-interactive consumer after artifact verification exists;

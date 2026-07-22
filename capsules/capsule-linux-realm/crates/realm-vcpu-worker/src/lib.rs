@@ -490,7 +490,7 @@ mod tests {
     use super::*;
 
     const SIGNED_WORKER_HASH: &str =
-        "blake3:679e3964f38906522de69d72704e16f17abdfa2e986560512040a8b84381088f";
+        "blake3:67467b9e020bed847a04ba55b4f7d8728bb172714eb0a4d23543752635773ad1";
     const SIGNED_KERNEL_HASH: &str =
         "blake3:fd3bff3a266b66fc1596c16414a5cd7ef7d2c68eb76684627ab8d4d6e74647e8";
 

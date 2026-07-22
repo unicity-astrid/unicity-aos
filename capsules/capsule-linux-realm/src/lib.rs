@@ -2603,7 +2603,7 @@ mod tests {
             LINUX_DEFAULT_CWD,
             None,
             RunLimits {
-                fuel: LINUX_SLICE_STEPS * 4,
+                fuel: LINUX_SLICE_STEPS * 2,
                 memory_bytes: DEFAULT_LINUX_MEMORY_BYTES,
                 output_bytes: HARD_MAX_OUTPUT_BYTES,
             },
@@ -2615,8 +2615,8 @@ mod tests {
         .expect("bounded Linux execution yields cooperatively");
 
         assert_eq!(report.outcome, "fuel-exhausted");
-        assert_eq!(report.fuel_consumed, LINUX_SLICE_STEPS * 4);
-        assert_eq!(report.suspensions, 4);
+        assert_eq!(report.fuel_consumed, LINUX_SLICE_STEPS * 2);
+        assert_eq!(report.suspensions, 2);
         assert_eq!(cooperative_yields, report.suspensions);
         assert!(machine.is_none(), "partial cold-boot RAM is discarded");
     }

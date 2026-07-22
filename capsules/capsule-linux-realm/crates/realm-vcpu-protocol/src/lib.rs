@@ -33,7 +33,13 @@ pub const WASM_PAGE_BYTES: usize = 65_536;
 /// Exact `InitCold` payload: admitted wall-clock seconds since Unix epoch.
 pub const COLD_BOOT_INPUT_BYTES: usize = 8;
 /// Largest scheduling slice one descriptor may request.
-pub const MAX_SLICE_STEPS: u64 = 1_000_000;
+///
+/// Ten million interpreted steps keeps the worker cooperatively cancellable
+/// while avoiding a durable generic-compute submission and audit record for
+/// every million steps of initramfs inflation or compiler execution. This is a
+/// private, pre-1.0 protocol bound; the controller always charges the exact
+/// completed step count returned by the worker.
+pub const MAX_SLICE_STEPS: u64 = 10_000_000;
 /// Largest serial input accepted by one descriptor.
 pub const MAX_CONSOLE_INPUT_BYTES: usize = 64 * 1024;
 

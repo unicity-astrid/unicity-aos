@@ -15,5 +15,5 @@ link_stack_after_static_data=true
 static_data_base=65536
 initial_memory_bytes=67108864
 maximum_memory_bytes=3758096384
-worker_bytes=183330
-worker_blake3=679e3964f38906522de69d72704e16f17abdfa2e986560512040a8b84381088f
+worker_bytes=183331
+worker_blake3=67467b9e020bed847a04ba55b4f7d8728bb172714eb0a4d23543752635773ad1

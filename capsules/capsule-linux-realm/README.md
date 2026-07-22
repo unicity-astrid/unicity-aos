@@ -320,7 +320,7 @@ and inspect state before retrying.
 
 The principal-affine component Store owns one optional `Rv64Machine`. The first
 `linux-boot`, `linux-console`, or `linux-sh` allocates admitted RAM and advances
-the guest in bounded 1,000,000-step slices until `/init` is ready. Later calls
+the guest in bounded 10,000,000-step slices until `/init` is ready. Later calls
 resume the same kernel and userspace memory, so the `counter` proof advances
 across separate tool invocations. There is no background CPU: Linux advances
 only inside an admitted, metered invocation. A clean `linux-shutdown`, execution failure, output-limit
