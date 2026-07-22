@@ -72,14 +72,15 @@ for required in \
     'BR2_RISCV_ISA_RVI=y' \
     'BR2_RISCV_ISA_RVM=y' \
     'BR2_RISCV_ISA_RVA=y' \
-    '# BR2_RISCV_ISA_RVF is not set' \
-    '# BR2_RISCV_ISA_RVC is not set' \
+    'BR2_RISCV_ISA_RVF=y' \
+    'BR2_RISCV_ISA_RVD=y' \
+    'BR2_RISCV_ISA_RVC=y' \
     '# BR2_RISCV_ISA_RVV is not set' \
     'BR2_RISCV_64=y' \
-    'BR2_RISCV_ABI_LP64=y' \
+    'BR2_RISCV_ABI_LP64D=y' \
     'BR2_KERNEL_HEADERS_6_18=y' \
     'BR2_DEFAULT_KERNEL_HEADERS="6.18.34"' \
-    'BR2_TOOLCHAIN_BUILDROOT_MUSL=y' \
+    'BR2_TOOLCHAIN_BUILDROOT_GLIBC=y' \
     'BR2_TOOLCHAIN_BUILDROOT_CXX=y' \
     'BR2_SHARED_LIBS=y' \
     'BR2_REPRODUCIBLE=y' \
@@ -101,6 +102,7 @@ for required in \
     'BR2_PACKAGE_PYTHON3=y' \
     'BR2_PACKAGE_PYTHON3_PY_PYC=y' \
     'BR2_PACKAGE_STRACE=y' \
+    'BR2_PACKAGE_AOS_RUST_TOOLCHAIN=y' \
     'BR2_ROOTFS_DEVICE_CREATION_STATIC=y' \
     "BR2_ROOTFS_STATIC_DEVICE_TABLE=\"\$(BR2_EXTERNAL_AOS_PATH)/board/aos/device-table.txt\"" \
     '# BR2_TARGET_ENABLE_ROOT_LOGIN is not set' \
@@ -134,6 +136,9 @@ for executable in \
     usr/bin/pkg-config \
     usr/bin/python3 \
     usr/bin/readelf \
+    usr/bin/rustc \
+    usr/bin/cargo \
+    usr/bin/rustfmt \
     usr/bin/strace
 do
     if [ ! -x "$target/$executable" ]; then
@@ -150,7 +155,7 @@ for required_file in \
     lib/libgcc_s.so \
     lib/libm.a \
     usr/lib/clang/22/include/stddef.h \
-    usr/lib/gcc/riscv64-buildroot-linux-musl/14.4.0/libgcc.a \
+    usr/lib/gcc/riscv64-buildroot-linux-gnu/14.4.0/libgcc.a \
     usr/lib/libstdc++.so \
     usr/libexec/aos/clang-22 \
     usr/lib/os-release \
@@ -162,17 +167,19 @@ do
         exit 70
     fi
 done
-if [ ! -L "$target/lib/ld-musl-riscv64.so.1" ] || \
-    [ "$(readlink "$target/lib/ld-musl-riscv64.so.1")" != \
-      'ld-musl-riscv64-sf.so.1' ]; then
-    echo "development rootfs has the wrong RISC-V musl loader alias" >&2
+if [ ! -f "$target/lib/ld-linux-riscv64-lp64d.so.1" ]; then
+    echo "development rootfs is missing the RISC-V LP64D glibc loader" >&2
+    exit 70
+fi
+if [ ! -d "$target/usr/lib/rustlib/wasm32-unknown-unknown/lib" ]; then
+    echo "development rootfs is missing the wasm32-unknown-unknown Rust standard library" >&2
     exit 70
 fi
 if ! grep -qxF 'NAME="AOS Realm"' "$target/usr/lib/os-release"; then
     echo "development rootfs has the wrong operating-system identity" >&2
     exit 70
 fi
-readelf="$build_dir/host/bin/riscv64-buildroot-linux-musl-readelf"
+readelf="$build_dir/host/bin/riscv64-buildroot-linux-gnu-readelf"
 if [ ! -x "$readelf" ]; then
     echo "development build is missing the target readelf verifier" >&2
     exit 70
@@ -193,12 +200,12 @@ if "$readelf" -d "$target/usr/bin/cmake" |
     exit 70
 fi
 for compiler_flag in \
-    '--target=riscv64-buildroot-linux-musl' \
+    '--target=riscv64-buildroot-linux-gnu' \
     '--sysroot=/' \
-    '--gcc-install-dir=/usr/lib/gcc/riscv64-buildroot-linux-musl/14.4.0' \
+    '--gcc-install-dir=/usr/lib/gcc/riscv64-buildroot-linux-gnu/14.4.0' \
     '-resource-dir=/usr/lib/clang/22' \
-    '-march=rv64ima_zicsr_zifencei' \
-    '-mabi=lp64'
+    '-march=rv64gc_zicsr_zifencei' \
+    '-mabi=lp64d'
 do
     if ! grep -qF -- "$compiler_flag" "$target/usr/bin/clang"; then
         echo "development compiler wrapper is missing: $compiler_flag" >&2

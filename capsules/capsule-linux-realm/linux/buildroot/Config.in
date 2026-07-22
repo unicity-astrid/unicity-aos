@@ -1,5 +1,6 @@
 menu "AOS Realm development tools"
 
 source "$BR2_EXTERNAL_AOS_PATH/package/aos-ninja/Config.in"
+source "$BR2_EXTERNAL_AOS_PATH/package/aos-rust-toolchain/Config.in"
 
 endmenu

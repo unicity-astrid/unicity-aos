@@ -10,13 +10,17 @@ inside one generic compute worker in the current implementation.
 `build-userland.sh` produces the current, intentionally bounded agent
 development-workbench candidate:
 
-- musl 1.2.6 and BusyBox 1.38.0 as the base system;
+- glibc 2.43 and BusyBox 1.38.0 as the base system on the RV64GC/LP64D ABI;
 - Bash 5.2.37 as the command shell;
 - Git 2.54.0 and CA roots for source and certificate handling, although the
   guest has no network authority or network device yet;
 - Python 3.14.6;
 - Clang/LLVM 22.1.7, binutils 2.45.1, target C/C++ headers and libraries, Make
   4.4.1, CMake 4.3.2, Ninja 1.13.2, pkgconf, and patch;
+- the official Rust 1.97.1 `riscv64gc-unknown-linux-gnu` host tools, Cargo,
+  rustfmt, Clippy, and the `wasm32-unknown-unknown` standard library;
+- rustup 1.29.0 and `astrid-build` 0.10.4, built from pinned source as native
+  RISC-V guest tools;
 - an unprivileged `agent` account at UID/GID 1000 with `/home/agent`;
 - a locked root password and no login service;
 - `/proc`, `/sys`, static device nodes, and ordinary Linux process/syscall
@@ -45,8 +49,9 @@ path.
 This is AOS Realm, not Debian. The installable capsule currently retains the
 smaller BusyBox bootstrap initramfs while the development candidate completes
 its independent reproducibility gate. The candidate deliberately has no
-Rust/Cargo, Node/npm, package manager, network device, block device, PTY, or
-durable Linux root disk yet. Git therefore operates on local trees only.
+Node/npm, package manager, network device, block device, PTY, or durable Linux
+root disk yet. Cargo and Git therefore operate on local or pre-admitted source
+trees only; dependency fetching is not ambient guest authority.
 `/home/agent` is the separate
 crash-consistent Realm filesystem: each successful mutation selects an immutable
 principal generation, so its bytes survive warm calls, guest shutdown, component
@@ -61,12 +66,16 @@ the initramfs root remain boot-local RAM.
 PID 1 disables terminal echo and accepts one canonical console line:
 
 ```text
-AOS/1 <32-lowercase-hex-token> sh <max-file-bytes> <cwd-byte-length> <cwd> <script>\n
+AOS/1 <32-lowercase-hex-token> sh <max-file-bytes> <max-processes> <cwd-byte-length> <cwd> <script>\n
 ```
 
 Lifecycle and diagnostic commands retain their shorter fixed forms. The
-per-file limit is a decimal byte count; zero means no additional inner
-`RLIMIT_FSIZE`, while Astrid's outer principal storage quota remains mandatory.
+per-file and process limits are decimal counts; zero means no additional
+inner `RLIMIT_FSIZE` or `RLIMIT_NPROC`, while Astrid's outer principal storage,
+memory, CPU, and timeout policy remains mandatory.
+For compatibility with already admitted bootstrap images, an unbounded process
+limit is encoded using the original frame with `<max-processes>` omitted. New
+PID 1 generations accept both forms; a nonzero ceiling selects the extension.
 The frame's CWD length makes the absolute guest CWD unambiguous; only
 `/home/agent`, `/workspace`, and their normalized descendants are admitted.
 
@@ -77,9 +86,9 @@ the next ready marker. The shell receives the script, not the token. Its stdin
 is `/dev/null`; PID 1 reopens stdout and stderr as write-only console file
 descriptions before dropping credentials; and `/dev/console` is root-only. It
 runs as UID/GID 1000 with `no_new_privs`, no supplementary groups, no core
-dumps, 64 descriptors, at most 32 UID-owned processes, and the principal's
-configured per-file limit. A zero per-file limit delegates capacity entirely to
-Astrid's outer storage boundary; it does not mean unmetered host storage.
+dumps, at most 1024 descriptors, and the principal's configured process and
+per-file limits. Zero delegates that inner process or file ceiling; it does not
+mean unmetered host resources.
 
 PID 1 kills and reaps every remaining descendant before it emits the result.
 Consequently a background process cannot survive a tool call or write into a
@@ -98,10 +107,15 @@ The diagnostic `linux-console` surface admits only `ping`, `counter`, and
 `SOURCES.lock` records the verified kernel.org and Buildroot archives, the
 Buildroot signing-key fingerprint, exact source/toolchain versions, the pinned
 OCI builder, and all retained artifact digests. `build-userland.sh` requires an
-exact Buildroot 2026.05.1 tree, verifies the generated interim RV64IMA/LP64
-shared-musl configuration before compiling, uses Buildroot's forced
-package-hash checks, and rejects a rootfs digest mismatch. `build-image.sh`
-similarly requires Linux
+exact Buildroot 2026.05.1 tree, verifies the generated RV64GC/LP64D shared-glibc
+configuration and Rust distribution hashes before compiling, uses Buildroot's
+forced package-hash checks, and rejects a rootfs digest mismatch.
+`prepare-guest-tools.sh` verifies and extracts the official Linux/AArch64 Rust
+host archive, its RISC-V standard library, the published `astrid-build` crate,
+and rustup source. `build-guest-tools.sh` cross-builds the two guest-native
+binaries with Buildroot's admitted RISC-V linker and rejects host path leakage.
+`assemble-userland.sh` installs them and asks Buildroot to reproducibly rebuild
+the final CPIO. `build-image.sh` similarly requires Linux
 6.18.39, Clang/LLD 18.1.3, the recorded rootfs, and a clean output directory.
 
 The earlier 32 MiB seed proved that an AOS-owned RV64 checkpoint can stop at a
@@ -122,9 +136,31 @@ the resulting capsule.
 Inside the builder recorded in `SOURCES.lock`:
 
 ```sh
-./build-userland.sh /work/buildroot-2026.05.1 /build/rootfs-out /work/rootfs.cpio.gz
+./build-userland.sh /work/buildroot-2026.05.1 /build/rootfs-out /work/rootfs-base.cpio.gz
+./prepare-guest-tools.sh \
+  /work/rust-1.97.1-aarch64-unknown-linux-gnu.tar.xz \
+  /work/rust-std-1.97.1-riscv64gc-unknown-linux-gnu.tar.xz \
+  /work/astrid-build-0.10.4.crate \
+  /work/rustup-1.29.0.tar.gz \
+  /build/guest-input-work /build/guest-inputs
+./build-guest-tools.sh \
+  /build/guest-inputs/host-rust /build/rootfs-out \
+  /build/guest-inputs/sources/astrid-build-0.10.4 \
+  /build/guest-inputs/sources/rustup-1.29.0 \
+  /build/guest-tools-build /work/guest-tools
+./assemble-userland.sh \
+  /work/buildroot-2026.05.1 /build/rootfs-out /work/guest-tools \
+  /work/rootfs.cpio.gz
 ./build-image.sh /work/linux-6.18.39 /work/rootfs.cpio.gz /build/kernel-out /work/Image
 ```
+
+On a principal's first shell command, immutable `/usr/libexec/aos/realm-env`
+links the admitted `/usr` toolchain as rustup's `aos-system` default and creates
+the standard proxies under that principal's `/home/agent/.cargo/bin`. The
+rustup database lives under `/home/agent/.rustup`; changing a default or adding
+a future pre-admitted toolchain cannot affect another principal or the system
+image. The guest currently has no network device, so rustup cannot acquire
+unadmitted toolchain bytes from the Internet.
 
 `build-userland.sh` uses `BR2_DL_DIR` when supplied; otherwise it creates a
 sibling cache next to the output directory. It never writes downloads into the
@@ -151,15 +187,16 @@ BusyBox; the in-kernel `trans_aos.c` transport is GPL-2.0-only because it is
 compiled into Linux. That boundary does not change the MIT/Apache licensing of
 the Rust RV64 machine, 9P server, capsule, or Astrid runtime: they communicate
 with Linux across the SBI protocol rather than linking into it. The statically
-linked musl portions retain musl's MIT license. Release packaging must retain all
-notices and make the exact corresponding sources from `SOURCES.lock` available.
+linked glibc portions retain their LGPL terms; the official Rust toolchain is
+dual MIT/Apache-2.0. Release packaging must retain all notices and make the exact
+corresponding sources from `SOURCES.lock` available.
 `legal-info/` retains the exact target manifest, generated Buildroot
 configuration, target license texts, and kernel license; its README defines the
 larger corresponding-source release gate.
 
 To exercise the image through the AOS interpreter rather than QEMU, including
-Bash, Git, Python, Clang, C++, Make, CMake, Ninja, a real compilation, and a Git
-commit:
+Bash, Git, Python, Clang, C++, Make, CMake, Ninja, rustup, native Cargo, a
+`wasm32-unknown-unknown` Rust build, real compilation, and a Git commit:
 
 ```sh
 AOS_REALM_TEST_LINUX_IMAGE=/absolute/path/to/Image \

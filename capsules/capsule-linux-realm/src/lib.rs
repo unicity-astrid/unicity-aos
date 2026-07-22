@@ -923,6 +923,7 @@ fn execute_linux_resident(
 struct LinuxInvocationLimits {
     run: RunLimits,
     max_file_bytes: u64,
+    max_processes: u32,
     vcpus: u32,
 }
 
@@ -931,6 +932,7 @@ impl From<RunLimits> for LinuxInvocationLimits {
         Self {
             run,
             max_file_bytes: resources::DEFAULT_LINUX_MAX_FILE_BYTES,
+            max_processes: resources::DEFAULT_LINUX_MAX_PROCESSES,
             // Direct reference tests use one logical guest CPU. Principal-
             // configured execution passes its explicit or admitted auto value.
             vcpus: 1,
@@ -975,6 +977,7 @@ fn execute_linux_resident_cooperatively(
     let LinuxInvocationLimits {
         run: limits,
         max_file_bytes,
+        max_processes,
         vcpus,
     } = limits.into();
     let LinuxResidentState {
@@ -1086,7 +1089,15 @@ fn execute_linux_resident_cooperatively(
         SysError::ApiError("Linux command frame is missing its correlation token".to_string())
     })?;
     validate_linux_frame_token(frame_token)?;
-    let framed_command = if action == LinuxAction::Shell {
+    let framed_command = if action == LinuxAction::Shell && max_processes != 0 {
+        format!(
+            "sh {max_file_bytes} {max_processes} {} {cwd} {command}",
+            cwd.len()
+        )
+    } else if action == LinuxAction::Shell {
+        // Preserve the original private frame for existing pinned images. New
+        // PID 1 generations accept both forms; an explicit process ceiling is
+        // the unambiguous opt-in to the extended frame above.
         format!("sh {max_file_bytes} {} {cwd} {command}", cwd.len())
     } else {
         command.to_string()
@@ -1948,12 +1959,19 @@ mod tests {
         "set -eu; ",
         "rm -rf /workspace/aos-dev-probe; mkdir /workspace/aos-dev-probe; cd /workspace/aos-dev-probe; ",
         "bash --version; git --version; python3 --version; clang --version; clang++ --version; make --version; cmake --version; ninja --version; ",
+        "rustc --version; cargo --version; rustup --version; rustup show active-toolchain; astrid-build --version; ",
         "python3 -c 'print(\"PYTHON_OK\")'; ",
         "printf '#include <stdio.h>\\nint main(void){puts(\"C_OK\");}\\n' > hello.c; cc hello.c -o hello-c; ./hello-c; ",
         "printf '#include <iostream>\\nint main(){std::cout << \"CXX_OK\\\\n\";}\\n' > hello.cc; c++ hello.cc -o hello-cxx; ./hello-cxx; ",
         "printf 'all:\\n\\t@echo MAKE_OK\\n' > Makefile; make; ",
         "printf 'cmake_minimum_required(VERSION 3.15)\\nproject(probe C)\\nadd_executable(cmake-probe hello.c)\\n' > CMakeLists.txt; ",
         "cmake -S . -B cmake-build -G Ninja; cmake --build cmake-build; ./cmake-build/cmake-probe; ",
+        "mkdir rust-probe; printf '[package]\\nname=\"realm-probe\"\\nversion=\"0.1.0\"\\nedition=\"2024\"\\n\\n[dependencies]\\n' > rust-probe/Cargo.toml; ",
+        "mkdir rust-probe/src; printf 'fn main(){println!(\"RUST_OK\");}\\n' > rust-probe/src/main.rs; ",
+        "cargo build --manifest-path rust-probe/Cargo.toml --release --offline; ./rust-probe/target/release/realm-probe; ",
+        "printf '#[unsafe(no_mangle)] pub extern \"C\" fn realm_wasm_probe() -> i32 { 42 }\\n' > rust-probe/src/lib.rs; ",
+        "rustc --crate-type=cdylib --target=wasm32-unknown-unknown -O rust-probe/src/lib.rs -o rust-probe/realm-probe.wasm; ",
+        "test \"$(od -An -tx1 -N4 rust-probe/realm-probe.wasm | tr -d ' \\n')\" = 0061736d; echo WASM_OK; ",
         "git init -q; git config user.name Agent; git config user.email agent@aos.invalid; git add .; git commit -qm probe; git rev-parse --verify HEAD; ",
         "echo TOOLCHAIN_OK",
     );
@@ -2299,6 +2317,7 @@ mod tests {
             LinuxInvocationLimits {
                 run: limits,
                 max_file_bytes: 4,
+                max_processes: 0,
                 vcpus: 1,
             },
             || Ok(()),
@@ -2456,7 +2475,7 @@ mod tests {
         let image = std::fs::read(&image_path).expect("read external developer image");
         let limits = RunLimits {
             fuel: u64::MAX,
-            memory_bytes: 512 * 1024 * 1024,
+            memory_bytes: 3 * 1024 * 1024 * 1024,
             output_bytes: HARD_MAX_OUTPUT_BYTES,
         };
         let mut machine = Some(
@@ -2517,10 +2536,17 @@ mod tests {
             "GNU Make 4.4.1",
             "cmake version 4.3.2",
             "1.13.2",
+            "rustc 1.97.1",
+            "cargo 1.97.1",
+            "rustup 1.29.0",
+            "aos-system",
+            "astrid-build 0.10.4",
             "PYTHON_OK",
             "C_OK",
             "CXX_OK",
             "MAKE_OK",
+            "RUST_OK",
+            "WASM_OK",
             "TOOLCHAIN_OK",
         ] {
             assert!(stdout.contains(marker), "missing {marker:?} in:\n{stdout}");
@@ -3072,6 +3098,10 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         );
         assert_eq!(
             manifest["env"]["linux_max_file_bytes"]["default"].as_str(),
+            Some("0")
+        );
+        assert_eq!(
+            manifest["env"]["linux_max_processes"]["default"].as_str(),
             Some("0")
         );
         assert!(capabilities.contains_key("fs_read"));

@@ -344,6 +344,7 @@ per-capsule configuration on every operation:
 | `linux_max_steps` | 0 | 0–1000000000000 | Guest steps admitted per invocation; zero delegates to Astrid's outer principal CPU and timeout policy |
 | `linux_max_output_bytes` | 65536 | 1–65536 | Captured Linux output per invocation |
 | `linux_max_file_bytes` | 0 | 0–1099511627776 | Guest `RLIMIT_FSIZE`; zero applies no extra inner cap and leaves Astrid's principal storage quota in force |
+| `linux_max_processes` | 0 | 0–65536 | Guest `RLIMIT_NPROC` for the agent UID; zero leaves Linux's inherited limit and Astrid's outer principal envelope authoritative |
 | `linux_vcpus` | 0 | 0–64 | Logical Linux CPUs; zero selects up to two SMP harts for the current single-worker interpreter, while 1–64 selects an exact time-sliced topology |
 
 Operators control the enclosing pool independently from each principal. With
@@ -376,8 +377,8 @@ The effective boundary is the intersection of the Astrid principal profile, the
 daemon's host-wide compute pool, current aggregate reservations, the signed
 worker maximum, the capsule hard maximum, this configured envelope, and any
 lower per-command request.
-For the optional step and file-size limits, zero omits only that inner boundary;
-Astrid's outer CPU, timeout, and storage limits still apply. The guest cannot
+For the optional step, file-size, and process limits, zero omits only that inner
+boundary; Astrid's outer CPU, timeout, memory, and storage limits still apply. The guest cannot
 raise any boundary. When guest RAM or vCPUs are automatic, Astrid first opens a
 short-lived generic-compute admission probe. The capsule reads effective memory
 and worker parallelism, releases the probe, and retains one exact deterministic

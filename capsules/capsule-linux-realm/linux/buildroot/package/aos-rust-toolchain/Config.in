@@ -1,0 +1,18 @@
+config BR2_PACKAGE_AOS_RUST_TOOLCHAIN
+	bool "AOS Rust toolchain"
+	depends on BR2_RISCV_64
+	depends on BR2_RISCV_ISA_RVI
+	depends on BR2_RISCV_ISA_RVM
+	depends on BR2_RISCV_ISA_RVA
+	depends on BR2_RISCV_ISA_RVF
+	depends on BR2_RISCV_ISA_RVD
+	depends on BR2_RISCV_ISA_RVC
+	depends on BR2_TOOLCHAIN_USES_GLIBC
+	help
+	  Install the official Rust RISC-V host tools and the
+	  wasm32-unknown-unknown standard library into AOS Realm. This is a
+	  target package: rustc and Cargo execute inside the RISC-V guest.
+
+comment "AOS Rust toolchain needs RV64GC, LP64D, and glibc"
+	depends on BR2_RISCV_64
+	depends on !BR2_RISCV_ISA_RVF || !BR2_RISCV_ISA_RVD || !BR2_RISCV_ISA_RVC || !BR2_TOOLCHAIN_USES_GLIBC

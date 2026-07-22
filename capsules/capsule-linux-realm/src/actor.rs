@@ -143,6 +143,7 @@ impl LinuxActivity {
             LinuxInvocationLimits {
                 run: limits,
                 max_file_bytes: resources.linux_max_file_bytes,
+                max_processes: resources.linux_max_processes,
                 vcpus: resources.linux_vcpus,
             },
         );

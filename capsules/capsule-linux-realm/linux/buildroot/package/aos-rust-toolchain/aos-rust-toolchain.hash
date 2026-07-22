@@ -1,0 +1,7 @@
+# From the Rust 1.97.1 distribution service.
+sha256  2982687edabf8582b21a5497fed8dd5287a24afdb836a64b206959cea81ab947  rust-1.97.1-riscv64gc-unknown-linux-gnu.tar.xz
+sha256  fa0edb6e9f34faae5735554d62d50875eded839dc707d0f1c01467a918d8453b  rust-std-1.97.1-wasm32-unknown-unknown.tar.xz
+
+# Locally calculated from the license files in the official distribution.
+sha256  62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a  LICENSE-APACHE
+sha256  b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1  LICENSE-MIT

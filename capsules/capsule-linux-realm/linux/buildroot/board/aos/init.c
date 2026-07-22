@@ -30,6 +30,7 @@
 #define MAX_CWD_BYTES 64
 #define PROTOCOL_OVERHEAD_BYTES 128
 #define MAX_FILE_BYTES (1ULL << 40)
+#define MAX_PROCESSES 65536UL
 #define AGENT_UID 1000
 #define AGENT_GID 1000
 
@@ -135,7 +136,7 @@ static int refresh_workspace(void)
 }
 
 static int shell_status(const char *cwd, const char *script,
-                        rlim_t max_file_bytes)
+                        rlim_t max_file_bytes, rlim_t max_processes)
 {
     pid_t child = fork();
     if (child < 0)
@@ -147,7 +148,7 @@ static int shell_status(const char *cwd, const char *script,
         };
         static char *const environment[] = {
             "HOME=/home/agent",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "PATH=/home/agent/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "USER=agent",
             "LOGNAME=agent",
             "SHELL=/bin/bash",
@@ -155,6 +156,10 @@ static int shell_status(const char *cwd, const char *script,
             "LANG=C",
             "LC_ALL=C",
             "TMPDIR=/tmp",
+            "CARGO_HOME=/home/agent/.cargo",
+            "RUSTUP_HOME=/home/agent/.rustup",
+            "RUST_BACKTRACE=1",
+            "BASH_ENV=/usr/libexec/aos/realm-env",
             "CC=cc",
             "CXX=c++",
             "AR=ar",
@@ -181,8 +186,8 @@ static int shell_status(const char *cwd, const char *script,
             setgid(AGENT_GID) < 0 || setuid(AGENT_UID) < 0)
             _exit(126);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 ||
-            set_limit(RLIMIT_CORE, 0) < 0 || set_limit(RLIMIT_NOFILE, 64) < 0 ||
-            set_limit(RLIMIT_NPROC, 32) < 0 ||
+            set_limit(RLIMIT_CORE, 0) < 0 || set_limit(RLIMIT_NOFILE, 1024) < 0 ||
+            (max_processes != 0 && set_limit(RLIMIT_NPROC, max_processes) < 0) ||
             set_limit(RLIMIT_FSIZE,
                       max_file_bytes == 0 ? RLIM_INFINITY : max_file_bytes) < 0)
             _exit(126);
@@ -254,11 +259,14 @@ static bool valid_shell_cwd(const char *cwd)
 static int shell_command_status(char *payload)
 {
     char *file_limit_end;
+    char *first_limit_end;
     char *length_end;
     char *cwd;
     char *script;
     unsigned long cwd_length;
+    unsigned long first_limit;
     unsigned long long max_file_bytes;
+    unsigned long max_processes;
     size_t remaining;
 
     if (*payload < '0' || *payload > '9')
@@ -270,11 +278,27 @@ static int shell_command_status(char *payload)
         return 64;
     payload = file_limit_end + 1;
     errno = 0;
-    cwd_length = strtoul(payload, &length_end, 10);
-    if (errno != 0 || length_end == payload || *length_end != ' ' ||
-        cwd_length == 0 || cwd_length > MAX_CWD_BYTES)
+    first_limit = strtoul(payload, &first_limit_end, 10);
+    if (errno != 0 || first_limit_end == payload || *first_limit_end != ' ')
         return 64;
-    cwd = length_end + 1;
+    payload = first_limit_end + 1;
+    if (*payload >= '0' && *payload <= '9') {
+        max_processes = first_limit;
+        if (max_processes > MAX_PROCESSES)
+            return 64;
+        errno = 0;
+        cwd_length = strtoul(payload, &length_end, 10);
+        if (errno != 0 || length_end == payload || *length_end != ' ')
+            return 64;
+        cwd = length_end + 1;
+    } else {
+        /* Original frame: the value after max-file-bytes is cwd length. */
+        max_processes = 0;
+        cwd_length = first_limit;
+        cwd = payload;
+    }
+    if (cwd_length == 0 || cwd_length > MAX_CWD_BYTES)
+        return 64;
     remaining = strlen(cwd);
     if (remaining <= cwd_length || cwd[cwd_length] != ' ')
         return 64;
@@ -288,7 +312,8 @@ static int shell_command_status(char *payload)
     status = refresh_workspace();
     if (status != 0)
         return status;
-    return shell_status(cwd, script, (rlim_t)max_file_bytes);
+    return shell_status(cwd, script, (rlim_t)max_file_bytes,
+                        (rlim_t)max_processes);
 }
 
 static int execute_command(char *command)

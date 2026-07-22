@@ -45,6 +45,7 @@ linux_memory_bytes = { type = "integer", default = "0", request = "AOS Realm gue
 linux_max_steps = { type = "integer", default = "0", request = "Maximum interpreted Linux guest steps per invocation (0 uses Astrid's outer principal CPU and timeout policy; otherwise 1 to 1000000000000)" }
 linux_max_output_bytes = { type = "integer", default = "65536", request = "Maximum Linux command output bytes per invocation (1 to 65536)" }
 linux_max_file_bytes = { type = "integer", default = "0", request = "Maximum bytes per Linux-created file (0 uses only Astrid's outer principal storage quota; otherwise 1 to 1099511627776)" }
+linux_max_processes = { type = "integer", default = "0", request = "Maximum Linux processes and threads for the agent UID (0 uses the inherited Linux limit and Astrid's outer principal envelope; otherwise 1 to 65536)" }
 linux_vcpus = { type = "integer", default = "0", request = "Logical Linux CPUs (0 = auto up to 2 for the current single-worker interpreter; explicit range 1 to 64)" }
 
 [publish]

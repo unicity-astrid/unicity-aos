@@ -17,6 +17,10 @@ pub(crate) const MAX_LINUX_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 /// the outer enforcement boundary.
 pub(crate) const DEFAULT_LINUX_MAX_FILE_BYTES: u64 = 0;
 pub(crate) const MAX_LINUX_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+/// No additional guest `RLIMIT_NPROC`; the principal's outer compute and
+/// memory policy remains authoritative for the virtual machine.
+pub(crate) const DEFAULT_LINUX_MAX_PROCESSES: u32 = 0;
+pub(crate) const MAX_LINUX_MAX_PROCESSES: u32 = 65_536;
 /// Zero derives the guest's logical CPU topology from Astrid's admitted
 /// compute parallelism. The current single-worker interpreter caps auto mode
 /// at two harts; explicit 1–64-hart topologies remain available for testing.
@@ -28,6 +32,7 @@ const LINUX_MEMORY_BYTES_KEY: &str = "linux_memory_bytes";
 const LINUX_MAX_STEPS_KEY: &str = "linux_max_steps";
 const LINUX_MAX_OUTPUT_BYTES_KEY: &str = "linux_max_output_bytes";
 const LINUX_MAX_FILE_BYTES_KEY: &str = "linux_max_file_bytes";
+const LINUX_MAX_PROCESSES_KEY: &str = "linux_max_processes";
 const LINUX_VCPUS_KEY: &str = "linux_vcpus";
 
 /// Inner resources admitted to one principal-affine Realm machine.
@@ -46,6 +51,9 @@ pub(crate) struct RealmResources {
     /// Per-file guest limit. Zero means no inner limit; it never disables the
     /// outer principal storage quota enforced by Astrid.
     pub(crate) linux_max_file_bytes: u64,
+    /// Guest processes/threads per agent UID. Zero leaves the inherited Linux
+    /// limit unchanged and delegates admission to Astrid's outer envelope.
+    pub(crate) linux_max_processes: u32,
     pub(crate) linux_vcpus: u32,
 }
 
@@ -56,6 +64,7 @@ impl Default for RealmResources {
             linux_max_steps: DEFAULT_LINUX_MAX_STEPS,
             linux_max_output_bytes: DEFAULT_LINUX_MAX_OUTPUT_BYTES,
             linux_max_file_bytes: DEFAULT_LINUX_MAX_FILE_BYTES,
+            linux_max_processes: DEFAULT_LINUX_MAX_PROCESSES,
             linux_vcpus: DEFAULT_LINUX_VCPUS,
         }
     }
@@ -130,6 +139,13 @@ impl RealmResources {
                 DEFAULT_LINUX_MAX_FILE_BYTES,
                 0,
                 MAX_LINUX_MAX_FILE_BYTES,
+            )?,
+            linux_max_processes: parse_u32(
+                LINUX_MAX_PROCESSES_KEY,
+                read(LINUX_MAX_PROCESSES_KEY)?,
+                DEFAULT_LINUX_MAX_PROCESSES,
+                0,
+                MAX_LINUX_MAX_PROCESSES,
             )?,
             linux_vcpus: parse_u32(
                 LINUX_VCPUS_KEY,
@@ -232,12 +248,14 @@ mod tests {
         assert_eq!(defaults.linux_memory_bytes, 0);
         assert_eq!(defaults.effective_max_steps(), u64::MAX);
         assert_eq!(defaults.linux_max_file_bytes, 0);
+        assert_eq!(defaults.linux_max_processes, 0);
         assert_eq!(defaults.linux_vcpus, 0);
 
         let installed_defaults = resources(&[
             (LINUX_MEMORY_BYTES_KEY, "0"),
             (LINUX_MAX_STEPS_KEY, "0"),
             (LINUX_MAX_FILE_BYTES_KEY, "0"),
+            (LINUX_MAX_PROCESSES_KEY, "0"),
         ])
         .expect("serialized installation defaults");
         assert_eq!(installed_defaults, defaults);
@@ -250,6 +268,7 @@ mod tests {
             (LINUX_MAX_STEPS_KEY, "25000000"),
             (LINUX_MAX_OUTPUT_BYTES_KEY, "32768"),
             (LINUX_MAX_FILE_BYTES_KEY, "268435456"),
+            (LINUX_MAX_PROCESSES_KEY, "2048"),
             (LINUX_VCPUS_KEY, "8"),
         ])
         .expect("bounded envelope");
@@ -258,6 +277,7 @@ mod tests {
         assert_eq!(selected.linux_max_steps, 25_000_000);
         assert_eq!(selected.linux_max_output_bytes, 32 * 1024);
         assert_eq!(selected.linux_max_file_bytes, 256 * 1024 * 1024);
+        assert_eq!(selected.linux_max_processes, 2048);
         assert_eq!(selected.linux_vcpus, 8);
     }
 
@@ -270,6 +290,7 @@ mod tests {
             vec![(LINUX_MAX_STEPS_KEY, "1000000000001")],
             vec![(LINUX_MAX_OUTPUT_BYTES_KEY, "0")],
             vec![(LINUX_MAX_FILE_BYTES_KEY, "1099511627777")],
+            vec![(LINUX_MAX_PROCESSES_KEY, "65537")],
             vec![(LINUX_VCPUS_KEY, "65")],
             vec![(LINUX_VCPUS_KEY, "many")],
         ] {
