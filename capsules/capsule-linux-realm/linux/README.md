@@ -66,16 +66,17 @@ the initramfs root remain boot-local RAM.
 PID 1 disables terminal echo and accepts one canonical console line:
 
 ```text
-AOS/1 <32-lowercase-hex-token> sh <max-file-bytes> <max-processes> <cwd-byte-length> <cwd> <script>\n
+AOS/1 <32-lowercase-hex-token> sh <max-file-bytes> <max-processes> <max-open-files> <cwd-byte-length> <cwd> <script>\n
 ```
 
 Lifecycle and diagnostic commands retain their shorter fixed forms. The
-per-file and process limits are decimal counts; zero means no additional
-inner `RLIMIT_FSIZE` or `RLIMIT_NPROC`, while Astrid's outer principal storage,
-memory, CPU, and timeout policy remains mandatory.
-For compatibility with already admitted bootstrap images, an unbounded process
-limit is encoded using the original frame with `<max-processes>` omitted. New
-PID 1 generations accept both forms; a nonzero ceiling selects the extension.
+Per-file, process, and open-file limits are decimal counts; zero means no
+additional inner `RLIMIT_FSIZE`, `RLIMIT_NPROC`, or `RLIMIT_NOFILE`, while
+Astrid's outer principal storage, memory, CPU, and timeout policy remains
+mandatory. For compatibility with already admitted bootstrap images, trailing
+zero process and open-file fields are omitted. New PID 1 generations accept the
+original frame and both extensions; the first nonzero trailing ceiling selects
+the shortest frame that can represent it.
 The frame's CWD length makes the absolute guest CWD unambiguous; only
 `/home/agent`, `/workspace`, and their normalized descendants are admitted.
 
@@ -86,9 +87,9 @@ the next ready marker. The shell receives the script, not the token. Its stdin
 is `/dev/null`; PID 1 reopens stdout and stderr as write-only console file
 descriptions before dropping credentials; and `/dev/console` is root-only. It
 runs as UID/GID 1000 with `no_new_privs`, no supplementary groups, no core
-dumps, at most 1024 descriptors, and the principal's configured process and
-per-file limits. Zero delegates that inner process or file ceiling; it does not
-mean unmetered host resources.
+dumps, and the principal's configured process, descriptor, and per-file limits.
+Zero preserves an inherited Linux ceiling or delegates the extra inner ceiling;
+it does not mean unmetered host resources.
 
 PID 1 kills and reaps every remaining descendant before it emits the result.
 Consequently a background process cannot survive a tool call or write into a
@@ -159,7 +160,10 @@ links the admitted `/usr` toolchain as rustup's `aos-system` default and creates
 the standard proxies under that principal's `/home/agent/.cargo/bin`. The
 rustup database lives under `/home/agent/.rustup`; changing a default or adding
 a future pre-admitted toolchain cannot affect another principal or the system
-image. The guest currently has no network device, so rustup cannot acquire
+image. Realm commands initially set `RUSTUP_TOOLCHAIN=aos-system`, so a capsule
+repository's ordinary pinned channel cannot trigger an undeclared download;
+the shell may deliberately select another already admitted toolchain. The guest
+currently has no network device, so rustup cannot acquire
 unadmitted toolchain bytes from the Internet.
 
 `build-userland.sh` uses `BR2_DL_DIR` when supplied; otherwise it creates a

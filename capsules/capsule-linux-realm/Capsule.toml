@@ -23,7 +23,7 @@ type = "executable"
 id = "linux-vcpu"
 file = "assets/linux-vcpu.wasm"
 type = "compute-worker"
-hash = "blake3:989fbacab512da6c6ef34b1f6ed3b32f9d9c0a4a5a180c2c82662c15f6546609"
+hash = "blake3:679e3964f38906522de69d72704e16f17abdfa2e986560512040a8b84381088f"
 
 [[component.asset]]
 id = "linux-kernel"
@@ -46,6 +46,7 @@ linux_max_steps = { type = "integer", default = "0", request = "Maximum interpre
 linux_max_output_bytes = { type = "integer", default = "65536", request = "Maximum Linux command output bytes per invocation (1 to 65536)" }
 linux_max_file_bytes = { type = "integer", default = "0", request = "Maximum bytes per Linux-created file (0 uses only Astrid's outer principal storage quota; otherwise 1 to 1099511627776)" }
 linux_max_processes = { type = "integer", default = "0", request = "Maximum Linux processes and threads for the agent UID (0 uses the inherited Linux limit and Astrid's outer principal envelope; otherwise 1 to 65536)" }
+linux_max_open_files = { type = "integer", default = "0", request = "Maximum open Linux file descriptors per process (0 preserves the inherited Linux operator limit; otherwise 1 to 1048576)" }
 linux_vcpus = { type = "integer", default = "0", request = "Logical Linux CPUs (0 = auto up to 2 for the current single-worker interpreter; explicit range 1 to 64)" }
 
 [publish]

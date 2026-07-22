@@ -31,6 +31,7 @@
 #define PROTOCOL_OVERHEAD_BYTES 128
 #define MAX_FILE_BYTES (1ULL << 40)
 #define MAX_PROCESSES 65536UL
+#define MAX_OPEN_FILES 1048576UL
 #define AGENT_UID 1000
 #define AGENT_GID 1000
 
@@ -136,7 +137,8 @@ static int refresh_workspace(void)
 }
 
 static int shell_status(const char *cwd, const char *script,
-                        rlim_t max_file_bytes, rlim_t max_processes)
+                        rlim_t max_file_bytes, rlim_t max_processes,
+                        rlim_t max_open_files)
 {
     pid_t child = fork();
     if (child < 0)
@@ -158,6 +160,7 @@ static int shell_status(const char *cwd, const char *script,
             "TMPDIR=/tmp",
             "CARGO_HOME=/home/agent/.cargo",
             "RUSTUP_HOME=/home/agent/.rustup",
+            "RUSTUP_TOOLCHAIN=aos-system",
             "RUST_BACKTRACE=1",
             "BASH_ENV=/usr/libexec/aos/realm-env",
             "CC=cc",
@@ -186,7 +189,8 @@ static int shell_status(const char *cwd, const char *script,
             setgid(AGENT_GID) < 0 || setuid(AGENT_UID) < 0)
             _exit(126);
         if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 ||
-            set_limit(RLIMIT_CORE, 0) < 0 || set_limit(RLIMIT_NOFILE, 1024) < 0 ||
+            set_limit(RLIMIT_CORE, 0) < 0 ||
+            (max_open_files != 0 && set_limit(RLIMIT_NOFILE, max_open_files) < 0) ||
             (max_processes != 0 && set_limit(RLIMIT_NPROC, max_processes) < 0) ||
             set_limit(RLIMIT_FSIZE,
                       max_file_bytes == 0 ? RLIM_INFINITY : max_file_bytes) < 0)
@@ -260,13 +264,16 @@ static int shell_command_status(char *payload)
 {
     char *file_limit_end;
     char *first_limit_end;
+    char *second_limit_end;
     char *length_end;
     char *cwd;
     char *script;
     unsigned long cwd_length;
     unsigned long first_limit;
+    unsigned long second_limit;
     unsigned long long max_file_bytes;
     unsigned long max_processes;
+    unsigned long max_open_files;
     size_t remaining;
 
     if (*payload < '0' || *payload > '9')
@@ -287,13 +294,28 @@ static int shell_command_status(char *payload)
         if (max_processes > MAX_PROCESSES)
             return 64;
         errno = 0;
-        cwd_length = strtoul(payload, &length_end, 10);
-        if (errno != 0 || length_end == payload || *length_end != ' ')
+        second_limit = strtoul(payload, &second_limit_end, 10);
+        if (errno != 0 || second_limit_end == payload || *second_limit_end != ' ')
             return 64;
-        cwd = length_end + 1;
+        payload = second_limit_end + 1;
+        if (*payload >= '0' && *payload <= '9') {
+            max_open_files = second_limit;
+            if (max_open_files > MAX_OPEN_FILES)
+                return 64;
+            errno = 0;
+            cwd_length = strtoul(payload, &length_end, 10);
+            if (errno != 0 || length_end == payload || *length_end != ' ')
+                return 64;
+            cwd = length_end + 1;
+        } else {
+            max_open_files = 0;
+            cwd_length = second_limit;
+            cwd = payload;
+        }
     } else {
         /* Original frame: the value after max-file-bytes is cwd length. */
         max_processes = 0;
+        max_open_files = 0;
         cwd_length = first_limit;
         cwd = payload;
     }
@@ -313,7 +335,7 @@ static int shell_command_status(char *payload)
     if (status != 0)
         return status;
     return shell_status(cwd, script, (rlim_t)max_file_bytes,
-                        (rlim_t)max_processes);
+                        (rlim_t)max_processes, (rlim_t)max_open_files);
 }
 
 static int execute_command(char *command)

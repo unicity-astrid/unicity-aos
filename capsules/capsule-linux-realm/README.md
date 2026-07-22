@@ -345,6 +345,7 @@ per-capsule configuration on every operation:
 | `linux_max_output_bytes` | 65536 | 1–65536 | Captured Linux output per invocation |
 | `linux_max_file_bytes` | 0 | 0–1099511627776 | Guest `RLIMIT_FSIZE`; zero applies no extra inner cap and leaves Astrid's principal storage quota in force |
 | `linux_max_processes` | 0 | 0–65536 | Guest `RLIMIT_NPROC` for the agent UID; zero leaves Linux's inherited limit and Astrid's outer principal envelope authoritative |
+| `linux_max_open_files` | 0 | 0–1048576 | Guest `RLIMIT_NOFILE` per process; zero preserves Linux's inherited operator limit |
 | `linux_vcpus` | 0 | 0–64 | Logical Linux CPUs; zero selects up to two SMP harts for the current single-worker interpreter, while 1–64 selects an exact time-sliced topology |
 
 Operators control the enclosing pool independently from each principal. With

@@ -23,8 +23,11 @@ use std::sync::Mutex;
 const ABI_VERSION: i32 = 1;
 #[cfg(target_arch = "wasm32")]
 const LINUX_KERNEL_ASSET_INDEX: i32 = 0;
-#[cfg(target_arch = "wasm32")]
-const MAX_LINUX_KERNEL_BYTES: usize = 256 * 1024 * 1024;
+// The reproducible agent-workbench image is 364,642,752 bytes. Keep a finite
+// admission ceiling with enough headroom for patch releases; the worker's
+// linear memory is still charged to the principal by generic compute.
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_LINUX_KERNEL_BYTES: usize = 512 * 1024 * 1024;
 #[cfg(target_arch = "wasm32")]
 const MAX_ASSET_READ_BYTES: usize = 64 * 1024;
 #[cfg(target_arch = "wasm32")]
@@ -191,9 +194,7 @@ fn load_linux_image() -> Result<Vec<u8>, (Status, String)> {
     // SAFETY: the index was admitted above; a negative status still fails
     // closed before allocation.
     let asset_size = unsafe { host_asset_size(LINUX_KERNEL_ASSET_INDEX) };
-    let size = usize::try_from(asset_size)
-        .ok()
-        .filter(|size| (1..=MAX_LINUX_KERNEL_BYTES).contains(size))
+    let size = admitted_linux_kernel_size(asset_size)
         .ok_or_else(|| machine_error("Linux kernel asset size is outside the admitted range"))?;
     let mut image = Vec::new();
     image
@@ -220,6 +221,13 @@ fn load_linux_image() -> Result<Vec<u8>, (Status, String)> {
         }
     }
     Ok(image)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn admitted_linux_kernel_size(asset_size: i64) -> Option<usize> {
+    usize::try_from(asset_size)
+        .ok()
+        .filter(|size| (1..=MAX_LINUX_KERNEL_BYTES).contains(size))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -482,7 +490,7 @@ mod tests {
     use super::*;
 
     const SIGNED_WORKER_HASH: &str =
-        "blake3:989fbacab512da6c6ef34b1f6ed3b32f9d9c0a4a5a180c2c82662c15f6546609";
+        "blake3:679e3964f38906522de69d72704e16f17abdfa2e986560512040a8b84381088f";
     const SIGNED_KERNEL_HASH: &str =
         "blake3:fd3bff3a266b66fc1596c16414a5cd7ef7d2c68eb76684627ab8d4d6e74647e8";
 
@@ -625,6 +633,21 @@ mod tests {
         assert_eq!(
             astrid_compute_run(0, 64, (protocol::CONTROL_BYTES + 1) as i64, 0),
             -1
+        );
+    }
+
+    #[test]
+    fn linux_kernel_asset_size_is_positive_and_finitely_bounded() {
+        assert_eq!(admitted_linux_kernel_size(-1), None);
+        assert_eq!(admitted_linux_kernel_size(0), None);
+        assert_eq!(admitted_linux_kernel_size(1), Some(1));
+        assert_eq!(
+            admitted_linux_kernel_size(MAX_LINUX_KERNEL_BYTES as i64),
+            Some(MAX_LINUX_KERNEL_BYTES)
+        );
+        assert_eq!(
+            admitted_linux_kernel_size(MAX_LINUX_KERNEL_BYTES as i64 + 1),
+            None
         );
     }
 

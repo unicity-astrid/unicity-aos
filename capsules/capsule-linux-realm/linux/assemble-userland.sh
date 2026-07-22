@@ -44,14 +44,19 @@ done
 install -m 0755 "$guest_tools/astrid-build" "$target/usr/bin/astrid-build"
 install -m 0755 "$guest_tools/rustup" "$target/usr/bin/rustup"
 
-# Re-run Buildroot's supported filesystem assembly target so fakeroot metadata,
-# static devices, post-build checks, and reproducible archive ordering all stay
-# authoritative after the separately cross-built guest-native tools are added.
+# Buildroot 2026.05 has no `rootfs-cpio-rebuild` convenience target. Remove
+# only its generated CPIO outputs, then invoke the normal filesystem target so
+# fakeroot metadata, static devices, post-build checks, and reproducible archive
+# ordering all stay authoritative after the separately cross-built tools are
+# added. Package and toolchain build products remain untouched.
+rm -f \
+    "$buildroot_output/images/rootfs.cpio" \
+    "$buildroot_output/images/rootfs.cpio.gz"
 make -C "$buildroot_source" \
     BR2_EXTERNAL="$script_dir/buildroot" \
     BR2_DL_DIR="$downloads_dir" \
     O="$buildroot_output" \
-    rootfs-cpio-rebuild
+    rootfs-cpio
 
 cpio=$buildroot_output/images/rootfs.cpio.gz
 if [ ! -f "$cpio" ]; then

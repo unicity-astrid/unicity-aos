@@ -149,11 +149,12 @@ done
 for required_file in \
     usr/include/stdio.h \
     usr/include/c++/14.4.0/vector \
-    lib/crt1.o \
-    lib/libc.a \
+    usr/lib/crt1.o \
+    usr/lib/libc.a \
     lib/libc.so \
     lib/libgcc_s.so \
-    lib/libm.a \
+    lib/libatomic.a \
+    usr/lib/libm.a \
     usr/lib/clang/22/include/stddef.h \
     usr/lib/gcc/riscv64-buildroot-linux-gnu/14.4.0/libgcc.a \
     usr/lib/libstdc++.so \

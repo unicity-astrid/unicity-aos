@@ -924,6 +924,7 @@ struct LinuxInvocationLimits {
     run: RunLimits,
     max_file_bytes: u64,
     max_processes: u32,
+    max_open_files: u32,
     vcpus: u32,
 }
 
@@ -933,6 +934,7 @@ impl From<RunLimits> for LinuxInvocationLimits {
             run,
             max_file_bytes: resources::DEFAULT_LINUX_MAX_FILE_BYTES,
             max_processes: resources::DEFAULT_LINUX_MAX_PROCESSES,
+            max_open_files: resources::DEFAULT_LINUX_MAX_OPEN_FILES,
             // Direct reference tests use one logical guest CPU. Principal-
             // configured execution passes its explicit or admitted auto value.
             vcpus: 1,
@@ -978,6 +980,7 @@ fn execute_linux_resident_cooperatively(
         run: limits,
         max_file_bytes,
         max_processes,
+        max_open_files,
         vcpus,
     } = limits.into();
     let LinuxResidentState {
@@ -1089,16 +1092,8 @@ fn execute_linux_resident_cooperatively(
         SysError::ApiError("Linux command frame is missing its correlation token".to_string())
     })?;
     validate_linux_frame_token(frame_token)?;
-    let framed_command = if action == LinuxAction::Shell && max_processes != 0 {
-        format!(
-            "sh {max_file_bytes} {max_processes} {} {cwd} {command}",
-            cwd.len()
-        )
-    } else if action == LinuxAction::Shell {
-        // Preserve the original private frame for existing pinned images. New
-        // PID 1 generations accept both forms; an explicit process ceiling is
-        // the unambiguous opt-in to the extended frame above.
-        format!("sh {max_file_bytes} {} {cwd} {command}", cwd.len())
+    let framed_command = if action == LinuxAction::Shell {
+        linux_shell_command_frame(max_file_bytes, max_processes, max_open_files, cwd, command)
     } else {
         command.to_string()
     };
@@ -1175,6 +1170,31 @@ fn execute_linux_resident_cooperatively(
                 booted,
             ))
         }
+    }
+}
+
+fn linux_shell_command_frame(
+    max_file_bytes: u64,
+    max_processes: u32,
+    max_open_files: u32,
+    cwd: &str,
+    command: &str,
+) -> String {
+    if max_processes == 0 && max_open_files == 0 {
+        // Preserve the original private frame for existing pinned images. New
+        // PID 1 generations accept both forms; an explicit process ceiling is
+        // the unambiguous opt-in to the extended frame below.
+        format!("sh {max_file_bytes} {} {cwd} {command}", cwd.len())
+    } else if max_open_files == 0 {
+        format!(
+            "sh {max_file_bytes} {max_processes} {} {cwd} {command}",
+            cwd.len()
+        )
+    } else {
+        format!(
+            "sh {max_file_bytes} {max_processes} {max_open_files} {} {cwd} {command}",
+            cwd.len()
+        )
     }
 }
 
@@ -1977,6 +1997,22 @@ mod tests {
     );
 
     #[test]
+    fn shell_frame_preserves_bootstrap_compatibility_and_opts_into_resource_limits() {
+        assert_eq!(
+            linux_shell_command_frame(0, 0, 0, "/workspace", "cargo test"),
+            "sh 0 10 /workspace cargo test"
+        );
+        assert_eq!(
+            linux_shell_command_frame(4096, 2048, 0, "/home/agent", "rustup show"),
+            "sh 4096 2048 11 /home/agent rustup show"
+        );
+        assert_eq!(
+            linux_shell_command_frame(4096, 0, 65_536, "/workspace", "cargo build"),
+            "sh 4096 0 65536 10 /workspace cargo build"
+        );
+    }
+
+    #[test]
     fn cli_actions_are_structured_and_preserve_one_quoted_script() {
         let action = parse_cli_action(&[
             "sh".to_string(),
@@ -2318,6 +2354,7 @@ mod tests {
                 run: limits,
                 max_file_bytes: 4,
                 max_processes: 0,
+                max_open_files: 0,
                 vcpus: 1,
             },
             || Ok(()),
@@ -3102,6 +3139,10 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         );
         assert_eq!(
             manifest["env"]["linux_max_processes"]["default"].as_str(),
+            Some("0")
+        );
+        assert_eq!(
+            manifest["env"]["linux_max_open_files"]["default"].as_str(),
             Some("0")
         );
         assert!(capabilities.contains_key("fs_read"));

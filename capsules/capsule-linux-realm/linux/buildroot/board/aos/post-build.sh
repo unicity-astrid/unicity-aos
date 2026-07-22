@@ -127,7 +127,6 @@ for object in crt1.o crti.o crtn.o Scrt1.o; do
     cp -a "$STAGING_DIR/usr/lib/$object" "$target_dir/usr/lib/"
 done
 for archive in \
-    libatomic.a \
     libc.a \
     libdl.a \
     libm.a \
@@ -141,6 +140,11 @@ do
     fi
     cp -a "$STAGING_DIR/usr/lib/$archive" "$target_dir/usr/lib/"
 done
+if [ ! -f "$STAGING_DIR/lib/libatomic.a" ]; then
+    echo "AOS development image requires GCC runtime link input: libatomic.a" >&2
+    exit 70
+fi
+cp -a "$STAGING_DIR/lib/libatomic.a" "$target_dir/lib/"
 gcc_support="$HOST_DIR/lib/gcc/$target_tuple/14.4.0"
 target_gcc_support="$target_dir/usr/lib/gcc/$target_tuple/14.4.0"
 for input in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a; do
@@ -230,6 +234,15 @@ EOF
 chmod 0755 \
     "$target_dir/usr/libexec/aos/init-rustup" \
     "$target_dir/usr/libexec/aos/realm-env"
+
+# The upstream installers leave uninstall transaction logs whose source and
+# destination entries name Buildroot's disposable output directory. Linked
+# rustup toolchains do not consume these files, and the immutable system
+# toolchain cannot be uninstalled from inside a Realm, so do not ship them.
+rm -f \
+    "$target_dir/usr/lib/rustlib/install.log" \
+    "$target_dir/usr/lib/rustlib/manifest-"* \
+    "$target_dir/usr/lib/rustlib/uninstall.sh"
 
 leaked_path=$(LC_ALL=C grep -RIl -F "$BASE_DIR" "$target_dir" 2>/dev/null | head -n 1 || true)
 if [ -n "$leaked_path" ]; then

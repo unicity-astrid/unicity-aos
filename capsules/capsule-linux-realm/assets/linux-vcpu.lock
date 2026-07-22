@@ -16,4 +16,4 @@ static_data_base=65536
 initial_memory_bytes=67108864
 maximum_memory_bytes=3758096384
 worker_bytes=183330
-worker_blake3=989fbacab512da6c6ef34b1f6ed3b32f9d9c0a4a5a180c2c82662c15f6546609
+worker_blake3=679e3964f38906522de69d72704e16f17abdfa2e986560512040a8b84381088f

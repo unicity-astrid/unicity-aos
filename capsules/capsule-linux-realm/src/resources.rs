@@ -21,6 +21,10 @@ pub(crate) const MAX_LINUX_MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 /// memory policy remains authoritative for the virtual machine.
 pub(crate) const DEFAULT_LINUX_MAX_PROCESSES: u32 = 0;
 pub(crate) const MAX_LINUX_MAX_PROCESSES: u32 = 65_536;
+/// No additional guest `RLIMIT_NOFILE`; the guest inherits Linux's operator
+/// default unless this principal selects a lower or higher explicit ceiling.
+pub(crate) const DEFAULT_LINUX_MAX_OPEN_FILES: u32 = 0;
+pub(crate) const MAX_LINUX_MAX_OPEN_FILES: u32 = 1_048_576;
 /// Zero derives the guest's logical CPU topology from Astrid's admitted
 /// compute parallelism. The current single-worker interpreter caps auto mode
 /// at two harts; explicit 1–64-hart topologies remain available for testing.
@@ -33,6 +37,7 @@ const LINUX_MAX_STEPS_KEY: &str = "linux_max_steps";
 const LINUX_MAX_OUTPUT_BYTES_KEY: &str = "linux_max_output_bytes";
 const LINUX_MAX_FILE_BYTES_KEY: &str = "linux_max_file_bytes";
 const LINUX_MAX_PROCESSES_KEY: &str = "linux_max_processes";
+const LINUX_MAX_OPEN_FILES_KEY: &str = "linux_max_open_files";
 const LINUX_VCPUS_KEY: &str = "linux_vcpus";
 
 /// Inner resources admitted to one principal-affine Realm machine.
@@ -54,6 +59,9 @@ pub(crate) struct RealmResources {
     /// Guest processes/threads per agent UID. Zero leaves the inherited Linux
     /// limit unchanged and delegates admission to Astrid's outer envelope.
     pub(crate) linux_max_processes: u32,
+    /// Guest open descriptors per process. Zero preserves Linux's inherited
+    /// operator default; a nonzero value becomes both soft and hard limit.
+    pub(crate) linux_max_open_files: u32,
     pub(crate) linux_vcpus: u32,
 }
 
@@ -65,6 +73,7 @@ impl Default for RealmResources {
             linux_max_output_bytes: DEFAULT_LINUX_MAX_OUTPUT_BYTES,
             linux_max_file_bytes: DEFAULT_LINUX_MAX_FILE_BYTES,
             linux_max_processes: DEFAULT_LINUX_MAX_PROCESSES,
+            linux_max_open_files: DEFAULT_LINUX_MAX_OPEN_FILES,
             linux_vcpus: DEFAULT_LINUX_VCPUS,
         }
     }
@@ -146,6 +155,13 @@ impl RealmResources {
                 DEFAULT_LINUX_MAX_PROCESSES,
                 0,
                 MAX_LINUX_MAX_PROCESSES,
+            )?,
+            linux_max_open_files: parse_u32(
+                LINUX_MAX_OPEN_FILES_KEY,
+                read(LINUX_MAX_OPEN_FILES_KEY)?,
+                DEFAULT_LINUX_MAX_OPEN_FILES,
+                0,
+                MAX_LINUX_MAX_OPEN_FILES,
             )?,
             linux_vcpus: parse_u32(
                 LINUX_VCPUS_KEY,
@@ -241,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_delegate_optional_step_and_file_ceilings_to_outer_policy() {
+    fn defaults_delegate_optional_inner_ceilings_to_outer_policy() {
         let defaults = resources(&[]).expect("defaults");
         assert_eq!(defaults, RealmResources::default());
         assert_eq!(defaults.linux_max_steps, 0);
@@ -249,6 +265,7 @@ mod tests {
         assert_eq!(defaults.effective_max_steps(), u64::MAX);
         assert_eq!(defaults.linux_max_file_bytes, 0);
         assert_eq!(defaults.linux_max_processes, 0);
+        assert_eq!(defaults.linux_max_open_files, 0);
         assert_eq!(defaults.linux_vcpus, 0);
 
         let installed_defaults = resources(&[
@@ -256,6 +273,7 @@ mod tests {
             (LINUX_MAX_STEPS_KEY, "0"),
             (LINUX_MAX_FILE_BYTES_KEY, "0"),
             (LINUX_MAX_PROCESSES_KEY, "0"),
+            (LINUX_MAX_OPEN_FILES_KEY, "0"),
         ])
         .expect("serialized installation defaults");
         assert_eq!(installed_defaults, defaults);
@@ -269,6 +287,7 @@ mod tests {
             (LINUX_MAX_OUTPUT_BYTES_KEY, "32768"),
             (LINUX_MAX_FILE_BYTES_KEY, "268435456"),
             (LINUX_MAX_PROCESSES_KEY, "2048"),
+            (LINUX_MAX_OPEN_FILES_KEY, "65536"),
             (LINUX_VCPUS_KEY, "8"),
         ])
         .expect("bounded envelope");
@@ -278,6 +297,7 @@ mod tests {
         assert_eq!(selected.linux_max_output_bytes, 32 * 1024);
         assert_eq!(selected.linux_max_file_bytes, 256 * 1024 * 1024);
         assert_eq!(selected.linux_max_processes, 2048);
+        assert_eq!(selected.linux_max_open_files, 65_536);
         assert_eq!(selected.linux_vcpus, 8);
     }
 
@@ -291,6 +311,7 @@ mod tests {
             vec![(LINUX_MAX_OUTPUT_BYTES_KEY, "0")],
             vec![(LINUX_MAX_FILE_BYTES_KEY, "1099511627777")],
             vec![(LINUX_MAX_PROCESSES_KEY, "65537")],
+            vec![(LINUX_MAX_OPEN_FILES_KEY, "1048577")],
             vec![(LINUX_VCPUS_KEY, "65")],
             vec![(LINUX_VCPUS_KEY, "many")],
         ] {

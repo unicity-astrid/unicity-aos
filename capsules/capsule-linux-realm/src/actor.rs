@@ -144,6 +144,7 @@ impl LinuxActivity {
                 run: limits,
                 max_file_bytes: resources.linux_max_file_bytes,
                 max_processes: resources.linux_max_processes,
+                max_open_files: resources.linux_max_open_files,
                 vcpus: resources.linux_vcpus,
             },
         );
