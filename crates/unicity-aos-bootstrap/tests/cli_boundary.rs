@@ -347,21 +347,56 @@ fn bare_aos_shows_product_help_instead_of_claiming_native_chat() {
 }
 
 #[test]
-fn runtime_is_an_inherited_root_not_a_special_alias() {
-    let fixture = Fixture::new("runtime-root");
+fn runtime_verbs_are_first_class_aos_roots_without_a_nested_namespace() {
+    let fixture = Fixture::new("direct-runtime-roots");
     fixture.install_runtime(RECORDING_RUNTIME);
 
-    let output = fixture
-        .command()
-        .args(["runtime", "status", "--json"])
-        .output()
-        .expect("run aos");
+    for root in [
+        "chat",
+        "run",
+        "agent",
+        "group",
+        "caps",
+        "quota",
+        "invite",
+        "keypair",
+        "pair-device",
+        "secret",
+        "voucher",
+        "trust",
+        "audit",
+        "budget",
+        "session",
+        "capsule",
+        "build",
+        "config",
+        "wit",
+        "gc",
+        "start",
+        "stop",
+        "restart",
+        "logs",
+        "ps",
+        "top",
+        "who",
+        "doctor",
+        "setup",
+        "version",
+        "completions",
+    ] {
+        let output = fixture
+            .command()
+            .args([root, "--aos-direct-root-probe"])
+            .output()
+            .expect("run direct AOS root");
 
-    assert!(output.status.success());
-    assert_eq!(
-        fs::read_to_string(&fixture.args).expect("read delegated args"),
-        "<runtime>\n<status>\n<--json>\n"
-    );
+        assert!(output.status.success(), "direct root failed: {root}");
+        assert_eq!(
+            fs::read_to_string(&fixture.args).expect("read delegated args"),
+            format!("<{root}>\n<--aos-direct-root-probe>\n")
+        );
+        fs::remove_file(&fixture.args).expect("reset delegated args");
+    }
 }
 
 #[test]
@@ -678,7 +713,8 @@ fn product_owns_and_refuses_distro_mutation() {
         assert!(!fixture.args.exists());
         let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
         assert!(stderr.contains("Unicity CE owns the distribution state"));
-        assert!(stderr.contains("standalone `astrid distro ...`"));
+        assert!(stderr.contains("does not expose raw distribution mutation"));
+        assert!(!stderr.contains("astrid distro"));
     }
 }
 

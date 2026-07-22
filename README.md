@@ -49,21 +49,18 @@ aos status --json
 aos --principal codex-code mcp serve
 ```
 
-Every other root inherits the bundled Astrid CLI transparently. Arguments, exit
-codes, and signals pass through unchanged:
+Every other runtime root is part of the AOS CLI directly. Arguments, exit
+codes, and signals pass through unchanged; there is no nested `aos astrid` or
+`aos runtime` namespace:
 
 ```sh
 aos doctor
 aos capsule build
 ```
 
-An AOS-owned root intentionally shadows the runtime root with the same name.
-Use the standalone runtime CLI when the raw command is required:
-
-```sh
-astrid status
-astrid init --help
-```
+When AOS owns a root such as `status`, `init`, `update`, or `mcp`, its product
+implementation replaces the lower-level command at that same location. The
+complete supported surface therefore remains `aos <verb>`.
 
 `aos mcp serve` is the product edge shared by Codex, Claude, and Grok. A client
 that supports MCP form elicitation keeps presenting its own constrained

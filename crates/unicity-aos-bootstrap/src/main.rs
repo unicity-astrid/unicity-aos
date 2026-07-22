@@ -700,9 +700,7 @@ fn refuse_distro_command(_arguments: &[OsString]) -> ExitCode {
     eprintln!(
         "aos: Unicity CE owns the distribution state for this AOS installation; `aos distro` cannot apply or replace it"
     );
-    eprintln!(
-        "Use the standalone `astrid distro ...` command with a separate Astrid Runtime home to manage another distribution."
-    );
+    eprintln!("AOS does not expose raw distribution mutation beneath another command namespace.");
     ExitCode::from(2)
 }
 
