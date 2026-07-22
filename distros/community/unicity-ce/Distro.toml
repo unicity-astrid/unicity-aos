@@ -41,6 +41,12 @@ version = "0.2.0"
 role = "uplink"
 
 [[capsule]]
+name = "aos-mcp"
+source = "capsules/aos-mcp.capsule"
+version = "0.1.0"
+role = "uplink"
+
+[[capsule]]
 name = "aos-registry"
 source = "capsules/aos-registry.capsule"
 version = "0.2.0"

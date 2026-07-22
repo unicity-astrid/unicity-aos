@@ -19,7 +19,7 @@
 - Runtime import holds the standalone daemon's existing singleton lock without
   changing the source, and interrupted unreceipted cutovers always roll back
   before recopying the current locked source.
-- A signed release path for the 20 installable `aos-*` artifacts
+- A signed release path for the 21 installable `aos-*` artifacts
   built from this source tree and selected locally by Community Edition, with
   exact source/manifest identity checks, product-archive inclusion, offline
   provisioning, archive safety validation, BLAKE3 checksums, SHA-256
@@ -42,7 +42,7 @@
   contracts with exact workflow identities, expiry, replay-resistant generation
   state, and fail-closed direct installer resolution.
 - A native release gate that initializes a clean AOS home, verifies the exact
-  20-capsule CE lock, grants, and ready set, repeats initialization without
+  21-capsule CE lock, grants, and ready set, repeats initialization without
   changing runtime state, and proves clean daemon shutdown before publication.
 - Native `aos status` output for authenticated running state and verified
   stopped state without invoking the runtime CLI.
@@ -52,6 +52,16 @@
   disabled by default; merging `main` never publishes a release.
 
 ### Changed
+
+- Own the host-facing `aos mcp serve` command, MCP server identity, constrained
+  interaction fallback, and `aos-mcp` broker capsule in AOS CE. Hosts with MCP
+  form elicitation continue to render their own approvals; hosts such as Grok
+  fall back to AppKit on macOS, native confirmation on Windows, or Pinentry on
+  Linux. Free-form and secret-shaped fields are refused by this bridge.
+- Pin the exact public root-command inventory of the bundled runtime and fail
+  validation when a runtime update adds or removes a verb before AOS classifies
+  it as inherited, product-owned, or shared. Runtime verbs remain direct
+  `aos <verb>` commands without a nested runtime namespace.
 
 - Keep agent Skills out of `Capsule.toml` and the generic capsule release
   contract. Host plugins may vendor trigger Skills, the AOS Skills service

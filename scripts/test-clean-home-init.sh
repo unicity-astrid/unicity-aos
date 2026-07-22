@@ -94,8 +94,8 @@ expected = sorted(
     for line in assets_path.read_text(encoding="utf-8").splitlines()
     if line
 )
-if len(expected) != 20 or len(set(expected)) != 20:
-    raise SystemExit("release capsule inventory is not the exact 20-capsule CE set")
+if len(expected) != 21 or len(set(expected)) != 21:
+    raise SystemExit("release capsule inventory is not the exact 21-capsule CE set")
 with lock_path.open("rb") as file:
     lock = tomllib.load(file)
 with profile_path.open("rb") as file:

@@ -2,10 +2,11 @@
 
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 struct Fixture {
@@ -158,6 +159,71 @@ fn unowned_root_passes_through_with_argv_home_and_exit_code() {
 }
 
 #[test]
+fn product_mcp_bridge_adds_local_form_support_and_rebrands_the_server() {
+    let fixture = Fixture::new("product-mcp");
+    fixture.install_runtime(
+        r#"#!/bin/sh
+printf '<%s>\n' "$@" > "$AOS_TEST_ARGS"
+IFS= read -r initialize
+printf '%s\n' "$initialize" > "$AOS_TEST_BOOTSTRAP_ARGS"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"astrid","version":"0.10.4"}}}'
+while IFS= read -r _line; do :; done
+"#,
+    );
+
+    let mut child = fixture
+        .command()
+        .args(["--principal", "grok-code", "mcp", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start product MCP bridge");
+    let mut stdin = child.stdin.take().expect("bridge stdin");
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "grok", "version": "1" }
+            }
+        })
+    )
+    .expect("write initialize");
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for MCP bridge");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read runtime args"),
+        "<--principal>\n<grok-code>\n<mcp>\n<serve>\n"
+    );
+    let forwarded: serde_json::Value = serde_json::from_str(
+        fs::read_to_string(&fixture.bootstrap_args)
+            .expect("read forwarded initialize")
+            .trim(),
+    )
+    .expect("forwarded initialize JSON");
+    assert!(
+        forwarded
+            .pointer("/params/capabilities/elicitation/form")
+            .is_some()
+    );
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("product initialize response");
+    assert_eq!(response["result"]["serverInfo"]["name"], "unicity-aos");
+    assert_eq!(response["result"]["serverInfo"]["title"], "Unicity AOS");
+}
+
+#[test]
 fn leading_runtime_globals_on_unowned_roots_pass_through_exactly() {
     let fixture = Fixture::new("leading-global-passthrough");
     fixture.install_runtime(RECORDING_RUNTIME);
@@ -281,21 +347,32 @@ fn bare_aos_shows_product_help_instead_of_claiming_native_chat() {
 }
 
 #[test]
-fn runtime_is_an_inherited_root_not_a_special_alias() {
-    let fixture = Fixture::new("runtime-root");
+fn runtime_verbs_are_first_class_aos_roots_without_a_nested_namespace() {
+    let fixture = Fixture::new("direct-runtime-roots");
     fixture.install_runtime(RECORDING_RUNTIME);
+    let contract: toml::Value = include_str!("../../../release/runtime-command-surface.toml")
+        .parse()
+        .expect("parse runtime command surface");
+    let roots = contract["roots"].as_table().expect("root classifications");
+    let direct_roots = ["inherited", "hidden-inherited"]
+        .into_iter()
+        .flat_map(|bucket| roots[bucket].as_array().expect("root classification list"))
+        .map(|root| root.as_str().expect("runtime root string"));
 
-    let output = fixture
-        .command()
-        .args(["runtime", "status", "--json"])
-        .output()
-        .expect("run aos");
+    for root in direct_roots {
+        let output = fixture
+            .command()
+            .args([root, "--aos-direct-root-probe"])
+            .output()
+            .expect("run direct AOS root");
 
-    assert!(output.status.success());
-    assert_eq!(
-        fs::read_to_string(&fixture.args).expect("read delegated args"),
-        "<runtime>\n<status>\n<--json>\n"
-    );
+        assert!(output.status.success(), "direct root failed: {root}");
+        assert_eq!(
+            fs::read_to_string(&fixture.args).expect("read delegated args"),
+            format!("<{root}>\n<--aos-direct-root-probe>\n")
+        );
+        fs::remove_file(&fixture.args).expect("reset delegated args");
+    }
 }
 
 #[test]
@@ -440,7 +517,7 @@ fn offline_init_keeps_the_runtime_offline_flag_and_uses_only_local_capsules() {
         .parse()
         .expect("parse materialized manifest");
     let capsules = manifest["capsule"].as_array().expect("capsule entries");
-    assert_eq!(capsules.len(), 20);
+    assert_eq!(capsules.len(), 21);
     let expected_root = fixture
         .home
         .join("releases")
@@ -612,7 +689,8 @@ fn product_owns_and_refuses_distro_mutation() {
         assert!(!fixture.args.exists());
         let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
         assert!(stderr.contains("Unicity CE owns the distribution state"));
-        assert!(stderr.contains("standalone `astrid distro ...`"));
+        assert!(stderr.contains("does not expose raw distribution mutation"));
+        assert!(!stderr.contains("astrid distro"));
     }
 }
 

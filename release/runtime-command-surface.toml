@@ -1,0 +1,51 @@
+schema-version = 1
+runtime-version = "0.10.4"
+
+[roots]
+# Public runtime roots delegated byte-for-byte as `aos <verb>`.
+inherited = [
+  "chat",
+  "run",
+  "agent",
+  "group",
+  "caps",
+  "quota",
+  "invite",
+  "keypair",
+  "pair-device",
+  "secret",
+  "voucher",
+  "trust",
+  "audit",
+  "budget",
+  "session",
+  "capsule",
+  "config",
+  "gc",
+  "start",
+  "stop",
+  "restart",
+  "logs",
+  "ps",
+  "top",
+  "who",
+  "doctor",
+  "setup",
+  "version",
+  "completions",
+]
+
+# Public runtime roots replaced at the same location by an AOS implementation.
+product-owned = [
+  "mcp",
+  "distro",
+  "init",
+  "status",
+  "update",
+]
+
+# `aos help <runtime-root>` delegates while AOS owns its own root help.
+shared = ["help"]
+
+# Hidden compatibility roots remain direct even though runtime `--help` omits them.
+hidden-inherited = ["build", "wit"]

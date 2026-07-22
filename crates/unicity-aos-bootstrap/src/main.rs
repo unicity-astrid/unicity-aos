@@ -15,6 +15,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
 
 mod hook;
+mod mcp;
 
 // Product-owned commands are parsed here. Unknown roots bypass this parser and
 // are delegated byte-for-byte to the bundled runtime by `main`.
@@ -27,7 +28,7 @@ mod hook;
     after_help = "All other commands are inherited from the bundled runtime. Running `aos` without a command displays product help until the native AOS chat surface lands."
 )]
 struct ProductCli {
-    /// Authenticated runtime operator used to provision another principal.
+    /// Authenticated runtime principal for principal-scoped AOS commands.
     #[arg(
         long,
         value_name = "OPERATOR_PRINCIPAL",
@@ -56,8 +57,19 @@ enum ProductCommand {
     Distro(DistroArgs),
     /// Deliver a host hook through the authenticated AOS event bus.
     Hook(hook::HookArgs),
+    /// Expose this AOS installation to an MCP host over stdio.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Serve the loopback-only product health endpoint.
     ServeHealth,
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Serve AOS tools and broker interactions over stdio.
+    Serve(mcp::ServeArgs),
 }
 
 #[derive(Args)]
@@ -280,11 +292,16 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
     if cli.principal.is_some()
         && !matches!(
             &cli.command,
-            Some(ProductCommand::Init(_) | ProductCommand::Distro(_) | ProductCommand::Hook(_))
+            Some(
+                ProductCommand::Init(_)
+                    | ProductCommand::Distro(_)
+                    | ProductCommand::Hook(_)
+                    | ProductCommand::Mcp { .. }
+            )
         )
     {
         eprintln!(
-            "aos: '--principal' is supported for `aos init` and `aos hook`; this AOS-owned command does not accept an operator principal"
+            "aos: '--principal' is supported for `aos init`, `aos hook`, and `aos mcp`; this AOS-owned command does not accept a runtime principal"
         );
         return Some(ExitCode::from(2));
     }
@@ -298,6 +315,9 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
         Some(ProductCommand::Update(args)) => Some(handle_self_update(&args)),
         Some(ProductCommand::Distro(args)) => Some(refuse_distro_command(&args.arguments)),
         Some(ProductCommand::Hook(args)) => Some(handle_hook(cli.principal, args)),
+        Some(ProductCommand::Mcp {
+            command: McpCommand::Serve(args),
+        }) => Some(mcp::handle_serve(cli.principal, args)),
         Some(ProductCommand::ServeHealth) => Some(handle_health_service()),
         None => Some(print_product_help()),
     }
@@ -515,6 +535,7 @@ fn is_owned_root(value: &str) -> bool {
             | "self_update"
             | "distro"
             | "hook"
+            | "mcp"
             | "serve-health"
     )
 }
@@ -679,9 +700,7 @@ fn refuse_distro_command(_arguments: &[OsString]) -> ExitCode {
     eprintln!(
         "aos: Unicity CE owns the distribution state for this AOS installation; `aos distro` cannot apply or replace it"
     );
-    eprintln!(
-        "Use the standalone `astrid distro ...` command with a separate Astrid Runtime home to manage another distribution."
-    );
+    eprintln!("AOS does not expose raw distribution mutation beneath another command namespace.");
     ExitCode::from(2)
 }
 
@@ -904,7 +923,7 @@ mod tests {
 
     use super::{
         ProductCli, ProductCommand, child_exit_code, handle_product_command, help_targets_product,
-        leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
+        is_owned_root, leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
     };
 
     #[test]
@@ -1147,6 +1166,30 @@ mod tests {
             panic!("expected product status command");
         };
         assert!(status.json);
+    }
+
+    #[test]
+    fn runtime_command_contract_matches_the_product_router() {
+        let contract: toml::Value = include_str!("../../../release/runtime-command-surface.toml")
+            .parse()
+            .expect("parse runtime command surface");
+        let roots = contract["roots"].as_table().expect("root classifications");
+
+        for root in roots["product-owned"]
+            .as_array()
+            .expect("product-owned roots")
+        {
+            assert!(is_owned_root(root.as_str().expect("runtime root")));
+        }
+        for bucket in ["inherited", "hidden-inherited"] {
+            for root in roots[bucket].as_array().expect("inherited roots") {
+                assert!(!is_owned_root(root.as_str().expect("runtime root")));
+            }
+        }
+        assert_eq!(
+            roots["shared"].as_array().expect("shared roots"),
+            &[toml::Value::String("help".to_owned())]
+        );
     }
 
     #[cfg(unix)]

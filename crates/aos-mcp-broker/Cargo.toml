@@ -1,0 +1,15 @@
+[package]
+name = "aos-mcp-broker"
+version = "0.1.0"
+edition = "2024"
+description = "AOS-owned MCP tool broker for the neutral Astrid event bus"
+publish = false
+
+[dependencies]
+astrid-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lib]
+path = "src/lib.rs"

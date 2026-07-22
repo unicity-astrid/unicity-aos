@@ -1,0 +1,16 @@
+[package]
+name = "aos-mcp"
+version = "0.1.0"
+edition = "2024"
+description = "Unicity AOS MCP broker capsule over the neutral Astrid event bus"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aos-mcp-broker = { path = "../../crates/aos-mcp-broker" }
+astrid-sdk.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true

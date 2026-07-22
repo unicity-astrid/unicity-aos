@@ -1,0 +1,175 @@
+[package]
+name = "aos-mcp"
+version = "0.1.0"
+description = "Unicity AOS MCP broker bridging Astrid capsule tools to host agents"
+authors = [
+    "Joshua J. Bouw <dev@joshuajbouw.com>",
+    "Unicity Labs <info@unicity-labs.com>",
+]
+astrid-version = ">=0.7.0"
+
+[[component]]
+id = "aos-mcp"
+file = "aos_mcp.wasm"
+type = "executable"
+
+[capabilities]
+kv = []
+
+# The confused-deputy gate for the state-mutating broker front door
+# (`astrid.v1.request.mcp.tool.call`) no longer reads an operator-maintained
+# allow-set. An ingress `source_id` (the kernel-set originating-capsule UUID)
+# is trusted iff the user has interactively consented to it — recorded under
+# the per-(principal, source_id) KV key `mcp.ingress.trust.<source_id>` by
+# `approval::handle_mcp_ingress_respond` after an elicit prompt. The `kv`
+# capability above backs that read/write.
+#
+# Per-principal argument-level policy rules — a JSON array of
+# { id, effect:"deny"|"allow", tool:"<glob>", when:[{pointer,op,value}] }.
+# Evaluated IN-PROCESS at the broker chokepoint (`policy::evaluate`,
+# read via `env::var_opt("policy_rules")`, so it resolves the invoking
+# principal's overlay — per-principal with no cross-capsule KV write). The
+# PDP only NARROWS: unset / empty /
+# malformed → no policy → the host's exec-time capability enforcement
+# remains the boundary (degrade-to-PEP + a loud `astrid.v1.audit.policy_*`
+# audit). DENY rules over free-form strings are best-effort (the kernel
+# resolves `home://` host-side; a raw-literal path/command deny is
+# evadable) — the robust shapes are allowlist-style eq/prefix. See
+# `crate::policy`.
+[env]
+policy_rules = { type = "string", default = "", request = "Per-principal policy rules as a JSON array (leave blank for none); see aos-mcp policy docs" }
+
+# aos-mcp describes the tool surface the host agent sees by querying the tool
+# registry and reshaping into MCP tool descriptors, and brokers tool
+# execution over the `astrid.v1.*` MCP surface (dispatched via the
+# tool.v1 bus protocol). Tool calls arrive ONLY through that broker front
+# door — `aos mcp serve` is the registered MCP server the supervised
+# host agent calls directly; there is no `astrid.v1.tool.call.*`
+# agent-runner leg (it would double-execute against the broker).
+[subscribe]
+# Authenticated host shims enter through the same kernel-recognized request
+# plane as MCP. aos-mcp validates the kernel-stamped principal plus the
+# session token before releasing a token-free event onto the internal bus.
+"astrid.v1.request.mcp.hook.codex" = { wit = "opaque", handler = "handle_codex_hook" }
+"astrid.v1.request.mcp.hook.claude" = { wit = "opaque", handler = "handle_claude_hook" }
+"astrid.v1.request.mcp.hook.grok" = { wit = "opaque", handler = "handle_grok_hook" }
+# The hook bridge answers on an internal delivery topic. aos-mcp revalidates
+# its principal/session/secret-derived route, then relays it to the exact
+# `astrid.v1.response.<delivery>` topic awaited by the originating uplink.
+"oracle.v1.hook.response.*" = { wit = "opaque", handler = "relay_host_hook_response" }
+"astrid.v1.tools.describe" = { wit = "opaque", handler = "describe_tools" }
+"tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response", handler = "collect_tool_descriptors" }
+# Capsule-set change signal. The kernel publishes `astrid.v1.capsules_loaded`
+# whenever the loaded-capsule set changes (install / live upgrade / live
+# remove). The descriptor-cache merge path above only ADDS, so a removed or
+# upgraded capsule's tools would linger until the TTL; `handle_capsules_changed`
+# invalidates the cache so the next `tools/list` re-discovers the live surface.
+# Exact (segment-arity-fixed) topic; the payload is a bare ready-signal.
+"astrid.v1.capsules_loaded" = { wit = "opaque", handler = "handle_capsules_changed" }
+# Broker front door: the sanitized `astrid.v1.*` MCP surface for an MCP
+# client behind a shim/proxy (`aos mcp serve`). The shim never sees
+# `tool.v1.*`. Both are exact (segment-arity-fixed) topics — the proxy
+# carries the correlation token in the body, not the topic, so no
+# wildcard suffix is needed here.
+"astrid.v1.request.mcp.tools.list" = { wit = "broker/list-request", handler = "handle_mcp_list" }
+"astrid.v1.request.mcp.tool.call" = { wit = "broker/call-request", handler = "handle_mcp_call" }
+# Elicitation/approval bridge (broker side). The shim forwards the host agent's
+# elicited approval choice here; `handle_mcp_approval` maps it onto
+# `astrid.v1.approval.response.<id>` to unblock the parked tool. Exact
+# (segment-arity-fixed) topic — the proxy carries the correlation token in
+# the body. State-mutating (it can grant a capability), so the handler is
+# confused-deputy gated on the kernel-set `source_id` (a trusted ingress),
+# the same gate the tool-call front door uses.
+"astrid.v1.request.mcp.approval.respond" = { wit = "broker/approval-respond", handler = "handle_mcp_approval" }
+# Ingress consent bridge (broker side). When a `tool.call` arrives from an
+# untrusted `source_id`, the broker replies an `ingress_approval_required`
+# signal; the shim elicits the user's consent and forwards the decision here
+# as `{ req_id, accept }`. On accept, `handle_mcp_ingress_respond` records
+# trust under `mcp.ingress.trust.<source_id>` (the SECURITY-CRITICAL
+# `source_id` is the kernel-stamped `runtime::caller().source_id` of this
+# message — never a body field) and acks on `astrid.v1.response.<req_id>`.
+# Exact (segment-arity-fixed) topic.
+"astrid.v1.request.mcp.ingress.respond" = { wit = "opaque", handler = "handle_mcp_ingress_respond" }
+# Capsule-grant consent bridge (broker side). When a `tool.call` is refused by
+# the kernel access gate (the principal has not granted the target capsule),
+# the broker replies a `grant_required` flag; the shim elicits the user's
+# Grant/Deny and forwards it here as `{ req_id, request_id, decision,
+# capsule_id }`. `handle_mcp_grant_respond` maps the choice onto
+# `astrid.v1.approval.response.<request_id>` (the SAME envelope the approval
+# flow uses, consumed verbatim by the kernel grant handler) and acks on
+# `astrid.v1.response.<req_id>`. PUBLISH-THEN-ACK, no result drain — the kernel
+# dropped the call (grant-on-use mirrors INGRESS: gate → consent → re-send).
+# State-mutating (an approve persists a grant), so it is confused-deputy gated
+# on the kernel-set `source_id`. Exact (segment-arity-fixed) topic. No new
+# publish ACL needed: the `astrid.v1.approval.response.*` decision channel and
+# the `astrid.v1.response.*` ack channel are already declared.
+"astrid.v1.request.mcp.grant.respond" = { wit = "opaque", handler = "handle_mcp_grant_respond" }
+# Dynamic-subscribe pattern: `execute::dispatch_with_approval` calls
+# `ipc::subscribe("astrid.v1.approval")` per broker tool call to observe a
+# capability-approval request published by the host while a gated tool is
+# blocked. The kernel gates runtime subscribes against this list, so the
+# fixed topic must be declared here even though there is no static handler
+# — the subscription is drained inline inside `dispatch_with_approval`.
+"astrid.v1.approval" = "@unicity-astrid/wit/approval/required"
+# Dynamic-subscribe pattern: `execute::dispatch_with_approval` calls
+# `ipc::subscribe("tool.v1.execute.<bare>.result")` per broker call. The
+# kernel gates runtime subscribes against this list, so the pattern must
+# be declared here even though there is no static handler — the
+# subscription is drained inline inside `dispatch_with_approval`.
+#
+# Kernel `topic_matches` treats `*` as a single-segment wildcard, so a
+# one-pattern declaration cannot cover both flat names ("read_file") and
+# MCP-style dot-namespaced names ("fs.read"). `is_valid_tool_name`
+# permits `.` in the bare name, so both shapes are legitimate and the
+# subscribe surface must enumerate both arities.
+"tool.v1.execute.*.result" = "@unicity-astrid/wit/types/tool-call-result"
+"tool.v1.execute.*.*.result" = "@unicity-astrid/wit/types/tool-call-result"
+# Native-tool verdict responder (the second PDP plane). aos-mcp joins the
+# hook-bridge `ToolCallBefore` merge: a `before_tool_call` fan-out — from the
+# kernel bridge (a bus-mediated tool) or an external `astrid-gate` PreToolUse
+# hook (a native tool) — carrying a correlation id gets a `{ skip }` verdict.
+# Exact (segment-arity-fixed) topic. See `crate::hook_gate`.
+"hook.v1.event.before_tool_call" = { wit = "opaque", handler = "handle_before_tool_call" }
+
+[publish]
+"oracle.v1.hook.validated.*" = "opaque"
+"astrid.v1.tools.list" = "opaque"
+# Policy-gate audits emitted at the broker. The in-process `mcp__aos__*`
+# gate emits `astrid.v1.audit.policy_deny` (a tool call refused by a rule) and
+# `astrid.v1.audit.policy_load_failed` (rules unset/unparseable/over-cap →
+# policy degraded to the exec-time capability PEP); the native-tool
+# PreToolUse gate emits `astrid.v1.audit.pretooluse_deny` (a native tool call
+# the hook blocked by policy). Single `*` covers the 4-segment
+# `astrid.v1.audit.<name>` topics; all share the `{ tool, rule }` shape.
+"astrid.v1.audit.*" = "broker/policy-audit"
+# `before_tool_call` verdict replies. `handle_before_tool_call` replies on
+# `hook.v1.response.before_tool_call.<correlation_id>`; the id is a single
+# clean segment (charset-gated in `hook_gate::reply_topic`), so the egress
+# topic is exactly 5 segments — one trailing `*` (subtree) covers every
+# routable reply and a multi-segment id is rejected before the wire.
+"hook.v1.response.before_tool_call.*" = "opaque"
+# Broker reply channel. Both broker handlers reply on
+# `astrid.v1.response.<req_id>`; the `req_id` is a single clean segment
+# (UUID-ish, validated in `broker::reply_topic`) so the egress topic is
+# exactly 4 segments — the kernel `*` is single-segment, so this
+# one-pattern declaration covers every routable reply and a multi-segment
+# req_id is rejected before it can reach the wire.
+"astrid.v1.response.*" = "opaque"
+# Elicitation/approval bridge decision channel. `handle_mcp_approval` maps
+# the shim's elicited choice onto `astrid.v1.approval.response.<request_id>`,
+# which the host's blocked `request_approval` is subscribed to. The
+# `request_id` is a single clean segment (host-minted UUID, charset-gated in
+# `approval::response_topic`) so the egress topic is exactly 4 segments — the
+# kernel `*` is single-segment, so this one-pattern declaration covers every
+# routable decision and a multi-segment id is rejected before the wire.
+"astrid.v1.approval.response.*" = "@unicity-astrid/wit/approval/response"
+"tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request" }
+# Execute fan-out from `dispatch_with_approval` — the broker strips the
+# `mcp__aos__` MCP prefix and forwards to the bare tool topic.
+# Two patterns because the kernel `*` is single-segment: the first
+# matches one-segment tool names ("read_file"), the second matches
+# MCP-style dot-namespaced names ("fs.read"). Tool-name charset is
+# already gated by `is_valid_tool_name` to ASCII alnum + `_.-`, so the
+# wildcards cannot be widened beyond the legitimate name surface.
+"tool.v1.execute.*" = { wit = "@unicity-astrid/wit/types/tool-call" }
+"tool.v1.execute.*.*" = { wit = "@unicity-astrid/wit/types/tool-call" }

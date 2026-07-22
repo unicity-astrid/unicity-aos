@@ -19,7 +19,7 @@ docs/         Product and operator documentation
 ## Install
 
 The supported installer installs the `aos` product command, its pinned runtime,
-and the exact 19 Community Edition capsules built from this source tree under
+and the exact 21 Community Edition capsules built from this source tree under
 the product-owned `~/.aos` root:
 
 ```sh
@@ -41,28 +41,38 @@ generated runtime coordination state.
 ## Command boundary
 
 AOS owns its product roots, including `init`, `status`, `migrate`, `update`,
-`distro`, and `serve-health`:
+`distro`, `mcp`, and `serve-health`:
 
 ```sh
 aos status
 aos status --json
+aos --principal codex-code mcp serve
 ```
 
-Every other root inherits the bundled Astrid CLI transparently. Arguments, exit
-codes, and signals pass through unchanged:
+Every other runtime root is part of the AOS CLI directly. Arguments, exit
+codes, and signals pass through unchanged; there is no nested `aos astrid` or
+`aos runtime` namespace:
 
 ```sh
 aos doctor
 aos capsule build
 ```
 
-An AOS-owned root intentionally shadows the runtime root with the same name.
-Use the standalone runtime CLI when the raw command is required:
+When AOS owns a root such as `status`, `init`, `update`, or `mcp`, its product
+implementation replaces the lower-level command at that same location. The
+complete supported surface therefore remains `aos <verb>`. Release validation
+compares the exact pinned runtime's public command inventory with AOS's
+classified root contract, so a new runtime verb cannot enter a product release
+without an explicit inherit-or-own decision.
 
-```sh
-astrid status
-astrid init --help
-```
+`aos mcp serve` is the product edge shared by Codex, Claude, and Grok. A client
+that supports MCP form elicitation keeps presenting its own constrained
+approval forms. When a client does not, the default `--interaction auto` mode
+uses a local AOS decision surface: AppKit on macOS, a native Windows dialog, or
+Pinentry on Linux. `--interaction client`, `native`, and `deny` make the policy
+explicit. The local bridge accepts only a single boolean or the fixed AOS
+approval enum; arbitrary strings, password-shaped fields, and URL
+elicitations are never collected through it.
 
 ## Build on AOS
 

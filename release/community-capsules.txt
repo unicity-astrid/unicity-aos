@@ -3,6 +3,7 @@
 # Keep this in distro order. Published artifact identities come from each
 # capsule's Cargo.toml/Capsule.toml and remain aos-*.
 capsule-cli
+capsule-mcp
 capsule-registry
 capsule-openai-compat
 capsule-react

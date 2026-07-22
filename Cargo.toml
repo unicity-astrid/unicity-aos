@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/unicity-aos-bootstrap",
+    "crates/aos-mcp-broker",
     "capsules/capsule-agents",
     "capsules/capsule-cli",
     "capsules/capsule-context-engine",
@@ -11,6 +12,7 @@ members = [
     "capsules/capsule-http",
     "capsules/capsule-identity",
     "capsules/capsule-memory",
+    "capsules/capsule-mcp",
     "capsules/capsule-openai",
     "capsules/capsule-openai-compat",
     "capsules/capsule-prompt-builder",
@@ -36,7 +38,7 @@ clap = { version = "4.6", features = ["derive"] }
 fs2 = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt", "time"] }
 toml = "0.8"
 uuid = { version = "1.22", features = ["rng-getrandom", "serde", "v4"] }
 
