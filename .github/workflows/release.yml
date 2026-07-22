@@ -95,6 +95,9 @@ jobs:
           key: aos-release-identity
       - name: Install pinned BLAKE3 checksum tool
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Verify the pinned runtime command surface
+        run: bash scripts/test-pinned-runtime-command-surface.sh
       - name: Refuse a nightly after its canonical base is tagged
         if: needs.classify.outputs.nightly == 'true'
         env:

@@ -923,7 +923,7 @@ mod tests {
 
     use super::{
         ProductCli, ProductCommand, child_exit_code, handle_product_command, help_targets_product,
-        leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
+        is_owned_root, leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
     };
 
     #[test]
@@ -1166,6 +1166,30 @@ mod tests {
             panic!("expected product status command");
         };
         assert!(status.json);
+    }
+
+    #[test]
+    fn runtime_command_contract_matches_the_product_router() {
+        let contract: toml::Value = include_str!("../../../release/runtime-command-surface.toml")
+            .parse()
+            .expect("parse runtime command surface");
+        let roots = contract["roots"].as_table().expect("root classifications");
+
+        for root in roots["product-owned"]
+            .as_array()
+            .expect("product-owned roots")
+        {
+            assert!(is_owned_root(root.as_str().expect("runtime root")));
+        }
+        for bucket in ["inherited", "hidden-inherited"] {
+            for root in roots[bucket].as_array().expect("inherited roots") {
+                assert!(!is_owned_root(root.as_str().expect("runtime root")));
+            }
+        }
+        assert_eq!(
+            roots["shared"].as_array().expect("shared roots"),
+            &[toml::Value::String("help".to_owned())]
+        );
     }
 
     #[cfg(unix)]

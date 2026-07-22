@@ -58,6 +58,10 @@
   form elicitation continue to render their own approvals; hosts such as Grok
   fall back to AppKit on macOS, native confirmation on Windows, or Pinentry on
   Linux. Free-form and secret-shaped fields are refused by this bridge.
+- Pin the exact public root-command inventory of the bundled runtime and fail
+  validation when a runtime update adds or removes a verb before AOS classifies
+  it as inherited, product-owned, or shared. Runtime verbs remain direct
+  `aos <verb>` commands without a nested runtime namespace.
 
 - Keep agent Skills out of `Capsule.toml` and the generic capsule release
   contract. Host plugins may vendor trigger Skills, the AOS Skills service

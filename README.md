@@ -60,7 +60,10 @@ aos capsule build
 
 When AOS owns a root such as `status`, `init`, `update`, or `mcp`, its product
 implementation replaces the lower-level command at that same location. The
-complete supported surface therefore remains `aos <verb>`.
+complete supported surface therefore remains `aos <verb>`. Release validation
+compares the exact pinned runtime's public command inventory with AOS's
+classified root contract, so a new runtime verb cannot enter a product release
+without an explicit inherit-or-own decision.
 
 `aos mcp serve` is the product edge shared by Codex, Claude, and Grok. A client
 that supports MCP form elicitation keeps presenting its own constrained

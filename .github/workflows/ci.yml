@@ -42,6 +42,7 @@ jobs:
           toolchain: "1.95.0"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo install b3sum --locked --version "$B3SUM_VERSION"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - run: sh -n install.sh
       - run: python3 scripts/validate-release-contract.py
       - run: python3 scripts/test_validate_release_contract.py
@@ -50,6 +51,8 @@ jobs:
       - run: python3 scripts/test_channel_transaction.py
       - run: python3 scripts/test_channel_publication.py
       - run: python3 scripts/test_release_publication.py
+      - run: python3 scripts/test_runtime_command_surface.py
+      - run: bash scripts/test-pinned-runtime-command-surface.sh
       - run: bash scripts/test-channel-workflow-contract.sh
       - run: python3 scripts/test_create_astrid_094_fixture.py
       - run: bash scripts/test-package-release.sh

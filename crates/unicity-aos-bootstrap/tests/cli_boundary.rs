@@ -350,40 +350,16 @@ fn bare_aos_shows_product_help_instead_of_claiming_native_chat() {
 fn runtime_verbs_are_first_class_aos_roots_without_a_nested_namespace() {
     let fixture = Fixture::new("direct-runtime-roots");
     fixture.install_runtime(RECORDING_RUNTIME);
+    let contract: toml::Value = include_str!("../../../release/runtime-command-surface.toml")
+        .parse()
+        .expect("parse runtime command surface");
+    let roots = contract["roots"].as_table().expect("root classifications");
+    let direct_roots = ["inherited", "hidden-inherited"]
+        .into_iter()
+        .flat_map(|bucket| roots[bucket].as_array().expect("root classification list"))
+        .map(|root| root.as_str().expect("runtime root string"));
 
-    for root in [
-        "chat",
-        "run",
-        "agent",
-        "group",
-        "caps",
-        "quota",
-        "invite",
-        "keypair",
-        "pair-device",
-        "secret",
-        "voucher",
-        "trust",
-        "audit",
-        "budget",
-        "session",
-        "capsule",
-        "build",
-        "config",
-        "wit",
-        "gc",
-        "start",
-        "stop",
-        "restart",
-        "logs",
-        "ps",
-        "top",
-        "who",
-        "doctor",
-        "setup",
-        "version",
-        "completions",
-    ] {
+    for root in direct_roots {
         let output = fixture
             .command()
             .args([root, "--aos-direct-root-probe"])
