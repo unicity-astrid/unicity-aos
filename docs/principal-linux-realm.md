@@ -2395,23 +2395,43 @@ CE set rather than test-installed companions.
   rustfmt, Clippy, and the `wasm32-unknown-unknown` standard library. rustup
   1.29.0 and `astrid-build` 0.10.4 are cross-built from pinned source into
   native RISC-V executables; no host executable is copied into the guest;
-- two independent final-rootfs assemblies were byte-identical at 361,698,176
+- two independent final-rootfs assemblies were byte-identical at 368,093,630
   bytes with SHA-256
-  `54223181822b9a31526d6b74c8744dc0d6b1355ec79d663abf92fba9de4c7980`.
-  The resulting 364,642,752-byte Linux image has SHA-256
-  `5186aab9673e2bd2a403bdecdb65e9678de5cc9ae74593961d4745aee7b55bcf`
+  `1fb272d1a964aabf3187bff45761982c1b24786a1a7464d593419b1c61d23ada`.
+  The resulting 371,082,136-byte Linux image has SHA-256
+  `b7dbb0ebecc3afdfb7cd353680fbe823104a2ca0cda0e87ca05d82f261ad4bb0`
   and BLAKE3
-  `a9c0b37ea9bf7163f493361d60c61cb8b121d053fcaaa22a576a0fb5fd4065d3`;
+  `d1ceca726e224893077404ee8932085dfe455304817f055689a9f3401782c47e`;
 - the stripped guest `rustup` and `astrid-build` binaries have SHA-256
   `5540d4f33a0010336789b472338d4b1da0dc5cfefbca0da6ea1147602994c190`
   and `b9d84ea9a961cefadf6c28e7492034f718e4251930bd4c4ebbce7b8395ef5922`
   respectively. Build-only transaction logs and uninstall metadata are removed
   so absolute workshop paths cannot leak into the immutable system image;
+- Buildroot's generic target-strip pass damaged the official RV64 `rust-lld`
+  while leaving an ELF that still parsed. The image now restores the already
+  release-stripped upstream linker after finalization and pins its SHA-256 as
+  `2797661e7295ca01ecfeac504de4aeeaaa8ec1ed794e1bbde09c841baba1e2ab`;
 - `/usr/libexec/aos/realm-env` links the immutable compiler into rustup as the
-  `aos-system` toolchain on first use. The rustup and Cargo databases live under
-  the invoking principal's durable `/home/agent`; Realm commands set
+  `aos-system` toolchain on first use. Rustup's symlink-bearing runtime metadata
+  lives in private guest RAM under `/run/aos/rustup`, while Cargo's cache and
+  configuration remain in the invoking principal's durable `/home/agent`.
+  Cargo's operational home is guest-native `/run/aos/cargo`, so its package
+  lock, `.global-cache` SQLite database, and journal sidecars never cross the
+  Plan 9 boundary. Native symlinks route registry sources, Git databases,
+  configuration, credentials, and installed binaries into durable
+  principal-scoped storage; `CARGO_INSTALL_ROOT` preserves install metadata.
+  The kernel generation fail-closes on `CONFIG_FILE_LOCKING=y` in addition to
+  its futex gates, because SQLite coordination needs both a native filesystem
+  and POSIX locks.
+  Persisting additional rustup-managed toolchains requires a guest-native
+  content filesystem rather than host symlink support. Realm commands set
   `RUSTUP_TOOLCHAIN=aos-system` so a repository-local channel file cannot turn
   into an undeclared network acquisition;
+- the final interpreter acceptance cold-booted in 17,070,998,838 metered guest
+  steps with 1,713 host suspensions. It compiled and ran native C, C++, CMake,
+  Make, and Rust; linked `wasm32-unknown-unknown`; committed a Git repository;
+  verified rustup's `aos-system`; and completed without Cargo's prior SQLite
+  lock warning. The test finished in 344.70 seconds;
 - the worker's immutable-asset ceiling is now a tested 512 MiB rather than the
   earlier 256 MiB. The reproduced 183,331-byte worker has BLAKE3
   `67467b9e020bed847a04ba55b4f7d8728bb172714eb0a4d23543752635773ad1`;

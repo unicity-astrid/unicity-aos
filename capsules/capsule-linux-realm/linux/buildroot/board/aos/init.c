@@ -136,6 +136,23 @@ static int refresh_workspace(void)
     return 0;
 }
 
+static int prepare_toolchain_runtime(void)
+{
+    if ((mkdir("/run", 0755) < 0 && errno != EEXIST) ||
+        (mkdir("/run/aos", 0755) < 0 && errno != EEXIST) ||
+        (mkdir("/run/aos/rustup", 0700) < 0 && errno != EEXIST) ||
+        (mkdir("/run/aos/cargo", 0700) < 0 && errno != EEXIST) ||
+        chmod("/run", 0755) < 0 || chmod("/run/aos", 0755) < 0 ||
+        chmod("/run/aos/rustup", 0700) < 0 ||
+        chmod("/run/aos/cargo", 0700) < 0 ||
+        chown("/run/aos/rustup", AGENT_UID, AGENT_GID) < 0 ||
+        chown("/run/aos/cargo", AGENT_UID, AGENT_GID) < 0) {
+        write_text("toolchain runtime home failed\n");
+        return 70;
+    }
+    return 0;
+}
+
 static int shell_status(const char *cwd, const char *script,
                         rlim_t max_file_bytes, rlim_t max_processes,
                         rlim_t max_open_files)
@@ -158,8 +175,9 @@ static int shell_status(const char *cwd, const char *script,
             "LANG=C",
             "LC_ALL=C",
             "TMPDIR=/tmp",
-            "CARGO_HOME=/home/agent/.cargo",
-            "RUSTUP_HOME=/home/agent/.rustup",
+            "CARGO_HOME=/run/aos/cargo",
+            "CARGO_INSTALL_ROOT=/home/agent/.cargo",
+            "RUSTUP_HOME=/run/aos/rustup",
             "RUSTUP_TOOLCHAIN=aos-system",
             "RUST_BACKTRACE=1",
             "BASH_ENV=/usr/libexec/aos/realm-env",
@@ -449,6 +467,8 @@ int main(void)
     int mount_status = configure_wall_clock();
     if (mount_status != 0)
         write_text("AOS CLOCK FAILED\n");
+    if (mount_status == 0)
+        mount_status = prepare_toolchain_runtime();
     if (mount_status == 0)
         mount_status = refresh_home();
     if (mount_status == 0)

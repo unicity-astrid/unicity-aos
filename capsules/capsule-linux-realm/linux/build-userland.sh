@@ -161,10 +161,18 @@ for required_file in \
     usr/include/c++/14.4.0/vector \
     usr/lib/crt1.o \
     usr/lib/libc.a \
+    usr/lib/libc.so \
+    usr/lib/libc_nonshared.a \
+    usr/lib/libdl.so \
     lib/libc.so \
     lib/libgcc_s.so \
     lib/libatomic.a \
     usr/lib/libm.a \
+    usr/lib/libm.so \
+    usr/lib/libpthread.so \
+    usr/lib/librt.so \
+    usr/lib/libutil.so \
+    usr/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld \
     usr/lib/clang/22/include/stddef.h \
     usr/lib/gcc/riscv64-buildroot-linux-gnu/14.4.0/libgcc.a \
     usr/lib/libstdc++.so \
@@ -208,6 +216,20 @@ fi
 if "$readelf" -d "$target/usr/bin/cmake" |
     grep -Eq '/build|rootfs-out|RPATH|RUNPATH'; then
     echo "development CMake retains a build-time dynamic-loader path" >&2
+    exit 70
+fi
+expected_rust_lld=$(sed -n 's/^rust_lld_shipped_sha256=//p' "$development_lock")
+actual_rust_lld=$(sha256sum \
+    "$target/usr/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld" |
+    cut -d ' ' -f 1)
+if [ -z "$expected_rust_lld" ] || [ "$actual_rust_lld" != "$expected_rust_lld" ]; then
+    echo "development rootfs has an unadmitted rust-lld" >&2
+    exit 70
+fi
+if ! "$readelf" -d \
+    "$target/usr/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld" |
+    grep -qF 'Library rpath: [$ORIGIN/../lib]'; then
+    echo "development rust-lld lost its relative immutable-library RPATH" >&2
     exit 70
 fi
 for compiler_flag in \

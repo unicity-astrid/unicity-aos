@@ -1975,26 +1975,53 @@ fn io_error_name(error: RealmIoError) -> &'static str {
 mod tests {
     use super::*;
 
-    const EXTERNAL_DEVELOPER_TOOLCHAIN_PROBE: &str = concat!(
-        "set -eu; ",
-        "rm -rf /workspace/aos-dev-probe; mkdir /workspace/aos-dev-probe; cd /workspace/aos-dev-probe; ",
-        "bash --version; git --version; python3 --version; clang --version; clang++ --version; make --version; cmake --version; ninja --version; ",
-        "rustc --version; cargo --version; rustup --version; rustup show active-toolchain; astrid-build --version; ",
-        "python3 -c 'print(\"PYTHON_OK\")'; ",
-        "printf '#include <stdio.h>\\nint main(void){puts(\"C_OK\");}\\n' > hello.c; cc hello.c -o hello-c; ./hello-c; ",
-        "printf '#include <iostream>\\nint main(){std::cout << \"CXX_OK\\\\n\";}\\n' > hello.cc; c++ hello.cc -o hello-cxx; ./hello-cxx; ",
-        "printf 'all:\\n\\t@echo MAKE_OK\\n' > Makefile; make; ",
-        "printf 'cmake_minimum_required(VERSION 3.15)\\nproject(probe C)\\nadd_executable(cmake-probe hello.c)\\n' > CMakeLists.txt; ",
-        "cmake -S . -B cmake-build -G Ninja; cmake --build cmake-build; ./cmake-build/cmake-probe; ",
-        "mkdir rust-probe; printf '[package]\\nname=\"realm-probe\"\\nversion=\"0.1.0\"\\nedition=\"2024\"\\n\\n[dependencies]\\n' > rust-probe/Cargo.toml; ",
-        "mkdir rust-probe/src; printf 'fn main(){println!(\"RUST_OK\");}\\n' > rust-probe/src/main.rs; ",
-        "cargo build --manifest-path rust-probe/Cargo.toml --release --offline; ./rust-probe/target/release/realm-probe; ",
-        "printf '#[unsafe(no_mangle)] pub extern \"C\" fn realm_wasm_probe() -> i32 { 42 }\\n' > rust-probe/src/lib.rs; ",
-        "rustc --crate-type=cdylib --target=wasm32-unknown-unknown -O rust-probe/src/lib.rs -o rust-probe/realm-probe.wasm; ",
-        "test \"$(od -An -tx1 -N4 rust-probe/realm-probe.wasm | tr -d ' \\n')\" = 0061736d; echo WASM_OK; ",
-        "git init -q; git config user.name Agent; git config user.email agent@aos.invalid; git add .; git commit -qm probe; git rev-parse --verify HEAD; ",
-        "echo TOOLCHAIN_OK",
-    );
+    const EXTERNAL_DEVELOPER_TOOLCHAIN_PROBES: &[&str] = &[
+        concat!(
+            "set -eu; ",
+            "rm -rf /workspace/aos-dev-probe; mkdir /workspace/aos-dev-probe; cd /workspace/aos-dev-probe; ",
+            "bash --version; git --version; python3 --version; clang --version; clang++ --version; make --version; cmake --version; ninja --version; ",
+            "rustc --version; cargo --version; rustup --version; rustup show active-toolchain; astrid-build --version; ",
+            "test \"$(readlink /run/aos/rustup/toolchains/aos-system)\" = /usr; echo RUSTUP_RUNTIME_OK; ",
+            "test \"$CARGO_HOME\" = /run/aos/cargo; test \"$(readlink /run/aos/cargo/registry)\" = /home/agent/.cargo/registry; echo CARGO_RUNTIME_OK; ",
+            "python3 -c 'print(\"PYTHON_OK\")'",
+        ),
+        concat!(
+            "set -eu; cd /workspace/aos-dev-probe; ",
+            "printf '#include <stdio.h>\\nint main(void){puts(\"C_OK\");}\\n' > hello.c; cc hello.c -o hello-c; ./hello-c; ",
+            "printf '#include <iostream>\\nint main(){std::cout << \"CXX_OK\\\\n\";}\\n' > hello.cc; c++ hello.cc -o hello-cxx; ./hello-cxx; ",
+            "printf 'all:\\n\\t@echo MAKE_OK\\n' > Makefile; make",
+        ),
+        concat!(
+            "set -eu; cd /workspace/aos-dev-probe; ",
+            "printf 'cmake_minimum_required(VERSION 3.15)\\nproject(probe C)\\nadd_executable(cmake-probe hello.c)\\n' > CMakeLists.txt; ",
+            "cmake -S . -B cmake-build -G Ninja; cmake --build cmake-build; ./cmake-build/cmake-probe",
+        ),
+        concat!(
+            "set -eu; cd /workspace/aos-dev-probe; ",
+            "mkdir rust-probe; printf '[package]\\nname=\"realm-probe\"\\nversion=\"0.1.0\"\\nedition=\"2024\"\\n\\n[dependencies]\\n' > rust-probe/Cargo.toml; ",
+            "mkdir rust-probe/src; printf 'fn main(){println!(\"RUST_OK\");}\\n' > rust-probe/src/main.rs; ",
+            "cargo build --manifest-path rust-probe/Cargo.toml --release --offline; ./rust-probe/target/release/realm-probe",
+        ),
+        concat!(
+            "set -eu; cd /workspace/aos-dev-probe; ",
+            "printf '#[unsafe(no_mangle)] pub extern \"C\" fn realm_wasm_probe() -> i32 { 42 }\\n' > rust-probe/src/lib.rs; ",
+            "rustc --crate-type=cdylib --target=wasm32-unknown-unknown -O rust-probe/src/lib.rs -o rust-probe/realm-probe.wasm; ",
+            "test \"$(od -An -tx1 -N4 rust-probe/realm-probe.wasm | tr -d ' \\n')\" = 0061736d; echo WASM_OK; ",
+            "git init -q; git config user.name Agent; git config user.email agent@aos.invalid; git add .; git commit -qm probe; git rev-parse --verify HEAD; ",
+            "echo TOOLCHAIN_OK",
+        ),
+    ];
+
+    #[test]
+    fn developer_toolchain_probes_respect_guest_command_boundary() {
+        for probe in EXTERNAL_DEVELOPER_TOOLCHAIN_PROBES {
+            assert!(
+                probe.len() <= MAX_LINUX_COMMAND_BYTES,
+                "{} bytes",
+                probe.len()
+            );
+        }
+    }
 
     #[test]
     fn shell_frame_preserves_bootstrap_compatibility_and_opts_into_resource_limits() {
@@ -2506,7 +2533,6 @@ mod tests {
     #[test]
     #[ignore = "boots the external pinned developer image under the full RV64 interpreter"]
     fn external_developer_image_executes_the_complete_base_toolchain() {
-        assert!(EXTERNAL_DEVELOPER_TOOLCHAIN_PROBE.len() <= MAX_LINUX_COMMAND_BYTES);
         let image_path = std::env::var_os("AOS_REALM_TEST_LINUX_IMAGE")
             .expect("set AOS_REALM_TEST_LINUX_IMAGE to the recorded Linux Image");
         let image = std::fs::read(&image_path).expect("read external developer image");
@@ -2551,20 +2577,32 @@ mod tests {
             boot.fuel_consumed, boot.suspensions
         );
 
-        let result = execute_linux_resident_cooperatively(
-            LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
-            LinuxAction::Shell,
-            Some(EXTERNAL_DEVELOPER_TOOLCHAIN_PROBE),
-            "/workspace",
-            Some("decafbaddecafbaddecafbaddecafbad"),
-            limits,
-            || Ok(()),
-        )
-        .expect("execute complete developer toolchain probe");
-        let stdout = String::from_utf8_lossy(&result.stdout);
+        let mut stdout = String::new();
+        for (index, probe) in EXTERNAL_DEVELOPER_TOOLCHAIN_PROBES.iter().enumerate() {
+            let nonce = format!("{index:032x}");
+            let result = execute_linux_resident_cooperatively(
+                LinuxResidentState::new(&mut machine, &mut home_9p, &mut workspace_9p),
+                LinuxAction::Shell,
+                Some(probe),
+                "/workspace",
+                Some(&nonce),
+                limits,
+                || Ok(()),
+            )
+            .expect("execute developer toolchain probe");
+            let command_stdout = String::from_utf8_lossy(&result.stdout);
+            assert_eq!(
+                result.outcome, "completed",
+                "toolchain output:\n{command_stdout}"
+            );
+            assert_eq!(
+                result.exit_status,
+                Some(0),
+                "toolchain output:\n{command_stdout}"
+            );
+            stdout.push_str(&command_stdout);
+        }
         eprintln!("external developer toolchain output:\n{stdout}");
-        assert_eq!(result.outcome, "completed", "toolchain output:\n{stdout}");
-        assert_eq!(result.exit_status, Some(0), "toolchain output:\n{stdout}");
         for marker in [
             "GNU bash, version 5.2.37",
             "git version 2.54.0",
@@ -2578,6 +2616,8 @@ mod tests {
             "rustup 1.29.0",
             "aos-system",
             "astrid-build 0.10.4",
+            "RUSTUP_RUNTIME_OK",
+            "CARGO_RUNTIME_OK",
             "PYTHON_OK",
             "C_OK",
             "CXX_OK",
@@ -2588,6 +2628,11 @@ mod tests {
         ] {
             assert!(stdout.contains(marker), "missing {marker:?} in:\n{stdout}");
         }
+        assert!(
+            !stdout.contains("failed to save last-use data")
+                && !stdout.contains("database is locked"),
+            "Cargo cache tracking must use guest-native locking:\n{stdout}"
+        );
     }
 
     #[test]

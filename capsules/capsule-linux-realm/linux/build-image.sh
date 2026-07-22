@@ -130,6 +130,9 @@ make -C "$kernel_source" O="$build_dir/kernel" \
     --enable PRINTK \
     --enable MULTIUSER \
     --enable POSIX_TIMERS \
+    --enable FUTEX \
+    --enable FUTEX_PI \
+    --enable FILE_LOCKING \
     --enable EPOLL \
     --enable EVENTFD \
     --enable SIGNALFD \
@@ -219,6 +222,16 @@ export SOURCE_DATE_EPOCH=0
 
 make -C "$kernel_source" O="$build_dir/kernel" \
     ARCH=riscv LLVM=1 LLVM_IAS=1 olddefconfig
+for required_kernel_config in \
+    CONFIG_FUTEX=y \
+    CONFIG_FUTEX_PI=y \
+    CONFIG_FILE_LOCKING=y
+do
+    if ! grep -qxF "$required_kernel_config" "$build_dir/kernel/.config"; then
+        echo "required kernel config is missing: $required_kernel_config" >&2
+        exit 65
+    fi
+done
 make -j"$build_jobs" -C "$kernel_source" O="$build_dir/kernel" \
     ARCH=riscv LLVM=1 LLVM_IAS=1 Image
 

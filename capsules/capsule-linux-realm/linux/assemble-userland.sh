@@ -109,6 +109,14 @@ for binary in astrid-build rustup; do
         exit 70
     fi
 done
+expected=$(lock_value rust_lld_shipped_sha256)
+actual=$(sha256sum \
+    "$target/usr/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld" |
+    cut -d ' ' -f 1)
+if [ "$actual" != "$expected" ]; then
+    echo "shipped rust-lld digest mismatch: expected $expected, got $actual" >&2
+    exit 70
+fi
 expected_cpio=$(lock_value rootfs_cpio_sha256)
 actual_cpio=$(sha256sum "$cpio" | cut -d ' ' -f 1)
 if [ "$actual_cpio" != "$expected_cpio" ]; then

@@ -162,15 +162,39 @@ Inside the builder recorded in `SOURCES.lock`:
 ```
 
 On a principal's first shell command, immutable `/usr/libexec/aos/realm-env`
-links the admitted `/usr` toolchain as rustup's `aos-system` default and creates
-the standard proxies under that principal's `/home/agent/.cargo/bin`. The
-rustup database lives under `/home/agent/.rustup`; changing a default or adding
-a future pre-admitted toolchain cannot affect another principal or the system
-image. Realm commands initially set `RUSTUP_TOOLCHAIN=aos-system`, so a capsule
+links the admitted `/usr` toolchain as rustup's `aos-system` default. The link
+and rustup runtime metadata live in the private guest-native
+`/run/aos/rustup`, because the Plan 9-backed principal home deliberately does
+not implement symlinks. Cargo's cache, configuration, and installed binaries
+remain durable under `/home/agent/.cargo`. Cargo's operational home lives in
+guest-native `/run/aos/cargo` so its package lock, `.global-cache` SQLite
+database, journals, and other coordination files have full Linux filesystem
+semantics. Native symlinks route the large `registry`, `git`, and `bin` trees
+to the durable principal home, and `CARGO_INSTALL_ROOT` keeps `cargo install`
+metadata there too. Global config and credential paths also point into the
+principal home. The immutable `rustc` and `cargo` remain directly available
+under `/usr/bin`.
+Realm commands initially set
+`RUSTUP_TOOLCHAIN=aos-system`, so a capsule
 repository's ordinary pinned channel cannot trigger an undeclared download;
 the shell may deliberately select another already admitted toolchain. The guest
-currently has no network device, so rustup cannot acquire
-unadmitted toolchain bytes from the Internet.
+currently has no network device, so rustup cannot acquire unadmitted toolchain
+bytes from the Internet. Persisting arbitrary rustup-managed toolchains will
+require a guest-native content filesystem rather than weakening the Plan 9
+boundary with host symlinks.
+
+The official RV64 `rust-lld` is restored after Buildroot's generic target-strip
+pass. That strip pass produces an ELF which still parses but fails dynamic
+symbol resolution before it can link WebAssembly. The restored upstream binary
+is already release-stripped, retains only its relative `$ORIGIN/../lib` RPATH,
+and is admitted by SHA-256 in `DEVELOPMENT.lock`. The complete toolchain test
+must compile `wasm32-unknown-unknown`; version output alone cannot detect this
+class of packaging damage.
+
+The kernel build also fail-closes on `CONFIG_FUTEX`, `CONFIG_FUTEX_PI`, and
+`CONFIG_FILE_LOCKING`. Rust's runtime requires futexes, while Cargo's SQLite
+cache tracker requires POSIX file locks; a toolchain version probe exercises
+neither contract.
 
 `build-userland.sh` uses `BR2_DL_DIR` when supplied; otherwise it creates a
 sibling cache next to the output directory. It never writes downloads into the

@@ -140,6 +140,36 @@ do
     fi
     cp -a "$STAGING_DIR/usr/lib/$archive" "$target_dir/usr/lib/"
 done
+# A dynamic development sysroot also needs glibc's linker script, its
+# non-shared support archive, and the libm development symlink. Without
+# `libc.so`, `-lc` silently selects `libc.a` and produces a broken hybrid PIE
+# that relocates its own now-read-only GNU_RELRO pages at startup.
+for input in libc.so libc_nonshared.a libm.so; do
+    if [ ! -e "$STAGING_DIR/usr/lib/$input" ]; then
+        echo "AOS development image requires glibc shared link input: $input" >&2
+        exit 70
+    fi
+    cp -a "$STAGING_DIR/usr/lib/$input" "$target_dir/usr/lib/"
+done
+# Rust's GNU/Linux target still requests these historical glibc libraries by
+# their unversioned development names. glibc 2.34 merged their implementations
+# into libc, but retains versioned compatibility DSOs. Buildroot removes the
+# unversioned links from an appliance target, so restore only links to the
+# already admitted runtime objects.
+for link_target in \
+    'libdl.so ../../lib/libdl.so.2' \
+    'libpthread.so ../../lib/libpthread.so.0' \
+    'librt.so ../../lib/librt.so.1' \
+    'libutil.so ../../lib/libutil.so.1'
+do
+    link=${link_target%% *}
+    target=${link_target#* }
+    if [ ! -e "$target_dir/usr/lib/$target" ]; then
+        echo "AOS development image requires glibc compatibility DSO: $target" >&2
+        exit 70
+    fi
+    ln -sfn "$target" "$target_dir/usr/lib/$link"
+done
 if [ ! -f "$STAGING_DIR/lib/libatomic.a" ]; then
     echo "AOS development image requires GCC runtime link input: libatomic.a" >&2
     exit 70
@@ -202,21 +232,61 @@ rm -f "$python_config_dir"/__pycache__/_sysconfigdata__linux_riscv64-linux-gnu.*
 rm -f "$target_dir"/usr/lib/libstdc++.so.*-gdb.py
 
 # Bash sources this immutable file for every non-interactive Realm command.
-# The first command in a principal's mounted home links the admitted system
-# toolchain into that principal's own rustup state. Rustup proxies then shadow
-# /usr/bin through PATH without mutating the shared image.
+# The first command links the admitted system toolchain into a private,
+# guest-native rustup home. The Plan 9-backed principal home deliberately does
+# not expose symlink creation, so Cargo's persistent cache stays there while
+# rustup's system-toolchain link lives in the principal's resident guest RAM.
 cat >"$target_dir/usr/libexec/aos/realm-env" <<'EOF'
-if [ -x /usr/bin/rustup ] && [ ! -f "${RUSTUP_HOME:-$HOME/.rustup}/.aos-system-ready" ]; then
+if [ ! -f "${CARGO_HOME:-/run/aos/cargo}/.aos-runtime-ready" ]; then
+    /usr/libexec/aos/init-cargo || printf '%s\n' 'warning: AOS Cargo runtime initialization failed' >&2
+fi
+if [ -x /usr/bin/rustup ] && [ ! -f "${RUSTUP_HOME:-/run/aos/rustup}/.aos-system-ready" ]; then
     /usr/libexec/aos/init-rustup || printf '%s\n' 'warning: AOS system rustup initialization failed' >&2
 fi
+EOF
+cat >"$target_dir/usr/libexec/aos/init-cargo" <<'EOF'
+#!/bin/sh
+set -eu
+
+: "${HOME:=/home/agent}"
+: "${CARGO_HOME:=/run/aos/cargo}"
+: "${CARGO_INSTALL_ROOT:=$HOME/.cargo}"
+export HOME CARGO_HOME CARGO_INSTALL_ROOT
+marker=$CARGO_HOME/.aos-runtime-ready
+test -f "$marker" && exit 0
+
+ensure_link() {
+    target=$1
+    link=$2
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
+        return 0
+    fi
+    if [ -e "$link" ] || [ -L "$link" ]; then
+        printf 'refusing unexpected Cargo runtime path: %s\n' "$link" >&2
+        exit 70
+    fi
+    ln -s "$target" "$link"
+}
+
+mkdir -p "$CARGO_HOME" \
+    "$CARGO_INSTALL_ROOT/bin" \
+    "$CARGO_INSTALL_ROOT/git" \
+    "$CARGO_INSTALL_ROOT/registry"
+ensure_link "$CARGO_INSTALL_ROOT/bin" "$CARGO_HOME/bin"
+ensure_link "$CARGO_INSTALL_ROOT/git" "$CARGO_HOME/git"
+ensure_link "$CARGO_INSTALL_ROOT/registry" "$CARGO_HOME/registry"
+for state_file in config config.toml credentials credentials.toml; do
+    ensure_link "$CARGO_INSTALL_ROOT/$state_file" "$CARGO_HOME/$state_file"
+done
+: >"$marker"
 EOF
 cat >"$target_dir/usr/libexec/aos/init-rustup" <<'EOF'
 #!/bin/sh
 set -eu
 
 : "${HOME:=/home/agent}"
-: "${CARGO_HOME:=$HOME/.cargo}"
-: "${RUSTUP_HOME:=$HOME/.rustup}"
+: "${CARGO_HOME:=/run/aos/cargo}"
+: "${RUSTUP_HOME:=/run/aos/rustup}"
 export HOME CARGO_HOME RUSTUP_HOME
 marker=$RUSTUP_HOME/.aos-system-ready
 test -f "$marker" && exit 0
@@ -226,12 +296,10 @@ if ! /usr/bin/rustup toolchain list | grep -q '^aos-system'; then
     /usr/bin/rustup toolchain link aos-system /usr
 fi
 /usr/bin/rustup default aos-system
-for proxy in cargo cargo-clippy clippy-driver rustc rustdoc rustfmt; do
-    ln -sfn /usr/bin/rustup "$CARGO_HOME/bin/$proxy"
-done
 : >"$marker"
 EOF
 chmod 0755 \
+    "$target_dir/usr/libexec/aos/init-cargo" \
     "$target_dir/usr/libexec/aos/init-rustup" \
     "$target_dir/usr/libexec/aos/realm-env"
 
@@ -243,6 +311,31 @@ rm -f \
     "$target_dir/usr/lib/rustlib/install.log" \
     "$target_dir/usr/lib/rustlib/manifest-"* \
     "$target_dir/usr/lib/rustlib/uninstall.sh"
+
+# Buildroot's target-finalize strip pass corrupts the upstream RV64 rust-lld:
+# the resulting ELF still parses, but glibc resolves an empty dynamic symbol
+# and exits 127 before linking wasm32 output. Restore the already-stripped,
+# release-signed upstream binary after target finalization. Its relative RPATH
+# resolves only the immutable Rust libraries adjacent to it in /usr.
+rust_lld_source=$BUILD_DIR/aos-rust-toolchain-1.97.1/rustc/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld
+rust_lld_target=$target_dir/usr/lib/rustlib/riscv64gc-unknown-linux-gnu/bin/rust-lld
+development_lock=$script_dir/../../../DEVELOPMENT.lock
+expected_rust_lld=$(sed -n 's/^rust_lld_shipped_sha256=//p' "$development_lock")
+if [ -z "$expected_rust_lld" ] || [ ! -x "$rust_lld_source" ]; then
+    echo "AOS development image requires the pinned upstream rust-lld" >&2
+    exit 70
+fi
+install -m 0755 "$rust_lld_source" "$rust_lld_target"
+actual_rust_lld=$(sha256sum "$rust_lld_target" | cut -d ' ' -f 1)
+if [ "$actual_rust_lld" != "$expected_rust_lld" ]; then
+    echo "shipped rust-lld digest mismatch: expected $expected_rust_lld, got $actual_rust_lld" >&2
+    exit 70
+fi
+if ! "$HOST_DIR/bin/$target_tuple-readelf" -d "$rust_lld_target" |
+    grep -qF 'Library rpath: [$ORIGIN/../lib]'; then
+    echo "shipped rust-lld lost its relative immutable-library RPATH" >&2
+    exit 70
+fi
 
 leaked_path=$(LC_ALL=C grep -RIl -F "$BASE_DIR" "$target_dir" 2>/dev/null | head -n 1 || true)
 if [ -n "$leaked_path" ]; then
