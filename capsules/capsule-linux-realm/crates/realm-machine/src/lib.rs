@@ -18,7 +18,11 @@ use rustc_apfloat::{
     Float, FloatConvert, Round, Status as FloatStatus, StatusAnd,
     ieee::{Double, Single},
 };
-use std::{collections::VecDeque, fmt};
+use std::{
+    collections::VecDeque,
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 /// Machine profile whose future device tree and Linux image are versioned together.
 pub const MACHINE_MODEL: &str = "aos-rv64-virt-v1";
@@ -972,7 +976,8 @@ enum HartLifecycle {
 }
 
 #[derive(Clone, Debug)]
-struct ParkedHart {
+#[doc(hidden)]
+pub struct HartState {
     id: usize,
     lifecycle: HartLifecycle,
     cpu: Cpu,
@@ -985,11 +990,11 @@ struct ParkedHart {
     translation_cache: TranslationCache,
 }
 
-impl ParkedHart {
-    fn stopped(id: usize) -> Self {
+impl HartState {
+    fn new(id: usize, lifecycle: HartLifecycle) -> Self {
         Self {
             id,
-            lifecycle: HartLifecycle::Stopped,
+            lifecycle,
             cpu: Cpu::new(),
             csrs: CsrFile::default(),
             cycle: 0,
@@ -1255,8 +1260,6 @@ impl GuestRam {
 struct Devices {
     ram: GuestRam,
     mtime: u64,
-    mtimecmp: u64,
-    msip: bool,
     console_input: VecDeque<u8>,
     console_output: Vec<u8>,
     max_console_bytes: usize,
@@ -1378,8 +1381,6 @@ impl Devices {
         Ok(Self {
             ram: GuestRam::zeroed(config.ram_bytes)?,
             mtime: 0,
-            mtimecmp: u64::MAX,
-            msip: false,
             console_input: VecDeque::new(),
             console_output: Vec::new(),
             max_console_bytes: config.max_console_bytes,
@@ -1389,8 +1390,6 @@ impl Devices {
     fn reset(&mut self) {
         self.ram.fill_zero();
         self.mtime = 0;
-        self.mtimecmp = u64::MAX;
-        self.msip = false;
         self.console_input.clear();
         self.console_output.clear();
     }
@@ -1404,17 +1403,6 @@ impl Devices {
     }
 
     fn read(&mut self, address: u64, bytes: u8) -> Result<u64, MachineTrap> {
-        if let Some(offset) = address
-            .checked_sub(CLINT_BASE)
-            .filter(|offset| *offset < CLINT_SIZE)
-        {
-            return match (offset, bytes) {
-                (CLINT_MSIP, 4) => Ok(u64::from(self.msip)),
-                (CLINT_MTIMECMP, 8) => Ok(self.mtimecmp),
-                (CLINT_MTIME, 8) => Ok(self.mtime),
-                _ => Err(MachineTrap::LoadAccessFault { address, bytes }),
-            };
-        }
         if let Some(offset) = address
             .checked_sub(UART_BASE)
             .filter(|offset| *offset < UART_SIZE)
@@ -1453,26 +1441,6 @@ impl Devices {
         value: u64,
         bytes: u8,
     ) -> Result<Option<HaltStatus>, MachineTrap> {
-        if let Some(offset) = address
-            .checked_sub(CLINT_BASE)
-            .filter(|offset| *offset < CLINT_SIZE)
-        {
-            return match (offset, bytes) {
-                (CLINT_MSIP, 4) => {
-                    self.msip = value & 1 != 0;
-                    Ok(None)
-                }
-                (CLINT_MTIMECMP, 8) => {
-                    self.mtimecmp = value;
-                    Ok(None)
-                }
-                (CLINT_MTIME, 8) => {
-                    self.mtime = value;
-                    Ok(None)
-                }
-                _ => Err(MachineTrap::StoreAccessFault { address, bytes }),
-            };
-        }
         if let Some(offset) = address
             .checked_sub(UART_BASE)
             .filter(|offset| *offset < UART_SIZE)
@@ -1569,17 +1537,6 @@ impl Devices {
     fn tick(&mut self) {
         self.mtime = self.mtime.wrapping_add(1);
     }
-
-    fn hardware_interrupts(&self) -> u64 {
-        let mut pending = 0;
-        if self.msip {
-            pending |= MIP_MSIP;
-        }
-        if self.mtime >= self.mtimecmp {
-            pending |= MIP_MTIP;
-        }
-        pending
-    }
 }
 
 /// An admitted RV64 machine whose execution can only advance in explicit slices.
@@ -1588,23 +1545,30 @@ pub struct Machine {
     config: MachineConfig,
     hart_count: usize,
     active_hart_id: usize,
-    active_hart_lifecycle: HartLifecycle,
-    parked_harts: Vec<Option<ParkedHart>>,
+    harts: Vec<HartState>,
     scheduler_quantum_remaining: u64,
-    cpu: Cpu,
-    csrs: CsrFile,
     devices: Devices,
     state: RunState,
     steps_executed: u64,
     instructions_retired: u64,
-    cycle: u64,
-    instret: u64,
-    reservation: Option<(u64, u8)>,
     firmware: SbiFirmware,
     next_host_request_id: u64,
     pending_9p_request: Option<PendingPlan9Request>,
     metrics: MachineMetrics,
-    translation_cache: TranslationCache,
+}
+
+impl Deref for Machine {
+    type Target = HartState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.harts[self.active_hart_id]
+    }
+}
+
+impl DerefMut for Machine {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.harts[self.active_hart_id]
+    }
 }
 
 /// Opaque, reusable copy of a machine stopped before a host effect completes.
@@ -1684,25 +1648,27 @@ impl Machine {
             config,
             hart_count,
             active_hart_id: 0,
-            active_hart_lifecycle: HartLifecycle::Started,
-            parked_harts: (0..hart_count)
-                .map(|hart_id| (hart_id != 0).then(|| ParkedHart::stopped(hart_id)))
+            harts: (0..hart_count)
+                .map(|hart_id| {
+                    HartState::new(
+                        hart_id,
+                        if hart_id == 0 {
+                            HartLifecycle::Started
+                        } else {
+                            HartLifecycle::Stopped
+                        },
+                    )
+                })
                 .collect(),
             scheduler_quantum_remaining: HART_SCHEDULER_QUANTUM,
-            cpu: Cpu::new(),
-            csrs: CsrFile::default(),
             devices: Devices::new(config)?,
             state: RunState::Runnable,
             steps_executed: 0,
             instructions_retired: 0,
-            cycle: 0,
-            instret: 0,
-            reservation: None,
             firmware: SbiFirmware::default(),
             next_host_request_id: 1,
             pending_9p_request: None,
             metrics: MachineMetrics::default(),
-            translation_cache: TranslationCache::default(),
         })
     }
 
@@ -1721,73 +1687,35 @@ impl Machine {
 
     fn reset_harts(&mut self) {
         self.active_hart_id = 0;
-        self.active_hart_lifecycle = HartLifecycle::Started;
-        self.parked_harts = (0..self.hart_count)
-            .map(|hart_id| (hart_id != 0).then(|| ParkedHart::stopped(hart_id)))
+        self.harts = (0..self.hart_count)
+            .map(|hart_id| {
+                HartState::new(
+                    hart_id,
+                    if hart_id == 0 {
+                        HartLifecycle::Started
+                    } else {
+                        HartLifecycle::Stopped
+                    },
+                )
+            })
             .collect();
         self.scheduler_quantum_remaining = HART_SCHEDULER_QUANTUM;
-        self.cpu.reset();
-        self.csrs.reset();
-        self.cycle = 0;
-        self.instret = 0;
-        self.reservation = None;
-        self.devices.mtimecmp = u64::MAX;
-        self.devices.msip = false;
-        self.translation_cache.clear();
     }
 
     fn hart_lifecycle(&self, hart_id: usize) -> Option<HartLifecycle> {
-        if hart_id == self.active_hart_id {
-            return Some(self.active_hart_lifecycle);
-        }
-        self.parked_harts
-            .get(hart_id)?
-            .as_ref()
-            .map(|hart| hart.lifecycle)
+        self.harts.get(hart_id).map(|hart| hart.lifecycle)
     }
 
     fn switch_active_hart(&mut self, hart_id: usize) -> bool {
-        if hart_id == self.active_hart_id {
-            return true;
-        }
-        let Some(incoming) = self.parked_harts.get_mut(hart_id).and_then(Option::take) else {
+        if self.harts.get(hart_id).is_none() {
             return false;
-        };
-        let ParkedHart {
-            id: incoming_id,
-            lifecycle,
-            cpu,
-            csrs,
-            cycle,
-            instret,
-            reservation,
-            mtimecmp,
-            msip,
-            translation_cache,
-        } = incoming;
-        debug_assert_eq!(incoming_id, hart_id);
-        let outgoing = ParkedHart {
-            id: std::mem::replace(&mut self.active_hart_id, incoming_id),
-            lifecycle: std::mem::replace(&mut self.active_hart_lifecycle, lifecycle),
-            cpu: std::mem::replace(&mut self.cpu, cpu),
-            csrs: std::mem::replace(&mut self.csrs, csrs),
-            cycle: std::mem::replace(&mut self.cycle, cycle),
-            instret: std::mem::replace(&mut self.instret, instret),
-            reservation: std::mem::replace(&mut self.reservation, reservation),
-            mtimecmp: std::mem::replace(&mut self.devices.mtimecmp, mtimecmp),
-            msip: std::mem::replace(&mut self.devices.msip, msip),
-            translation_cache: std::mem::replace(&mut self.translation_cache, translation_cache),
-        };
-        let outgoing_id = outgoing.id;
-        debug_assert!(self.parked_harts[outgoing_id].is_none());
-        self.parked_harts[outgoing_id] = Some(outgoing);
+        }
+        self.active_hart_id = hart_id;
         true
     }
 
     fn select_runnable_hart(&mut self) -> bool {
-        if self.active_hart_lifecycle == HartLifecycle::Started
-            && self.scheduler_quantum_remaining > 0
-        {
+        if self.lifecycle == HartLifecycle::Started && self.scheduler_quantum_remaining > 0 {
             return true;
         }
         for offset in 1..=self.hart_count {
@@ -2009,15 +1937,59 @@ impl Machine {
         self.cpu.registers.get(register).copied()
     }
 
+    fn read_device(&mut self, address: u64, bytes: u8) -> Result<u64, MachineTrap> {
+        if let Some(offset) = address
+            .checked_sub(CLINT_BASE)
+            .filter(|offset| *offset < CLINT_SIZE)
+        {
+            return match (offset, bytes) {
+                (CLINT_MSIP, 4) => Ok(u64::from(self.msip)),
+                (CLINT_MTIMECMP, 8) => Ok(self.mtimecmp),
+                (CLINT_MTIME, 8) => Ok(self.devices.mtime),
+                _ => Err(MachineTrap::LoadAccessFault { address, bytes }),
+            };
+        }
+        self.devices.read(address, bytes)
+    }
+
+    fn write_device(
+        &mut self,
+        address: u64,
+        value: u64,
+        bytes: u8,
+    ) -> Result<Option<HaltStatus>, MachineTrap> {
+        if let Some(offset) = address
+            .checked_sub(CLINT_BASE)
+            .filter(|offset| *offset < CLINT_SIZE)
+        {
+            return match (offset, bytes) {
+                (CLINT_MSIP, 4) => {
+                    self.msip = value & 1 != 0;
+                    Ok(None)
+                }
+                (CLINT_MTIMECMP, 8) => {
+                    self.mtimecmp = value;
+                    Ok(None)
+                }
+                (CLINT_MTIME, 8) => {
+                    self.devices.mtime = value;
+                    Ok(None)
+                }
+                _ => Err(MachineTrap::StoreAccessFault { address, bytes }),
+            };
+        }
+        self.devices.write(address, value, bytes)
+    }
+
     /// Current guest program counter.
     #[must_use]
-    pub const fn pc(&self) -> u64 {
+    pub fn pc(&self) -> u64 {
         self.cpu.pc
     }
 
     /// Current guest privilege level.
     #[must_use]
-    pub const fn privilege(&self) -> Privilege {
+    pub fn privilege(&self) -> Privilege {
         self.cpu.privilege
     }
 
@@ -2132,8 +2104,7 @@ impl Machine {
         self.metrics.instruction_fetches = self.metrics.instruction_fetches.saturating_add(1);
         let physical_pc = self.translate(pc, AccessType::Instruction)?;
         let first_half = self
-            .devices
-            .read(physical_pc, 2)
+            .read_device(physical_pc, 2)
             .map_err(|_| MachineTrap::InstructionAccessFault { address: pc })?
             as u16;
         if first_half & 0b11 != 0b11 {
@@ -2146,14 +2117,12 @@ impl Machine {
             let second_pc = pc.wrapping_add(2);
             let second_physical = self.translate(second_pc, AccessType::Instruction)?;
             let second_half = self
-                .devices
-                .read(second_physical, 2)
+                .read_device(second_physical, 2)
                 .map_err(|_| MachineTrap::InstructionAccessFault { address: second_pc })?
                 as u32;
             u32::from(first_half) | (second_half << 16)
         } else {
-            self.devices
-                .read(physical_pc, 4)
+            self.read_device(physical_pc, 4)
                 .map_err(|_| MachineTrap::InstructionAccessFault { address: pc })?
                 as u32
         };
@@ -2182,8 +2151,7 @@ impl Machine {
                 ensure_aligned(address, bytes, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, bytes)
+                    .read_device(physical, bytes)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes })?;
                 let value = if signed {
                     sign_extend(value, u32::from(bytes) * 8)
@@ -2215,9 +2183,9 @@ impl Machine {
                 ensure_aligned(address, bytes, true)?;
                 let physical = self.translate(address, AccessType::Store)?;
                 self.invalidate_reservation(physical, bytes);
+                let value = self.cpu.read(rs2);
                 halt = self
-                    .devices
-                    .write(physical, self.cpu.read(rs2), bytes)
+                    .write_device(physical, value, bytes)
                     .map_err(|trap| match trap {
                         MachineTrap::ConsoleLimit { .. } => trap,
                         _ => MachineTrap::StoreAccessFault { address, bytes },
@@ -2336,8 +2304,8 @@ impl Machine {
                 if immediate == 0 {
                     return Err(illegal(pc, u32::from(instruction)));
                 }
-                self.cpu
-                    .write(rd_prime, self.cpu.read(2).wrapping_add(immediate));
+                let value = self.cpu.read(2).wrapping_add(immediate);
+                self.cpu.write(rd_prime, value);
             }
             (0b00, 0b001) => {
                 if !self.csrs.floating_enabled() {
@@ -2350,8 +2318,7 @@ impl Machine {
                 ensure_aligned(address, 8, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, 8)
+                    .read_device(physical, 8)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes: 8 })?;
                 self.cpu.write_float64(rd_prime, value);
                 self.csrs.mark_float_dirty();
@@ -2364,8 +2331,7 @@ impl Machine {
                 ensure_aligned(address, 4, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, 4)
+                    .read_device(physical, 4)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes: 4 })?;
                 self.cpu.write(rd_prime, sign_extend(value, 32));
             }
@@ -2377,8 +2343,7 @@ impl Machine {
                 ensure_aligned(address, 8, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, 8)
+                    .read_device(physical, 8)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes: 8 })?;
                 self.cpu.write(rd_prime, value);
             }
@@ -2393,9 +2358,9 @@ impl Machine {
                 ensure_aligned(address, 8, true)?;
                 let physical = self.translate(address, AccessType::Store)?;
                 self.invalidate_reservation(physical, 8);
+                let value = self.cpu.read_float64(rs2_prime);
                 halt = self
-                    .devices
-                    .write(physical, self.cpu.read_float64(rs2_prime), 8)
+                    .write_device(physical, value, 8)
                     .map_err(|trap| map_store_fault(trap, address, 8))?;
                 self.csrs.mark_float_dirty();
             }
@@ -2410,18 +2375,17 @@ impl Machine {
                 ensure_aligned(address, bytes, true)?;
                 let physical = self.translate(address, AccessType::Store)?;
                 self.invalidate_reservation(physical, bytes);
+                let value = self.cpu.read(rs2_prime);
                 halt = self
-                    .devices
-                    .write(physical, self.cpu.read(rs2_prime), bytes)
+                    .write_device(physical, value, bytes)
                     .map_err(|trap| map_store_fault(trap, address, bytes))?;
             }
             (0b01, 0b000) => {
-                self.cpu.write(
-                    rd,
-                    self.cpu
-                        .read(rd)
-                        .wrapping_add(compressed_immediate(instruction)),
-                );
+                let value = self
+                    .cpu
+                    .read(rd)
+                    .wrapping_add(compressed_immediate(instruction));
+                self.cpu.write(rd, value);
             }
             (0b01, 0b001) => {
                 if rd == 0 {
@@ -2437,7 +2401,8 @@ impl Machine {
                 if immediate == 0 {
                     return Err(illegal(pc, u32::from(instruction)));
                 }
-                self.cpu.write(2, self.cpu.read(2).wrapping_add(immediate));
+                let value = self.cpu.read(2).wrapping_add(immediate);
+                self.cpu.write(2, value);
             }
             (0b01, 0b011) => {
                 let immediate = compressed_lui_immediate(instruction);
@@ -2493,12 +2458,13 @@ impl Machine {
                     ensure_instruction_aligned(next_pc)?;
                 }
             }
-            (0b10, 0b000) => self.cpu.write(
-                rd,
-                self.cpu
+            (0b10, 0b000) => {
+                let value = self
+                    .cpu
                     .read(rd)
-                    .wrapping_shl(u32::from(compressed_shift(instruction))),
-            ),
+                    .wrapping_shl(u32::from(compressed_shift(instruction)));
+                self.cpu.write(rd, value);
+            }
             (0b10, 0b001) => {
                 if !self.csrs.floating_enabled() {
                     return Err(illegal(pc, u32::from(instruction)));
@@ -2510,8 +2476,7 @@ impl Machine {
                 ensure_aligned(address, 8, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, 8)
+                    .read_device(physical, 8)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes: 8 })?;
                 self.cpu.write_float64(rd, value);
                 self.csrs.mark_float_dirty();
@@ -2530,8 +2495,7 @@ impl Machine {
                 ensure_aligned(address, bytes, false)?;
                 let physical = self.translate(address, AccessType::Load)?;
                 let value = self
-                    .devices
-                    .read(physical, bytes)
+                    .read_device(physical, bytes)
                     .map_err(|_| MachineTrap::LoadAccessFault { address, bytes })?;
                 self.cpu.write(
                     rd,
@@ -2550,16 +2514,20 @@ impl Machine {
                         next_pc = self.cpu.read(rd) & !1;
                         ensure_instruction_aligned(next_pc)?;
                     }
-                    (0, _, _) => self.cpu.write(rd, self.cpu.read(rs2)),
+                    (0, _, _) => {
+                        let value = self.cpu.read(rs2);
+                        self.cpu.write(rd, value);
+                    }
                     (1, 0, 0) => return Err(MachineTrap::Breakpoint { pc }),
                     (1, _, 0) => {
                         next_pc = self.cpu.read(rd) & !1;
                         ensure_instruction_aligned(next_pc)?;
                         self.cpu.write(1, pc.wrapping_add(2));
                     }
-                    (1, _, _) => self
-                        .cpu
-                        .write(rd, self.cpu.read(rd).wrapping_add(self.cpu.read(rs2))),
+                    (1, _, _) => {
+                        let value = self.cpu.read(rd).wrapping_add(self.cpu.read(rs2));
+                        self.cpu.write(rd, value);
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -2574,9 +2542,9 @@ impl Machine {
                 ensure_aligned(address, 8, true)?;
                 let physical = self.translate(address, AccessType::Store)?;
                 self.invalidate_reservation(physical, 8);
+                let value = self.cpu.read_float64(rs2);
                 halt = self
-                    .devices
-                    .write(physical, self.cpu.read_float64(rs2), 8)
+                    .write_device(physical, value, 8)
                     .map_err(|trap| map_store_fault(trap, address, 8))?;
                 self.csrs.mark_float_dirty();
             }
@@ -2591,9 +2559,9 @@ impl Machine {
                 ensure_aligned(address, bytes, true)?;
                 let physical = self.translate(address, AccessType::Store)?;
                 self.invalidate_reservation(physical, bytes);
+                let value = self.cpu.read(rs2);
                 halt = self
-                    .devices
-                    .write(physical, self.cpu.read(rs2), bytes)
+                    .write_device(physical, value, bytes)
                     .map_err(|trap| map_store_fault(trap, address, bytes))?;
             }
             _ => return Err(illegal(pc, u32::from(instruction))),
@@ -2759,8 +2727,7 @@ impl Machine {
             ensure_aligned(virtual_address, bytes, false)?;
             let physical = self.translate(virtual_address, AccessType::Load)?;
             let value =
-                self.devices
-                    .read(physical, bytes)
+                self.read_device(physical, bytes)
                     .map_err(|_| MachineTrap::LoadAccessFault {
                         address: virtual_address,
                         bytes,
@@ -2786,28 +2753,26 @@ impl Machine {
                 self.cpu.write(rd, 1);
                 return Ok(None);
             }
+            let value = self.cpu.read(rs2);
             let halt = self
-                .devices
-                .write(physical, self.cpu.read(rs2), bytes)
+                .write_device(physical, value, bytes)
                 .map_err(|trap| map_store_fault(trap, virtual_address, bytes))?;
             self.cpu.write(rd, 0);
             return Ok(halt);
         }
 
-        let old =
-            self.devices
-                .read(physical, bytes)
-                .map_err(|_| MachineTrap::StoreAccessFault {
-                    address: virtual_address,
-                    bytes,
-                })?;
+        let old = self
+            .read_device(physical, bytes)
+            .map_err(|_| MachineTrap::StoreAccessFault {
+                address: virtual_address,
+                bytes,
+            })?;
         let rhs = self.cpu.read(rs2);
         let value =
             atomic_result(operation, old, rhs, bytes).ok_or_else(|| illegal(pc, instruction))?;
         self.invalidate_reservation(physical, bytes);
         let halt = self
-            .devices
-            .write(physical, value, bytes)
+            .write_device(physical, value, bytes)
             .map_err(|trap| map_store_fault(trap, virtual_address, bytes))?;
         self.cpu.write(
             rd,
@@ -2828,10 +2793,7 @@ impl Machine {
                 address < reserved_end && reserved < end
             })
         };
-        if overlaps(self.reservation) {
-            self.reservation = None;
-        }
-        for hart in self.parked_harts.iter_mut().flatten() {
+        for hart in &mut self.harts {
             if overlaps(hart.reservation) {
                 hart.reservation = None;
             }
@@ -2915,7 +2877,13 @@ impl Machine {
     }
 
     fn refresh_hardware_interrupts(&mut self) {
-        let mut hardware = self.devices.hardware_interrupts();
+        let mut hardware = 0;
+        if self.msip {
+            hardware |= MIP_MSIP;
+        }
+        if self.devices.mtime >= self.mtimecmp {
+            hardware |= MIP_MTIP;
+        }
         if self.firmware.enabled && hardware & MIP_MTIP != 0 {
             hardware = (hardware & !MIP_MTIP) | MIP_STIP;
         }
@@ -2937,9 +2905,7 @@ impl Machine {
         if start_address & 1 != 0 || self.devices.ram_range(start_address, 2).is_none() {
             return (SBI_ERR_INVALID_ADDRESS, 0);
         }
-        let Some(hart) = self.parked_harts[hart_id].as_mut() else {
-            return (SBI_ERR_INVALID_PARAM, 0);
-        };
+        let hart = &mut self.harts[hart_id];
         hart.lifecycle = HartLifecycle::Started;
         hart.cpu.reset();
         hart.cpu.pc = start_address;
@@ -3005,11 +2971,7 @@ impl Machine {
             Err(error) => return (error, 0),
         };
         for hart_id in selected {
-            if hart_id == self.active_hart_id {
-                self.csrs.mip |= MIP_SSIP;
-            } else if let Some(hart) = self.parked_harts[hart_id].as_mut() {
-                hart.csrs.mip |= MIP_SSIP;
-            }
+            self.harts[hart_id].csrs.mip |= MIP_SSIP;
         }
         (SBI_SUCCESS, 0)
     }
@@ -3026,11 +2988,7 @@ impl Machine {
             return (SBI_SUCCESS, 0);
         }
         for hart_id in selected {
-            if hart_id == self.active_hart_id {
-                self.translation_cache.clear();
-            } else if let Some(hart) = self.parked_harts[hart_id].as_mut() {
-                hart.translation_cache.clear();
-            }
+            self.harts[hart_id].translation_cache.clear();
             self.metrics.translation_cache_flushes =
                 self.metrics.translation_cache_flushes.saturating_add(1);
         }
@@ -3069,7 +3027,7 @@ impl Machine {
             )),
             (SBI_EXT_BASE, 4..=6) => Some((SBI_SUCCESS, 0)),
             (SBI_EXT_TIME, 0) => {
-                self.devices.mtimecmp = arguments[0];
+                self.mtimecmp = arguments[0];
                 self.csrs.mip &= !MIP_STIP;
                 Some((SBI_SUCCESS, 0))
             }
@@ -3077,7 +3035,7 @@ impl Machine {
             (SBI_EXT_RFENCE, function) => Some(self.sbi_remote_fence(function, arguments)),
             (SBI_EXT_HSM, 0) => Some(self.sbi_hart_start(arguments)),
             (SBI_EXT_HSM, 1) => {
-                self.active_hart_lifecycle = HartLifecycle::Stopped;
+                self.lifecycle = HartLifecycle::Stopped;
                 None
             }
             (SBI_EXT_HSM, 2) => Some(self.sbi_hart_status(arguments[0])),
@@ -4466,10 +4424,7 @@ mod tests {
                 encode_addi(6, 5, 10),
             ]))
             .expect("load shared hart probe");
-        machine.parked_harts[1]
-            .as_mut()
-            .expect("parked hart 1")
-            .lifecycle = HartLifecycle::Started;
+        machine.harts[1].lifecycle = HartLifecycle::Started;
 
         machine.scheduler_quantum_remaining = 1;
         assert_eq!(machine.run_slice(1).instructions_retired, 1);
@@ -4481,12 +4436,12 @@ mod tests {
         assert_eq!(machine.csr(Csr::Mhartid), 1);
         assert_eq!(machine.register(5), Some(1));
         assert_eq!(machine.instret, 1);
-        let hart_zero = machine.parked_harts[0].as_ref().expect("parked hart 0");
+        let hart_zero = &machine.harts[0];
         assert_eq!(hart_zero.cpu.registers[5], 0);
         assert_eq!(hart_zero.instret, 1);
 
-        machine.devices.mtimecmp = 11;
-        machine.devices.msip = true;
+        machine.mtimecmp = 11;
+        machine.msip = true;
         machine.csrs.sscratch = 0x1111;
         assert_eq!(machine.run_slice(1).instructions_retired, 1);
         assert_eq!(machine.register(6), Some(11));
@@ -4494,10 +4449,10 @@ mod tests {
         assert_eq!(machine.run_slice(1).instructions_retired, 1);
         assert_eq!(machine.active_hart_id(), 0);
         assert_eq!(machine.register(6), Some(10));
-        assert_eq!(machine.devices.mtimecmp, u64::MAX);
-        assert!(!machine.devices.msip);
+        assert_eq!(machine.mtimecmp, u64::MAX);
+        assert!(!machine.msip);
         assert_eq!(machine.csrs.sscratch, 0);
-        let hart_one = machine.parked_harts[1].as_ref().expect("parked hart 1");
+        let hart_one = &machine.harts[1];
         assert_eq!(hart_one.cpu.registers[6], 11);
         assert_eq!(hart_one.mtimecmp, 11);
         assert!(hart_one.msip);
@@ -4516,21 +4471,12 @@ mod tests {
         )
         .expect("admit two harts");
         machine.reservation = Some((DRAM_BASE + 8, 8));
-        machine.parked_harts[1]
-            .as_mut()
-            .expect("parked hart 1")
-            .reservation = Some((DRAM_BASE + 12, 4));
+        machine.harts[1].reservation = Some((DRAM_BASE + 12, 4));
 
         machine.invalidate_reservation(DRAM_BASE + 10, 4);
 
         assert_eq!(machine.reservation, None);
-        assert_eq!(
-            machine.parked_harts[1]
-                .as_ref()
-                .expect("parked hart 1")
-                .reservation,
-            None
-        );
+        assert_eq!(machine.harts[1].reservation, None);
     }
 
     #[test]
@@ -5269,7 +5215,7 @@ mod tests {
                 encode_addi(5, 5, 1),
             ]))
             .expect("load timer program");
-        machine.devices.mtimecmp = 2;
+        machine.mtimecmp = 2;
         machine.csrs.mie = MIP_MTIP;
         machine.csrs.mstatus = MSTATUS_MIE;
         machine.csrs.mtvec = (DRAM_BASE + 0x100) | 1;
@@ -5322,22 +5268,27 @@ mod tests {
     #[test]
     fn clint_mmio_is_width_checked_and_drives_hardware_pending_bits() {
         let mut machine = machine(8);
-        assert_eq!(machine.devices.read(CLINT_BASE + CLINT_MTIME, 8), Ok(0));
+        assert_eq!(machine.read_device(CLINT_BASE + CLINT_MTIME, 8), Ok(0));
         assert_eq!(
-            machine.devices.write(CLINT_BASE + CLINT_MTIMECMP, 3, 8),
+            machine.write_device(CLINT_BASE + CLINT_MTIMECMP, 3, 8),
             Ok(None)
         );
         assert_eq!(
-            machine.devices.write(CLINT_BASE + CLINT_MSIP, 1, 4),
+            machine.write_device(CLINT_BASE + CLINT_MSIP, 1, 4),
             Ok(None)
         );
-        assert_eq!(machine.devices.hardware_interrupts(), MIP_MSIP);
+        machine.refresh_hardware_interrupts();
+        assert_eq!(machine.csr(Csr::Mip) & (MIP_MSIP | MIP_MTIP), MIP_MSIP);
         machine.devices.tick();
         machine.devices.tick();
         machine.devices.tick();
-        assert_eq!(machine.devices.hardware_interrupts(), MIP_MSIP | MIP_MTIP);
+        machine.refresh_hardware_interrupts();
         assert_eq!(
-            machine.devices.read(CLINT_BASE + CLINT_MTIME, 4),
+            machine.csr(Csr::Mip) & (MIP_MSIP | MIP_MTIP),
+            MIP_MSIP | MIP_MTIP
+        );
+        assert_eq!(
+            machine.read_device(CLINT_BASE + CLINT_MTIME, 4),
             Err(MachineTrap::LoadAccessFault {
                 address: CLINT_BASE + CLINT_MTIME,
                 bytes: 4,
@@ -5427,7 +5378,7 @@ mod tests {
         machine.cpu.registers[16] = 0;
         machine.cpu.registers[17] = SBI_EXT_TIME;
         assert_eq!(machine.run_slice(1).instructions_retired, 0);
-        assert_eq!(machine.devices.mtimecmp, deadline);
+        assert_eq!(machine.mtimecmp, deadline);
         assert_eq!(machine.csr(Csr::Mip) & MIP_STIP, 0);
 
         machine.cpu.registers[10] = 0;
@@ -5486,9 +5437,7 @@ mod tests {
             None
         );
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
-        let secondary = machine.parked_harts[1]
-            .as_ref()
-            .expect("started secondary hart");
+        let secondary = &machine.harts[1];
         assert_eq!(secondary.lifecycle, HartLifecycle::Started);
         assert_eq!(secondary.cpu.pc, secondary_start);
         assert_eq!(secondary.cpu.privilege, Privilege::Supervisor);
@@ -5510,15 +5459,7 @@ mod tests {
 
         call_sbi(&mut machine, SBI_EXT_IPI, 0, [1 << 1, 0, 0, 0, 0, 0]);
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
-        assert_ne!(
-            machine.parked_harts[1]
-                .as_ref()
-                .expect("secondary hart")
-                .csrs
-                .mip
-                & MIP_SSIP,
-            0
-        );
+        assert_ne!(machine.harts[1].csrs.mip & MIP_SSIP, 0);
         call_sbi(&mut machine, SBI_EXT_IPI, 0, [1 << 2, 0, 0, 0, 0, 0]);
         assert_eq!(machine.register(10), Some(SBI_ERR_INVALID_PARAM));
 
@@ -5528,9 +5469,7 @@ mod tests {
             privilege: Privilege::Supervisor,
             access: AccessType::Instruction,
         };
-        machine.parked_harts[1]
-            .as_mut()
-            .expect("secondary hart")
+        machine.harts[1]
             .translation_cache
             .insert(DRAM_BASE, DRAM_BASE, context);
         call_sbi(
@@ -5541,9 +5480,7 @@ mod tests {
         );
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
         assert_eq!(
-            machine.parked_harts[1]
-                .as_ref()
-                .expect("secondary hart")
+            machine.harts[1]
                 .translation_cache
                 .lookup(DRAM_BASE, context),
             None
@@ -5556,24 +5493,18 @@ mod tests {
         assert_eq!(machine.active_hart_id(), 1);
         assert_eq!(machine.register(5), Some(1));
         call_sbi(&mut machine, SBI_EXT_TIME, 0, [77, 0, 0, 0, 0, 0]);
-        assert_eq!(machine.devices.mtimecmp, 77);
+        assert_eq!(machine.mtimecmp, 77);
         machine.cpu.write(16, 1);
         machine.cpu.write(17, SBI_EXT_HSM);
         assert_eq!(machine.run_slice(1).instructions_retired, 0);
-        assert_eq!(machine.active_hart_lifecycle, HartLifecycle::Stopped);
+        assert_eq!(machine.lifecycle, HartLifecycle::Stopped);
 
         assert_eq!(machine.run_slice(1).instructions_retired, 1);
         assert_eq!(machine.active_hart_id(), 0);
         call_sbi(&mut machine, SBI_EXT_HSM, 2, [1, 0, 0, 0, 0, 0]);
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
         assert_eq!(machine.register(11), Some(SBI_HART_STATE_STOPPED));
-        assert_eq!(
-            machine.parked_harts[1]
-                .as_ref()
-                .expect("stopped secondary")
-                .mtimecmp,
-            77
-        );
+        assert_eq!(machine.harts[1].mtimecmp, 77);
 
         call_sbi(&mut machine, SBI_EXT_HSM, 0, [1, DRAM_BASE + 1, 0, 0, 0, 0]);
         assert_eq!(machine.register(10), Some(SBI_ERR_INVALID_ADDRESS));
@@ -5591,9 +5522,7 @@ mod tests {
             [1, secondary_start, 0xcafe, 0, 0, 0],
         );
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
-        let restarted = machine.parked_harts[1]
-            .as_ref()
-            .expect("restarted secondary");
+        let restarted = &machine.harts[1];
         assert_eq!(restarted.lifecycle, HartLifecycle::Started);
         assert_eq!(restarted.cpu.registers[11], 0xcafe);
         assert_eq!(restarted.mtimecmp, u64::MAX);
@@ -5660,6 +5589,11 @@ mod tests {
         let encoded = checkpoint.encode(binding);
         assert!(encoded.len() < 128 * 1024, "zero RAM pages remain sparse");
         let decoded = MachineCheckpoint::decode(&encoded, binding).expect("decode checkpoint");
+        assert_eq!(
+            decoded.encode(binding),
+            encoded,
+            "decoded checkpoints must retain one canonical byte encoding"
+        );
         let mut restored = decoded.into_machine();
         assert_eq!(restored.run_slice(10).outcome, first.outcome);
         assert_eq!(
@@ -5784,10 +5718,7 @@ mod tests {
             2,
         )
         .expect("admit two harts");
-        machine.parked_harts[1]
-            .as_mut()
-            .expect("parked hart 1")
-            .lifecycle = HartLifecycle::Started;
+        machine.harts[1].lifecycle = HartLifecycle::Started;
         assert!(machine.switch_active_hart(1));
         let request_address = DRAM_BASE + 0x100;
         let response_address = DRAM_BASE + 0x200;
@@ -5823,9 +5754,14 @@ mod tests {
             CheckpointDigest::new([0x55; 32]),
         );
         let encoded = checkpoint.encode(binding);
-        let mut restored = MachineCheckpoint::decode(&encoded, binding)
-            .expect("decode multi-hart checkpoint")
-            .into_machine();
+        let decoded =
+            MachineCheckpoint::decode(&encoded, binding).expect("decode multi-hart checkpoint");
+        assert_eq!(
+            decoded.encode(binding),
+            encoded,
+            "per-hart state ownership must not alter the durable format"
+        );
+        let mut restored = decoded.into_machine();
         assert_eq!(restored.hart_count(), 2);
         assert_eq!(restored.active_hart_id(), 0);
         assert_eq!(
@@ -5847,24 +5783,10 @@ mod tests {
         assert_eq!(machine.active_hart_id(), 1);
         assert_eq!(machine.register(10), Some(SBI_SUCCESS));
         assert_eq!(machine.register(11), Some(response.len() as u64));
-        assert_eq!(
-            machine.parked_harts[0]
-                .as_ref()
-                .expect("parked hart 0")
-                .cpu
-                .registers[10],
-            0xdead
-        );
+        assert_eq!(machine.harts[0].cpu.registers[10], 0xdead);
         assert_eq!(restored.active_hart_id(), machine.active_hart_id());
         assert_eq!(restored.register(10), machine.register(10));
-        assert_eq!(
-            restored.parked_harts[0]
-                .as_ref()
-                .expect("restored parked hart 0")
-                .cpu
-                .registers[10],
-            0xdead
-        );
+        assert_eq!(restored.harts[0].cpu.registers[10], 0xdead);
     }
 
     #[test]

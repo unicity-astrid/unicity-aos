@@ -135,26 +135,25 @@ impl MachineCheckpoint {
             u32::try_from(machine.active_hart_id).expect("admitted hart id fits u32"),
         );
         push_u64(&mut bytes, machine.scheduler_quantum_remaining);
+        let active = &machine.harts[machine.active_hart_id];
         encode_hart(
             &mut bytes,
             HartCheckpointRef {
-                lifecycle: machine.active_hart_lifecycle,
-                cpu: &machine.cpu,
-                csrs: &machine.csrs,
-                cycle: machine.cycle,
-                instret: machine.instret,
-                reservation: machine.reservation,
-                mtimecmp: machine.devices.mtimecmp,
-                msip: machine.devices.msip,
+                lifecycle: active.lifecycle,
+                cpu: &active.cpu,
+                csrs: &active.csrs,
+                cycle: active.cycle,
+                instret: active.instret,
+                reservation: active.reservation,
+                mtimecmp: active.mtimecmp,
+                msip: active.msip,
             },
         );
         for hart_id in 0..machine.hart_count {
             if hart_id == machine.active_hart_id {
                 continue;
             }
-            let hart = machine.parked_harts[hart_id]
-                .as_ref()
-                .expect("every inactive admitted hart is parked");
+            let hart = &machine.harts[hart_id];
             push_u32(
                 &mut bytes,
                 u32::try_from(hart.id).expect("admitted hart id fits u32"),
@@ -265,7 +264,9 @@ impl MachineCheckpoint {
         }
         let mut machine = Machine::new_with_harts(config, hart_count)?;
         let active = decode_hart(&mut decoder, &machine.devices)?;
-        let mut parked_harts = (0..hart_count).map(|_| None).collect::<Vec<_>>();
+        let mut harts = (0..hart_count)
+            .map(|hart_id| HartState::new(hart_id, HartLifecycle::Stopped))
+            .collect::<Vec<_>>();
         for expected_hart_id in 0..hart_count {
             if expected_hart_id == active_hart_id {
                 continue;
@@ -275,7 +276,7 @@ impl MachineCheckpoint {
                 return Err(CheckpointDecodeError::InvalidField("parked hart order"));
             }
             let hart = decode_hart(&mut decoder, &machine.devices)?;
-            parked_harts[hart_id] = Some(ParkedHart {
+            harts[hart_id] = HartState {
                 id: hart_id,
                 lifecycle: hart.lifecycle,
                 cpu: hart.cpu,
@@ -286,19 +287,23 @@ impl MachineCheckpoint {
                 mtimecmp: hart.mtimecmp,
                 msip: hart.msip,
                 translation_cache: TranslationCache::default(),
-            });
+            };
         }
+        harts[active_hart_id] = HartState {
+            id: active_hart_id,
+            lifecycle: active.lifecycle,
+            cpu: active.cpu,
+            csrs: active.csrs,
+            cycle: active.cycle,
+            instret: active.instret,
+            reservation: active.reservation,
+            mtimecmp: active.mtimecmp,
+            msip: active.msip,
+            translation_cache: TranslationCache::default(),
+        };
         machine.active_hart_id = active_hart_id;
-        machine.active_hart_lifecycle = active.lifecycle;
-        machine.parked_harts = parked_harts;
+        machine.harts = harts;
         machine.scheduler_quantum_remaining = scheduler_quantum_remaining;
-        machine.cpu = active.cpu;
-        machine.csrs = active.csrs;
-        machine.cycle = active.cycle;
-        machine.instret = active.instret;
-        machine.reservation = active.reservation;
-        machine.devices.mtimecmp = active.mtimecmp;
-        machine.devices.msip = active.msip;
 
         machine.devices.mtime = decoder.u64()?;
         machine.steps_executed = decoder.u64()?;
@@ -369,8 +374,7 @@ impl MachineCheckpoint {
 
         machine.state = RunState::Runnable;
         machine.metrics = MachineMetrics::default();
-        machine.translation_cache.clear();
-        for hart in machine.parked_harts.iter_mut().flatten() {
+        for hart in &mut machine.harts {
             hart.translation_cache.clear();
         }
         Ok(Self { machine })

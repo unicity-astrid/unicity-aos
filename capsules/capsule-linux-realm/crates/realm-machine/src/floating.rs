@@ -261,32 +261,33 @@ impl Machine {
                 }
             }
             0x70 if rs2 == 0 && funct3 == 0 => {
-                self.cpu.write(
-                    rd,
-                    sign_extend(self.cpu.floating_registers[rs1] & u64::from(u32::MAX), 32),
-                );
+                let value = sign_extend(self.cpu.floating_registers[rs1] & u64::from(u32::MAX), 32);
+                self.cpu.write(rd, value);
                 self.csrs.mark_float_dirty();
             }
             0x71 if rs2 == 0 && funct3 == 0 => {
-                self.cpu.write(rd, self.cpu.read_float64(rs1));
+                let value = self.cpu.read_float64(rs1);
+                self.cpu.write(rd, value);
                 self.csrs.mark_float_dirty();
             }
             0x70 if rs2 == 0 && funct3 == 1 => {
-                self.cpu
-                    .write(rd, u64::from(float_class32(self.cpu.read_float32(rs1))));
+                let value = u64::from(float_class32(self.cpu.read_float32(rs1)));
+                self.cpu.write(rd, value);
                 self.csrs.mark_float_dirty();
             }
             0x71 if rs2 == 0 && funct3 == 1 => {
-                self.cpu
-                    .write(rd, u64::from(float_class64(self.cpu.read_float64(rs1))));
+                let value = u64::from(float_class64(self.cpu.read_float64(rs1)));
+                self.cpu.write(rd, value);
                 self.csrs.mark_float_dirty();
             }
             0x78 if rs2 == 0 && funct3 == 0 => {
-                self.cpu.write_float32(rd, self.cpu.read(rs1) as u32);
+                let value = self.cpu.read(rs1) as u32;
+                self.cpu.write_float32(rd, value);
                 self.csrs.mark_float_dirty();
             }
             0x79 if rs2 == 0 && funct3 == 0 => {
-                self.cpu.write_float64(rd, self.cpu.read(rs1));
+                let value = self.cpu.read(rs1);
+                self.cpu.write_float64(rd, value);
                 self.csrs.mark_float_dirty();
             }
             _ => return Err(illegal(pc, instruction)),
