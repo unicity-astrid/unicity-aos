@@ -23,7 +23,7 @@ type = "executable"
 id = "linux-vcpu"
 file = "assets/linux-vcpu.wasm"
 type = "compute-worker"
-hash = "blake3:236900e6cee131ec9617859ae346f7a4be1bc0bed5710e066b1183cbdb4b209a"
+hash = "blake3:952cfe0b220f9243bd4f392cb20f616d2a775ff2fdf116be1fc44fd9e7e87d59"
 
 [[component.asset]]
 id = "linux-kernel"

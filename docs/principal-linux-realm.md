@@ -1662,8 +1662,8 @@ The implementation cut is:
   first run against the old runtime reproduced the defect: Astrid stamped
   worker 1 while the worker returned worker 0. The pinned runtime fix makes both
   identities and descriptors exact and the barrier passes.
-- The reproducible worker is 211,856 bytes with BLAKE3
-  `236900e6cee131ec9617859ae346f7a4be1bc0bed5710e066b1183cbdb4b209a`.
+- The reproducible worker is 175,938 bytes with BLAKE3
+  `952cfe0b220f9243bd4f392cb20f616d2a775ff2fdf116be1fc44fd9e7e87d59`.
   This proves the execution substrate needed by parallel harts. It does not yet
   claim that the current monolithic `Machine` mutex or deterministic
   round-robin hart scheduler runs Linux concurrently.
