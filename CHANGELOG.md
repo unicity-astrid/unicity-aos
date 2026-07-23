@@ -78,6 +78,9 @@
 - Parse AOS-owned commands with Clap-generated validation and help while
   preserving byte-for-byte delegation of inherited runtime commands and their
   help surfaces.
+- Authenticate native `aos status` requests as the principal selected by
+  `--principal`, while preserving the single-user `default` when the flag is
+  omitted.
 - Initialize against the operator-enforced Community Edition manifest and ask
   the runtime to grant its installed capsule set to the resolved target
   principal.

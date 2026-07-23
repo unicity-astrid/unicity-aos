@@ -630,7 +630,6 @@ fn unsupported_leading_globals_cannot_bypass_product_roots() {
     fixture.install_runtime(RECORDING_RUNTIME);
 
     for args in [
-        vec!["--principal", "alice", "status"],
         vec!["--format", "json", "init"],
         vec!["-p", "prompt text", "init"],
         vec!["--principal", "alice", "update"],
@@ -644,6 +643,65 @@ fn unsupported_leading_globals_cannot_bypass_product_roots() {
         assert_eq!(output.status.code(), Some(2));
         assert!(!fixture.args.exists());
     }
+}
+
+#[test]
+fn explicit_principal_is_accepted_in_either_product_status_position() {
+    let fixture = Fixture::new("principal-status");
+    fixture.install_runtime(RECORDING_RUNTIME);
+
+    for args in [
+        ["--principal", "alice", "status", "--json"],
+        ["status", "--principal", "alice", "--json"],
+    ] {
+        let output = fixture
+            .command()
+            .args(args)
+            .output()
+            .expect("run principal-scoped product status");
+
+        assert!(
+            output.status.success(),
+            "args: {args:?}; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("parse product status JSON");
+        assert_eq!(status["state"], "stopped");
+    }
+    assert!(
+        !fixture.args.exists(),
+        "product status must not delegate to the runtime binary"
+    );
+
+    let invalid = fixture
+        .command()
+        .args(["status", "--principal", "not/a/principal"])
+        .output()
+        .expect("reject invalid product status principal");
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr).contains("invalid status principal"),
+        "stderr: {}",
+        String::from_utf8_lossy(&invalid.stderr)
+    );
+
+    let conflict = fixture
+        .command()
+        .args(["--principal", "alice", "status", "--principal", "bob"])
+        .output()
+        .expect("reject duplicate product status principals");
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&conflict.stderr)
+            .contains("'--principal' was provided both before and after `status`"),
+        "stderr: {}",
+        String::from_utf8_lossy(&conflict.stderr)
+    );
+    assert!(
+        !fixture.args.exists(),
+        "invalid product status invocations must not delegate"
+    );
 }
 
 #[test]

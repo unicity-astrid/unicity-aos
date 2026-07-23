@@ -64,17 +64,24 @@ impl AosStatus {
     }
 }
 
-/// Read status through the typed authenticated local control client.
+/// Read status through the typed authenticated local control client using the
+/// single-user compatibility principal.
 pub async fn read(home: &AosHome) -> Result<AosStatus, String> {
-    let connection = tokio::time::timeout(
-        STATUS_TIMEOUT,
-        KernelClient::connect(PrincipalId::default()),
-    )
-    .await
-    .map_err(|_| "connection timed out".to_owned())
-    .and_then(|result| {
-        result.map_err(|error| format!("could not connect to the local runtime: {error}"))
-    });
+    read_for_principal(home, PrincipalId::default()).await
+}
+
+/// Read status through the typed authenticated local control client as
+/// `principal`.
+pub async fn read_for_principal(
+    home: &AosHome,
+    principal: PrincipalId,
+) -> Result<AosStatus, String> {
+    let connection = tokio::time::timeout(STATUS_TIMEOUT, KernelClient::connect(principal))
+        .await
+        .map_err(|_| "connection timed out".to_owned())
+        .and_then(|result| {
+            result.map_err(|error| format!("could not connect to the local runtime: {error}"))
+        });
     let mut client = match connection {
         Ok(client) => client,
         Err(connection_error) => {

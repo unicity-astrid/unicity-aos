@@ -11,6 +11,7 @@ use std::process::ExitStatus;
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
+use astrid_core::PrincipalId;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use unicity_aos_bootstrap::{AOS_WORKSPACE_STATE_DIR, AosHome};
 
@@ -81,6 +82,14 @@ struct DistroArgs {
 
 #[derive(Args)]
 struct StatusArgs {
+    /// Authenticated runtime principal for this status request.
+    #[arg(
+        id = "status-principal",
+        long = "principal",
+        value_name = "PRINCIPAL",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
+    principal: Option<String>,
     /// Print a machine-readable JSON status object.
     #[arg(long)]
     json: bool,
@@ -297,18 +306,21 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
                     | ProductCommand::Distro(_)
                     | ProductCommand::Hook(_)
                     | ProductCommand::Mcp { .. }
+                    | ProductCommand::Status(_)
             )
         )
     {
         eprintln!(
-            "aos: '--principal' is supported for `aos init`, `aos hook`, and `aos mcp`; this AOS-owned command does not accept a runtime principal"
+            "aos: '--principal' is supported for `aos init`, `aos status`, `aos hook`, and `aos mcp`; this AOS-owned command does not accept a runtime principal"
         );
         return Some(ExitCode::from(2));
     }
 
     match cli.command {
         Some(ProductCommand::Init(_)) => None,
-        Some(ProductCommand::Status(args)) => Some(handle_status(args.json)),
+        Some(ProductCommand::Status(args)) => {
+            Some(handle_status(cli.principal, args.principal, args.json))
+        }
         Some(ProductCommand::Migrate {
             command: MigrateCommand::Runtime { from },
         }) => Some(handle_migrate_runtime(&from)),
@@ -767,7 +779,41 @@ fn handle_hook(principal: Option<String>, args: hook::HookArgs) -> ExitCode {
     }
 }
 
-fn handle_status(json: bool) -> ExitCode {
+fn status_principal(
+    leading_principal: Option<String>,
+    trailing_principal: Option<String>,
+) -> Result<PrincipalId, String> {
+    let principal = match (leading_principal, trailing_principal) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "'--principal' was provided both before and after `status`; provide it once"
+                    .to_owned(),
+            );
+        }
+        (Some(principal), None) | (None, Some(principal)) => Some(principal),
+        (None, None) => None,
+    };
+    principal.map_or_else(
+        || Ok(PrincipalId::default()),
+        |principal| {
+            PrincipalId::new(principal)
+                .map_err(|error| format!("invalid status principal: {error}"))
+        },
+    )
+}
+
+fn handle_status(
+    leading_principal: Option<String>,
+    command_principal: Option<String>,
+    json: bool,
+) -> ExitCode {
+    let principal = match status_principal(leading_principal, command_principal) {
+        Ok(principal) => principal,
+        Err(error) => {
+            eprintln!("aos: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let home = match resolve_home() {
         Ok(home) => home,
         Err(code) => return code,
@@ -783,7 +829,9 @@ fn handle_status(json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let status = match runtime.block_on(unicity_aos_bootstrap::status::read(&home)) {
+    let status = match runtime.block_on(unicity_aos_bootstrap::status::read_for_principal(
+        &home, principal,
+    )) {
         Ok(status) => status,
         Err(error) => {
             eprintln!("aos: runtime status unavailable: {error}");
@@ -924,6 +972,7 @@ mod tests {
     use super::{
         ProductCli, ProductCommand, child_exit_code, handle_product_command, help_targets_product,
         is_owned_root, leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
+        status_principal,
     };
 
     #[test]
@@ -955,6 +1004,46 @@ mod tests {
         assert!(init.allow_unsigned);
         assert!(init.accept_new_key);
         assert_eq!(init.vars, ["model=gpt-5"]);
+    }
+
+    #[test]
+    fn product_cli_parses_and_validates_status_principal() {
+        let cli = ProductCli::try_parse_from(["aos", "--principal", "alice", "status"])
+            .expect("parse principal-scoped product status");
+        assert_eq!(cli.principal.as_deref(), Some("alice"));
+        let Some(ProductCommand::Status(status)) = cli.command else {
+            panic!("expected status");
+        };
+        assert!(status.principal.is_none());
+
+        let cli = ProductCli::try_parse_from(["aos", "status", "--principal", "bob"])
+            .expect("parse status-local principal");
+        assert!(cli.principal.is_none());
+        let Some(ProductCommand::Status(status)) = cli.command else {
+            panic!("expected status");
+        };
+        assert_eq!(status.principal.as_deref(), Some("bob"));
+
+        assert_eq!(
+            status_principal(Some("alice".to_owned()), None)
+                .expect("valid explicit principal")
+                .as_str(),
+            "alice"
+        );
+        assert_eq!(
+            status_principal(None, Some("bob".to_owned()))
+                .expect("valid status-local principal")
+                .as_str(),
+            "bob"
+        );
+        assert_eq!(
+            status_principal(None, None)
+                .expect("omitted principal keeps compatibility default")
+                .as_str(),
+            "default"
+        );
+        assert!(status_principal(None, Some("not/a/principal".to_owned())).is_err());
+        assert!(status_principal(Some("alice".to_owned()), Some("bob".to_owned())).is_err());
     }
 
     #[test]
