@@ -205,7 +205,9 @@ jobs:
               if [[ "$TARGET" == aarch64-unknown-linux-gnu ]]; then
                 rustup target add aarch64-unknown-linux-gnu
                 apt-get update
-                apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+                apt-get install -y --no-install-recommends \
+                  gcc-aarch64-linux-gnu \
+                  libc6-dev-arm64-cross
                 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
               fi
               export CARGO_TARGET_DIR=/workspace/target/glibc-2.31

@@ -18,6 +18,53 @@ env:
   B3SUM_VERSION: 1.8.5
 
 jobs:
+  linux-release-smoke:
+    name: Linux release smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Build against the Linux release baseline
+        env:
+          TARGET: ${{ matrix.target }}
+          # Keep this digest synchronized with release.yml.
+          LINUX_BUILD_IMAGE: docker.io/library/rust@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
+        run: |
+          docker run --rm \
+            --env TARGET \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            "$LINUX_BUILD_IMAGE" \
+            bash -euxo pipefail -c '
+              if [[ "$TARGET" == aarch64-unknown-linux-gnu ]]; then
+                rustup target add aarch64-unknown-linux-gnu
+                apt-get update
+                apt-get install -y --no-install-recommends \
+                  gcc-aarch64-linux-gnu \
+                  libc6-dev-arm64-cross
+                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+              fi
+              export CARGO_TARGET_DIR=/workspace/target/glibc-2.31
+              cargo build --locked --release --target "$TARGET" -p unicity-aos-bootstrap
+            '
+      - name: Enforce the Linux glibc compatibility ceiling
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python3 scripts/check_glibc.py --max-version 2.34 \
+            "target/glibc-2.31/${TARGET}/release/aos"
+
   format:
     name: Format
     runs-on: ubuntu-latest
