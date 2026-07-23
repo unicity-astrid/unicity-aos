@@ -41,13 +41,21 @@ generated runtime coordination state.
 ## Command boundary
 
 AOS owns its product roots, including `init`, `status`, `migrate`, `update`,
-`distro`, `mcp`, and `serve-health`:
+`distro`, `mcp`, `daemon`, and `serve-health`:
 
 ```sh
 aos status
 aos status --json
 aos --principal codex-code mcp serve
+aos daemon foreground --workspace /workspace
 ```
+
+On Unix, `aos daemon foreground` replaces the AOS process with the persistent
+bundled daemon, preserving direct signal and exit-status ownership for process
+supervisors. On other hosts it waits for the daemon and preserves its exit
+status. Both paths apply the product-owned runtime home, `.aos` workspace
+layout, enforced Community Edition distro, and stderr logging environment.
+Neither path enables ephemeral lifetime.
 
 Every other runtime root is part of the AOS CLI directly. Arguments, exit
 codes, and signals pass through unchanged; there is no nested `aos astrid` or

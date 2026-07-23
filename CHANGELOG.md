@@ -4,6 +4,11 @@
 
 ### Added
 
+- A product-owned `aos daemon foreground` supervisor path that runs the
+  persistent bundled daemon under the enforced CE distro, private runtime home,
+  `.aos` workspace layout, and stderr logging environment. On Unix the daemon
+  replaces the AOS process so it directly owns signals and exit status. Closes
+  #64.
 - The `aos` product command and product-owned `~/.aos` state boundary.
 - A pinned Unicity CE distribution manifest over Astrid Runtime 0.10.4, emplaced
   as the bundled runtime's operator-enforced distro.
