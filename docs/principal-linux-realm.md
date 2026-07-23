@@ -2436,13 +2436,29 @@ CE set rather than test-installed companions.
   earlier 256 MiB. The reproduced 183,331-byte worker has BLAKE3
   `67467b9e020bed847a04ba55b4f7d8728bb172714eb0a4d23543752635773ad1`;
   the larger ceiling grants no path, mutation, or ambient filesystem access;
-- a staging-only manifest bound this image without committing a 348 MiB binary
-  to Git and produced a 360,556,287-byte installable capsule with SHA-256
-  `c18f7906c6d48d5108c55788d5efe259eb68219440f2707c8ba29fd00dbe931f`.
-  Distribution still needs a content-addressed release object rather than a
-  Git blob. A live `codex-code` install authenticated, passed the explicit
-  capsule-grant gate, and reported the requested 3 GiB/automatic-vCPU envelope;
-  cold-start and in-guest compiler acceptance remain independent gates.
+- the final 371,082,136-byte image is byte-reproducible, has SHA-256
+  `b7dbb0ebecc3afdfb7cd353680fbe823104a2ca0cda0e87ca05d82f261ad4bb0`
+  and BLAKE3
+  `d1ceca726e224893077404ee8932085dfe455304817f055689a9f3401782c47e`,
+  and was bound through a staging-only manifest without committing the binary
+  to Git. The resulting 367 MiB installable capsule has SHA-256
+  `c623453df59a28aad3008c95081e1075c223022c54882b16f079181482b6d0d1`
+  and BLAKE3
+  `6f0d7b5d65240f6c2bccfd69d6ad92b22d3ec337e5108b4bfa3cde44ce0b7ba0`.
+  An independent unpack verified the embedded image and manifest. Distribution
+  still needs a content-addressed release object rather than a Git blob;
+- that exact capsule was installed and granted to the live `codex-code`
+  principal under the requested 3 GiB/automatic-vCPU envelope. Its cold boot
+  reached `AOS READY` on Linux 6.18.39 with two logical CPUs after
+  36,669,444,487 charged guest steps and 3,672 audited suspensions. A following
+  warm invocation reported RISC-V 64-bit Linux, rustup 1.29.0, rustc/cargo
+  1.97.1, `astrid-build` 0.10.4, Git 2.54.0, Python 3.14.6, Clang 22.1.7,
+  `CWD=/workspace`, `RUSTUP_HOME=/run/aos/rustup`, and
+  `CARGO_HOME=/run/aos/cargo`; it exited cleanly after 620,580,831 more guest
+  steps and 277 suspensions. This closes installation, cold-start, and live
+  toolchain discovery for the exact packaged bytes. The separate
+  dependency-heavy in-guest capsule-build proof remains a performance and
+  artifact gate.
 
 ## 16. Ordered implementation milestones
 
