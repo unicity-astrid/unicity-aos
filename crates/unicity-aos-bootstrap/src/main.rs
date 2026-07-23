@@ -65,6 +65,27 @@ enum ProductCommand {
     },
     /// Serve the loopback-only product health endpoint.
     ServeHealth,
+    /// Run the bundled runtime daemon in the foreground.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    /// Run the persistent bundled daemon in the foreground.
+    Foreground(ForegroundDaemonArgs),
+}
+
+#[derive(Args)]
+struct ForegroundDaemonArgs {
+    /// Project workspace owned by this daemon.
+    #[arg(long, value_name = "PATH")]
+    workspace: Option<std::path::PathBuf>,
+    /// Enable debug-level daemon logging.
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -331,7 +352,40 @@ fn handle_product_command(args: &[OsString]) -> Option<ExitCode> {
             command: McpCommand::Serve(args),
         }) => Some(mcp::handle_serve(cli.principal, args)),
         Some(ProductCommand::ServeHealth) => Some(handle_health_service()),
+        Some(ProductCommand::Daemon {
+            command: DaemonCommand::Foreground(args),
+        }) => Some(handle_foreground_daemon(&args)),
         None => Some(print_product_help()),
+    }
+}
+
+fn handle_foreground_daemon(args: &ForegroundDaemonArgs) -> ExitCode {
+    let home = match resolve_home() {
+        Ok(home) => home,
+        Err(code) => return code,
+    };
+    #[cfg(unix)]
+    {
+        match home.exec_foreground_daemon(args.workspace.as_deref(), args.verbose) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("aos: failed to run foreground daemon: {error}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match home
+            .foreground_daemon_command(args.workspace.as_deref(), args.verbose)
+            .and_then(|mut command| command.status())
+        {
+            Ok(status) => child_exit_code(status),
+            Err(error) => {
+                eprintln!("aos: failed to run foreground daemon: {error}");
+                ExitCode::FAILURE
+            }
+        }
     }
 }
 
@@ -548,6 +602,7 @@ fn is_owned_root(value: &str) -> bool {
             | "distro"
             | "hook"
             | "mcp"
+            | "daemon"
             | "serve-health"
     )
 }
@@ -970,9 +1025,9 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{
-        ProductCli, ProductCommand, child_exit_code, handle_product_command, help_targets_product,
-        is_owned_root, leading_owned_root, runtime_args_for_dispatch, runtime_stop_requested,
-        status_principal,
+        DaemonCommand, ProductCli, ProductCommand, child_exit_code, handle_product_command,
+        help_targets_product, is_owned_root, leading_owned_root, runtime_args_for_dispatch,
+        runtime_stop_requested, status_principal,
     };
 
     #[test]
@@ -1004,6 +1059,30 @@ mod tests {
         assert!(init.allow_unsigned);
         assert!(init.accept_new_key);
         assert_eq!(init.vars, ["model=gpt-5"]);
+    }
+
+    #[test]
+    fn product_cli_parses_persistent_foreground_daemon() {
+        let cli = ProductCli::try_parse_from([
+            "aos",
+            "daemon",
+            "foreground",
+            "--workspace",
+            "/workspace",
+            "--verbose",
+        ])
+        .expect("parse foreground daemon");
+        let Some(ProductCommand::Daemon {
+            command: DaemonCommand::Foreground(args),
+        }) = cli.command
+        else {
+            panic!("expected foreground daemon command");
+        };
+        assert_eq!(
+            args.workspace.as_deref(),
+            Some(std::path::Path::new("/workspace"))
+        );
+        assert!(args.verbose);
     }
 
     #[test]
@@ -1170,13 +1249,14 @@ mod tests {
             "migrate",
             "update",
             "distro",
+            "daemon",
             "serve-health",
         ] {
             let args = [OsString::from("help"), OsString::from(root)];
             assert!(help_targets_product(&args));
             assert!(handle_product_command(&args).is_some());
         }
-        for root in ["doctor", "capsule", "daemon", "completion"] {
+        for root in ["doctor", "capsule", "completion"] {
             let args = [OsString::from("help"), OsString::from(root)];
             assert!(!help_targets_product(&args));
             assert!(handle_product_command(&args).is_none());

@@ -243,6 +243,13 @@ impl AosHome {
         self.runtime_binary_with(|name| std::env::var_os(name))
     }
 
+    /// The daemon executable installed beside the bundled runtime CLI.
+    #[must_use]
+    pub fn runtime_daemon_binary(&self) -> PathBuf {
+        self.runtime_binary()
+            .with_file_name(runtime_daemon_binary_name())
+    }
+
     fn runtime_binary_with<F>(&self, get: F) -> PathBuf
     where
         F: Fn(&str) -> Option<OsString>,
@@ -315,13 +322,21 @@ impl AosHome {
         S: AsRef<OsStr>,
     {
         let runtime_binary = self.runtime_binary();
-        let runtime_bin = runtime_binary.parent().ok_or_else(|| {
+        self.runtime_executable_command(&runtime_binary, args)
+    }
+
+    fn runtime_executable_command<I, S>(&self, executable: &Path, args: I) -> io::Result<Command>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let runtime_bin = executable.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "bundled runtime executable must have a parent directory",
             )
         })?;
-        let mut command = Command::new(&runtime_binary);
+        let mut command = Command::new(executable);
         command
             .env("ASTRID_HOME", self.runtime_home())
             .env("ASTRID_WORKSPACE_STATE_DIR", AOS_WORKSPACE_STATE_DIR)
@@ -331,6 +346,37 @@ impl AosHome {
                 Self::runtime_child_path(runtime_bin, std::env::var_os("PATH"))?,
             );
         command.args(args);
+        Ok(command)
+    }
+
+    /// Build a foreground command for the bundled daemon.
+    ///
+    /// The command receives the same product-owned runtime home, workspace
+    /// state directory, enforced distro, and `PATH` as ordinary AOS runtime
+    /// dispatch. Daemon diagnostics are routed to stderr for process
+    /// supervisors; this does not alter daemon lifetime.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled daemon or product capsule set is
+    /// unavailable, or the child `PATH` cannot be represented safely.
+    pub fn foreground_daemon_command(
+        &self,
+        workspace: Option<&Path>,
+        verbose: bool,
+    ) -> io::Result<Command> {
+        let daemon_binary = self.runtime_daemon_binary();
+        self.ensure_runtime_executable(&daemon_binary, "daemon")?;
+        self.ensure_unicity_ce_manifest()?;
+        let mut args = Vec::new();
+        if let Some(workspace) = workspace {
+            args.push(OsString::from("--workspace"));
+            args.push(workspace.as_os_str().to_owned());
+        }
+        if verbose {
+            args.push(OsString::from("--verbose"));
+        }
+        let mut command = self.runtime_executable_command(&daemon_binary, args)?;
+        command.env("ASTRID_DAEMON_LOG_TARGET", "stderr");
         Ok(command)
     }
 
@@ -390,6 +436,27 @@ impl AosHome {
         Err(self.runtime_command_with_args(args)?.exec())
     }
 
+    /// Replace the current Unix process with the persistent bundled daemon.
+    ///
+    /// This is the process-supervisor path: the daemon receives signals
+    /// directly and owns the final exit status. Callers decide the workspace
+    /// argument, while AOS fixes the product home, distro, and workspace-state
+    /// layout.
+    ///
+    /// # Errors
+    /// Returns an error when the bundled daemon or product assets are
+    /// unavailable, or the process cannot be replaced.
+    #[cfg(unix)]
+    pub fn exec_foreground_daemon(
+        &self,
+        workspace: Option<&Path>,
+        verbose: bool,
+    ) -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+
+        Err(self.foreground_daemon_command(workspace, verbose)?.exec())
+    }
+
     /// Run a bundled-runtime command.
     ///
     /// The runtime remains the authority for socket authentication and local
@@ -408,16 +475,21 @@ impl AosHome {
 
     fn ensure_runtime_available(&self) -> io::Result<()> {
         let binary = self.runtime_binary();
+        self.ensure_runtime_executable(&binary, "runtime")?;
+        self.ensure_unicity_ce_manifest().map(drop)
+    }
+
+    fn ensure_runtime_executable(&self, binary: &Path, label: &str) -> io::Result<()> {
         if !binary.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "bundled runtime executable not found at {}",
+                    "bundled {label} executable not found at {}",
                     binary.display()
                 ),
             ));
         }
-        self.ensure_unicity_ce_manifest().map(drop)
+        Ok(())
     }
 }
 
@@ -502,6 +574,10 @@ const fn default_home_name() -> &'static str {
 
 const fn runtime_binary_name() -> &'static str {
     RUNTIME_EXECUTABLE_NAMES[0]
+}
+
+const fn runtime_daemon_binary_name() -> &'static str {
+    RUNTIME_EXECUTABLE_NAMES[1]
 }
 
 fn capsule_assets_from_manifest() -> io::Result<Vec<String>> {
@@ -674,7 +750,7 @@ fn materialize_manifest(capsule_dir: &Path) -> io::Result<String> {
 mod tests {
     use super::{
         AosHome, UNICITY_CE_MANIFEST, capsule_assets_from_manifest, materialize_manifest,
-        runtime_binary_name,
+        runtime_binary_name, runtime_daemon_binary_name,
     };
     use std::ffi::OsString;
     use std::fs;
@@ -716,6 +792,12 @@ mod tests {
         assert_eq!(
             home.runtime_binary(),
             home.runtime_home().join("bin").join(runtime_binary_name())
+        );
+        assert_eq!(
+            home.runtime_daemon_binary(),
+            home.runtime_home()
+                .join("bin")
+                .join(runtime_daemon_binary_name())
         );
     }
 
@@ -781,6 +863,45 @@ mod tests {
 
         assert_eq!(args, ["status", "--json"]);
         assert_eq!(command.get_program(), home.runtime_binary());
+    }
+
+    #[test]
+    fn foreground_daemon_uses_the_product_environment_without_ephemeral_mode() {
+        let fixture = temporary_home();
+        let home = AosHome::from_root(&fixture);
+        install_capsule_fixtures(home.root());
+        let runtime_bin = home.runtime_home().join("bin");
+        fs::create_dir_all(&runtime_bin).expect("create runtime bin");
+        fs::write(home.runtime_daemon_binary(), b"daemon").expect("write daemon fixture");
+
+        let command = home
+            .foreground_daemon_command(Some(std::path::Path::new("/workspace")), true)
+            .expect("build foreground daemon command");
+
+        assert_eq!(command.get_program(), home.runtime_daemon_binary());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--workspace", "/workspace", "--verbose"]
+        );
+        assert!(
+            command.get_args().all(|argument| argument != "--ephemeral"),
+            "foreground daemon must retain persistent lifetime"
+        );
+        let env_value = |target: &str| {
+            command
+                .get_envs()
+                .find_map(|(name, value)| (name == target).then_some(value))
+                .flatten()
+                .expect("foreground daemon sets product environment")
+        };
+        assert_eq!(env_value("ASTRID_HOME"), home.runtime_home());
+        assert_eq!(env_value("ASTRID_WORKSPACE_STATE_DIR"), ".aos");
+        assert_eq!(env_value("ASTRID_DAEMON_LOG_TARGET"), "stderr");
+        assert_eq!(
+            env_value("ASTRID_ENFORCED_DISTRO"),
+            home.unicity_ce_manifest_path()
+        );
+        fs::remove_dir_all(fixture).expect("remove foreground daemon fixture");
     }
 
     #[test]

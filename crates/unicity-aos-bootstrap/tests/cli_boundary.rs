@@ -72,11 +72,19 @@ impl Fixture {
 
     fn install_runtime(&self, body: &str) {
         fs::write(&self.runtime, body).expect("write fake runtime");
-        let mut permissions = fs::metadata(&self.runtime)
-            .expect("runtime metadata")
-            .permissions();
+        Self::make_executable(&self.runtime);
+    }
+
+    fn install_daemon(&self, body: &str) {
+        let daemon = self.runtime.with_file_name("astrid-daemon");
+        fs::write(&daemon, body).expect("write fake daemon");
+        Self::make_executable(&daemon);
+    }
+
+    fn make_executable(path: &Path) {
+        let mut permissions = fs::metadata(path).expect("runtime metadata").permissions();
         permissions.set_mode(0o700);
-        fs::set_permissions(&self.runtime, permissions).expect("make runtime executable");
+        fs::set_permissions(path, permissions).expect("make fixture executable");
     }
 
     fn command(&self) -> Command {
@@ -115,6 +123,81 @@ printf '%s\n' "$ASTRID_ENFORCED_DISTRO" > "$AOS_TEST_DISTRO"
 printf '%s\n' "$PATH" > "$AOS_TEST_PATH"
 exit "${AOS_TEST_EXIT:-0}"
 "#;
+
+const RECORDING_DAEMON: &str = r#"#!/bin/sh
+for arg in "$@"; do
+    printf '<%s>\n' "$arg"
+done > "$AOS_TEST_ARGS"
+printf '%s\n' "$ASTRID_HOME" > "$AOS_TEST_HOME"
+printf '%s\n' "$ASTRID_WORKSPACE_STATE_DIR" > "$AOS_TEST_WORKSPACE"
+printf '%s\n' "$ASTRID_ENFORCED_DISTRO" > "$AOS_TEST_DISTRO"
+printf '%s\n' "$ASTRID_DAEMON_LOG_TARGET" > "$AOS_TEST_LOG_TARGET"
+exit "${AOS_TEST_EXIT:-0}"
+"#;
+
+#[test]
+fn foreground_daemon_replaces_aos_with_the_persistent_product_runtime() {
+    let fixture = Fixture::new("foreground-daemon");
+    fixture.install_daemon(RECORDING_DAEMON);
+    let workspace = fixture.root.join("workspace");
+    let log_target = fixture.root.join("log-target");
+
+    let output = fixture
+        .command()
+        .env("AOS_TEST_EXIT", "23")
+        .env("AOS_TEST_LOG_TARGET", &log_target)
+        .args([
+            OsStr::new("daemon"),
+            OsStr::new("foreground"),
+            OsStr::new("--workspace"),
+            workspace.as_os_str(),
+            OsStr::new("--verbose"),
+        ])
+        .output()
+        .expect("run foreground daemon");
+
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "the daemon must directly own the supervisor-visible exit status"
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.args).expect("read daemon args"),
+        format!("<--workspace>\n<{}>\n<--verbose>\n", workspace.display())
+    );
+    assert!(
+        !fs::read_to_string(&fixture.args)
+            .expect("read daemon args")
+            .contains("--ephemeral")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-home"))
+            .expect("read runtime home")
+            .trim(),
+        fixture.home.join("runtime").to_string_lossy()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-workspace"))
+            .expect("read workspace state")
+            .trim(),
+        ".aos"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("child-distro"))
+            .expect("read enforced distro")
+            .trim(),
+        fixture
+            .home
+            .join("distributions/unicity-ce/Distro.toml")
+            .to_string_lossy()
+    );
+    assert_eq!(
+        fs::read_to_string(&log_target)
+            .expect("read daemon log target")
+            .trim(),
+        "stderr"
+    );
+}
 
 #[test]
 fn unowned_root_passes_through_with_argv_home_and_exit_code() {
@@ -380,11 +463,7 @@ fn inherited_help_dispatches_byte_for_byte_while_product_help_stays_owned() {
     let fixture = Fixture::new("help-inheritance");
     fixture.install_runtime(RECORDING_RUNTIME);
 
-    for args in [
-        vec!["help", "doctor"],
-        vec!["help", "capsule"],
-        vec!["help", "daemon", "start"],
-    ] {
+    for args in [vec!["help", "doctor"], vec!["help", "capsule"]] {
         let output = fixture
             .command()
             .args(&args)
@@ -402,7 +481,12 @@ fn inherited_help_dispatches_byte_for_byte_while_product_help_stays_owned() {
         fs::remove_file(&fixture.args).expect("reset delegated args");
     }
 
-    for args in [vec!["help"], vec!["help", "init"], vec!["help", "status"]] {
+    for args in [
+        vec!["help"],
+        vec!["help", "init"],
+        vec!["help", "status"],
+        vec!["help", "daemon"],
+    ] {
         let output = fixture
             .command()
             .args(args)
