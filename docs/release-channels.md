@@ -61,6 +61,15 @@ digests. Its false gate on `main` is intentional until the corresponding Astrid
 release exists; changing the runtime pin and product version remains separate
 release work.
 
+Both musl targets build natively in the platform-specific official Rust
+1.95.0 Alpine 3.23 image: `ubuntu-latest` hosts x86_64 and
+`ubuntu-24.04-arm` hosts ARM64. The workflow does not install QEMU. It rejects
+the wrong ELF machine, an interpreter, a `NEEDED` entry, or any `GLIBC_*`
+symbol version (including `GLIBC_PRIVATE`) in the AOS binary or any of the four
+bundled Astrid binaries. All five binaries execute in a fresh Alpine container,
+and the composed archive initializes and stops an exact clean Community
+Edition home before publication can proceed.
+
 The channel pointer is a strict TOML document with a channel name, monotonically
 increasing generation, publication and expiry times, the immutable release
 metadata digest, and the same four target records. Its exact accepted identity

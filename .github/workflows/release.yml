@@ -96,6 +96,8 @@ jobs:
       - name: Install pinned BLAKE3 checksum tool
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
       - name: Verify the pinned runtime command surface
         run: bash scripts/test-pinned-runtime-command-surface.sh
       - name: Refuse a nightly after its canonical base is tagged
@@ -138,7 +140,11 @@ jobs:
       - run: python3 scripts/test_validate_runtime_archive.py
       - run: bash scripts/test-extract-runtime-tool.sh
       - run: python3 scripts/test_check_glibc.py
+      - run: python3 scripts/test_check_static_elf.py
+      - run: python3 scripts/test_astrid_musl_release.py
+      - run: python3 scripts/test_musl_workflow_contract.py
       - run: sh -n install.sh
+      - run: bash -n scripts/test-clean-home-musl-install.sh
 
   build:
     name: Build (${{ matrix.target }})
@@ -150,12 +156,28 @@ jobs:
         include:
           - target: x86_64-apple-darwin
             os: macos-latest
+            libc: native
           - target: aarch64-apple-darwin
             os: macos-latest
+            libc: native
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            libc: gnu
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            libc: gnu
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            libc: musl
+            architecture: x86_64
+            platform: linux/amd64
+            image: docker.io/library/rust@sha256:e98196986adced5602f6e21c54babdbf2a8700400c7a78868324a3630e0c5d15
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            libc: musl
+            architecture: aarch64
+            platform: linux/arm64
+            image: docker.io/library/rust@sha256:594694ee6b07747b63b5c265be2616b62e814180b66227e2c18c6ee85e4136be
     steps:
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -172,29 +194,62 @@ jobs:
           toolchain: '1.95.0'
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        if: ${{ !endsWith(matrix.target, 'linux-gnu') }}
+        if: matrix.libc == 'native'
         with:
           key: aos-release-${{ matrix.target }}
       - name: Install pinned BLAKE3 checksum tool
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
       - name: Load runtime compatibility pins
+        env:
+          TARGET_LIBC: ${{ matrix.libc }}
         run: |
           python3 - <<'PY' >> "$GITHUB_ENV"
           import tomllib
-          with open("release/runtime-compatibility.toml", "rb") as file:
-              metadata = tomllib.load(file)["runtime"]
+          import os
+          from pathlib import Path
+          import sys
+
+          root = Path.cwd()
+          sys.path.insert(0, str(root / "scripts"))
+          if os.environ["TARGET_LIBC"] == "musl":
+              import musl_release_metadata
+              import release_metadata
+
+              path = root / "release/runtime-musl-compatibility.toml"
+              metadata = musl_release_metadata.validate_runtime_pin(
+                  release_metadata.load(path), require_ready=True
+              )
+              print(
+                  f"RUNTIME_LEGACY_METADATA="
+                  f"{metadata['legacy-release-metadata-asset']}"
+              )
+              print(
+                  f"RUNTIME_LEGACY_METADATA_BLAKE3="
+                  f"{metadata['legacy-release-metadata-blake3']}"
+              )
+              print(
+                  f"RUNTIME_MUSL_METADATA="
+                  f"{metadata['musl-release-metadata-asset']}"
+              )
+              print(
+                  f"RUNTIME_MUSL_METADATA_BLAKE3="
+                  f"{metadata['musl-release-metadata-blake3']}"
+              )
+          else:
+              with (root / "release/runtime-compatibility.toml").open("rb") as file:
+                  metadata = tomllib.load(file)["runtime"]
           print(f"RUNTIME_VERSION={metadata['version']}")
           print(f"RUNTIME_TAG={metadata['tag']}")
           print(f"RUNTIME_REPOSITORY={metadata['repository']}")
           print(f"RUNTIME_IDENTITY={metadata['release-workflow-identity']}")
           PY
       - name: Build product binary
-        if: ${{ !endsWith(matrix.target, 'linux-gnu') }}
+        if: matrix.libc == 'native'
         run: |
           cargo build --locked --release --target "${{ matrix.target }}" -p unicity-aos-bootstrap
           echo "AOS_BINARY=target/${{ matrix.target }}/release/aos" >> "$GITHUB_ENV"
       - name: Build Linux product binary against glibc 2.31
-        if: ${{ endsWith(matrix.target, 'linux-gnu') }}
+        if: matrix.libc == 'gnu'
         env:
           LINUX_BUILD_IMAGE: docker.io/library/rust:1.95.0-bullseye@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
           TARGET: ${{ matrix.target }}
@@ -219,7 +274,45 @@ jobs:
           AOS_BINARY="target/glibc-2.31/${{ matrix.target }}/release/aos"
           python3 scripts/check_glibc.py --max-version 2.34 "$AOS_BINARY"
           echo "AOS_BINARY=$AOS_BINARY" >> "$GITHUB_ENV"
+      - name: Build product binary in the native Linux musl environment
+        if: matrix.libc == 'musl'
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          PLATFORM: ${{ matrix.platform }}
+          # Platform manifest from the official Rust 1.95.0 Alpine 3.23 image.
+          RUST_BUILD_IMAGE: ${{ matrix.image }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          SOURCE_SHA=$(git rev-parse --short=12 HEAD)
+          docker run --rm \
+            --platform "$PLATFORM" \
+            --env ARCHITECTURE \
+            --env CARGO_TERM_COLOR=always \
+            --env SOURCE_SHA="$SOURCE_SHA" \
+            --env TARGET \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            "$RUST_BUILD_IMAGE" \
+            sh -ceu '
+              case "$ARCHITECTURE:$(uname -m)" in
+                x86_64:x86_64|aarch64:aarch64) ;;
+                *) echo "musl build is not running on the native architecture" >&2; exit 1 ;;
+              esac
+              apk add --no-cache binutils build-base git perl pkgconf python3
+              git config --global --add safe.directory /workspace
+              [ "$(git rev-parse --short=12 HEAD)" = "$SOURCE_SHA" ]
+              cargo build \
+                --locked \
+                --release \
+                --target "$TARGET" \
+                --target-dir target/musl \
+                -p unicity-aos-bootstrap
+              python3 scripts/check_static_elf.py --architecture "$ARCHITECTURE" \
+                "target/musl/$TARGET/release/aos"
+            '
+          echo "AOS_BINARY=target/musl/${TARGET}/release/aos" >> "$GITHUB_ENV"
       - name: Download pinned runtime release
+        if: matrix.libc != 'musl'
         run: |
           ASSET="astrid-${RUNTIME_VERSION}-${{ matrix.target }}.tar.gz"
           BASE="https://github.com/${RUNTIME_REPOSITORY}/releases/download/${RUNTIME_TAG}"
@@ -232,15 +325,59 @@ jobs:
           echo "RUNTIME_ASSET=$ASSET" >> "$GITHUB_ENV"
           echo "RUNTIME_BLAKE3=$EXPECTED" >> "$GITHUB_ENV"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
       - name: Verify runtime release identity
+        if: matrix.libc != 'musl'
         run: |
           cosign verify-blob \
             --bundle "$RUNTIME_ASSET.sigstore.json" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "$RUNTIME_IDENTITY" \
             "$RUNTIME_ASSET"
+      - name: Authenticate the pinned Astrid musl release
+        if: matrix.libc == 'musl'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          BASE="https://github.com/${RUNTIME_REPOSITORY}/releases/download/${RUNTIME_TAG}"
+          for metadata in "$RUNTIME_LEGACY_METADATA" "$RUNTIME_MUSL_METADATA"; do
+            curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$metadata"
+            curl --proto '=https' --tlsv1.2 -fsSLo "$metadata.sigstore.json" \
+              "$BASE/$metadata.sigstore.json"
+            cosign verify-blob \
+              --bundle "$metadata.sigstore.json" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$RUNTIME_IDENTITY" \
+              --use-signed-timestamps \
+              "$metadata"
+          done
+          test "$(b3sum -- "$RUNTIME_LEGACY_METADATA" | awk '{print $1}')" \
+            = "$RUNTIME_LEGACY_METADATA_BLAKE3"
+          test "$(b3sum -- "$RUNTIME_MUSL_METADATA" | awk '{print $1}')" \
+            = "$RUNTIME_MUSL_METADATA_BLAKE3"
+
+          RUNTIME_ASSET="astrid-${RUNTIME_VERSION}-${TARGET}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSLO "$BASE/$RUNTIME_ASSET"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$RUNTIME_ASSET.sigstore.json" \
+            "$BASE/$RUNTIME_ASSET.sigstore.json"
+          cosign verify-blob \
+            --bundle "$RUNTIME_ASSET.sigstore.json" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$RUNTIME_IDENTITY" \
+            --use-signed-timestamps \
+            "$RUNTIME_ASSET"
+          python3 scripts/astrid_musl_release.py \
+            --compatibility release/runtime-musl-compatibility.toml \
+            --legacy "$RUNTIME_LEGACY_METADATA" \
+            --extension "$RUNTIME_MUSL_METADATA" \
+            --target "$TARGET" \
+            --archive "$RUNTIME_ASSET"
+          echo "RUNTIME_ASSET=$RUNTIME_ASSET" >> "$GITHUB_ENV"
+          echo "RUNTIME_BLAKE3=$(b3sum -- "$RUNTIME_ASSET" | awk '{print $1}')" \
+            >> "$GITHUB_ENV"
       - name: Verify Linux runtime glibc compatibility
-        if: ${{ endsWith(matrix.target, 'linux-gnu') }}
+        if: matrix.libc == 'gnu'
         run: |
           RUNTIME_ROOT="astrid-${RUNTIME_VERSION}-${{ matrix.target }}"
           CHECK_ROOT="$RUNNER_TEMP/runtime-glibc-check"
@@ -255,20 +392,66 @@ jobs:
             "$CHECK_ROOT/$RUNTIME_ROOT/astrid-daemon" \
             "$CHECK_ROOT/$RUNTIME_ROOT/astrid-build" \
             "$CHECK_ROOT/$RUNTIME_ROOT/astrid-emit"
+      - name: Validate and exercise every Linux musl binary
+        if: matrix.libc == 'musl'
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          PLATFORM: ${{ matrix.platform }}
+          RUST_BUILD_IMAGE: ${{ matrix.image }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          RUNTIME_ROOT="astrid-${RUNTIME_VERSION}-${TARGET}"
+          CHECK_ROOT="target/runtime-musl-${TARGET}"
+          python3 scripts/validate-runtime-archive.py \
+            "$RUNTIME_ASSET" \
+            "$RUNTIME_ROOT" \
+            astrid astrid-daemon astrid-build astrid-emit
+          mkdir -p "$CHECK_ROOT"
+          tar -xzf "$RUNTIME_ASSET" -C "$CHECK_ROOT"
+          python3 scripts/check_static_elf.py --architecture "$ARCHITECTURE" \
+            "$AOS_BINARY" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-daemon" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-build" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-emit"
+          docker run --rm \
+            --platform "$PLATFORM" \
+            --env AOS_BINARY \
+            --env RUNTIME_ROOT \
+            --env TARGET \
+            --volume "$PWD:/workspace:ro" \
+            --workdir /workspace \
+            "$RUST_BUILD_IMAGE" \
+            sh -ceu '
+              "$AOS_BINARY" --version
+              for binary in astrid astrid-daemon astrid-build astrid-emit; do
+                "target/runtime-musl-$TARGET/$RUNTIME_ROOT/$binary" --version
+              done
+            '
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: capsule-artifacts
           name: aos-community-capsules
       - name: Compose product bundle
+        env:
+          TARGET_LIBC: ${{ matrix.libc }}
         run: |
           python3 scripts/capsule_release.py --artifacts capsule-artifacts
+          EXTRA=()
+          if [[ "$TARGET_LIBC" == musl ]]; then
+            EXTRA+=(
+              --musl-runtime-compatibility
+              release/runtime-musl-compatibility.toml
+            )
+          fi
           scripts/package-release.sh \
             "${{ matrix.target }}" \
             "$AOS_BINARY" \
             "$RUNTIME_ASSET" \
             "$RUNTIME_BLAKE3" \
             capsule-artifacts \
-            artifacts
+            artifacts \
+            "${EXTRA[@]}"
       - name: Test a clean Community Edition home
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
@@ -276,6 +459,28 @@ jobs:
           tar -xzf "artifacts/unicity-aos-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
             -C "$RUNNER_TEMP/clean-home-bundle" --strip-components=1
           scripts/test-clean-home-init.sh "$RUNNER_TEMP/clean-home-bundle"
+      - name: Test a clean Alpine Community Edition home
+        if: matrix.libc == 'musl'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          RUST_BUILD_IMAGE: ${{ matrix.image }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          CLEAN_ROOT="target/clean-home-${TARGET}"
+          rm -rf "$CLEAN_ROOT"
+          mkdir -p "$CLEAN_ROOT"
+          tar -xzf "artifacts/unicity-aos-${GITHUB_REF_NAME}-${TARGET}.tar.gz" \
+            -C "$CLEAN_ROOT" --strip-components=1
+          docker run --rm \
+            --platform "$PLATFORM" \
+            --env CLEAN_ROOT \
+            --volume "$PWD:/workspace:ro" \
+            --workdir /workspace \
+            "$RUST_BUILD_IMAGE" \
+            sh -ceu '
+              apk add --no-cache bash bubblewrap python3 zsh
+              bash scripts/test-clean-home-init.sh "$CLEAN_ROOT"
+            '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aos-${{ matrix.target }}
@@ -330,6 +535,8 @@ jobs:
           echo "RUNTIME_ASSET=$ASSET" >> "$GITHUB_ENV"
           echo "RUNTIME_TARGET=$TARGET" >> "$GITHUB_ENV"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
       - name: Verify runtime builder identity
         run: |
           cosign verify-blob \
@@ -410,6 +617,7 @@ jobs:
           b3sum -- ./*.tar.gz ./*.capsule | sed 's#  \./#  #' > BLAKE3SUMS.txt
           sha256sum -- ./*.tar.gz ./*.capsule | sed 's#  \./#  #' > SHA256SUMS.txt
           cp ../release/runtime-compatibility.toml .
+          cp ../release/runtime-musl-compatibility.toml .
       - name: Generate immutable release metadata
         env:
           SOURCE_COMMIT: ${{ needs.classify.outputs.source-commit }}
@@ -427,7 +635,17 @@ jobs:
             --output "$RELEASE_METADATA"
           python3 scripts/release_metadata.py validate-release \
             --require-ready "$RELEASE_METADATA"
+          MUSL_RELEASE_METADATA="artifacts/unicity-aos-${GITHUB_REF_NAME}-musl-release.toml"
+          python3 scripts/musl_release_metadata.py render \
+            --artifacts artifacts \
+            --legacy-release "$RELEASE_METADATA" \
+            --runtime-compatibility artifacts/runtime-musl-compatibility.toml \
+            --output "$MUSL_RELEASE_METADATA"
+          python3 scripts/musl_release_metadata.py validate \
+            "$MUSL_RELEASE_METADATA" \
+            --legacy-release "$RELEASE_METADATA"
           echo "RELEASE_METADATA=$RELEASE_METADATA" >> "$GITHUB_ENV"
+          echo "MUSL_RELEASE_METADATA=$MUSL_RELEASE_METADATA" >> "$GITHUB_ENV"
       - name: Authenticate the remote tag before candidate publication
         env:
           GH_TOKEN: ${{ github.token }}
@@ -477,6 +695,8 @@ jobs:
           }
           echo "EXISTING_RELEASE=1" >> "$GITHUB_ENV"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         if: env.EXISTING_RELEASE != '1'
         with:
@@ -486,6 +706,7 @@ jobs:
             artifacts/BLAKE3SUMS.txt
             artifacts/SHA256SUMS.txt
             artifacts/runtime-compatibility.toml
+            artifacts/runtime-musl-compatibility.toml
             artifacts/unicity-aos-*-release.toml
       - name: Sign release assets
         if: env.EXISTING_RELEASE != '1'
@@ -493,7 +714,7 @@ jobs:
           COSIGN_YES: 'true'
         run: |
           cd artifacts
-          for asset in ./*.tar.gz ./*.capsule BLAKE3SUMS.txt SHA256SUMS.txt runtime-compatibility.toml unicity-aos-*-release.toml; do
+          for asset in ./*.tar.gz ./*.capsule BLAKE3SUMS.txt SHA256SUMS.txt runtime-compatibility.toml runtime-musl-compatibility.toml unicity-aos-*-release.toml; do
             cosign sign-blob --yes --bundle "${asset}.sigstore.json" "$asset"
           done
       - name: Verify release signatures use the exact tag identity
@@ -501,7 +722,7 @@ jobs:
         run: |
           cd artifacts
           IDENTITY="https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          for asset in ./*.tar.gz ./*.capsule BLAKE3SUMS.txt SHA256SUMS.txt runtime-compatibility.toml unicity-aos-*-release.toml; do
+          for asset in ./*.tar.gz ./*.capsule BLAKE3SUMS.txt SHA256SUMS.txt runtime-compatibility.toml runtime-musl-compatibility.toml unicity-aos-*-release.toml; do
             cosign verify-blob \
               --bundle "${asset}.sigstore.json" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -514,7 +735,7 @@ jobs:
           cat > release-notes.md <<EOF
           Unicity AOS Community Edition ${GITHUB_REF_NAME}.
 
-          This product release bundles Astrid Runtime ${RUNTIME_TAG}. The exact runtime release identity, WIT commit, and compatibility pins are published in \`runtime-compatibility.toml\` and in every archive's \`release-manifest.json\`.
+          This product release bundles Astrid Runtime ${RUNTIME_TAG}. The exact runtime release identity, WIT commit, and compatibility pins are published in \`runtime-compatibility.toml\`, \`runtime-musl-compatibility.toml\`, and every archive's \`release-manifest.json\`.
 
           The release also contains the 19 signed, installable capsule artifacts selected by Community Edition. Published \`astrid-capsule-*\` identities remain unchanged.
 
@@ -591,6 +812,8 @@ jobs:
             echo "RECOVER_DRAFT=1"
             echo "CANDIDATE=$EXISTING_ASSETS"
           } >> "$GITHUB_ENV"
+      - name: Test signed direct install in a clean Alpine home
+        run: bash scripts/test-clean-home-musl-install.sh "$CANDIDATE"
       - name: Create draft release with write-once assets
         if: env.RECOVER_DRAFT != '1'
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
@@ -606,6 +829,7 @@ jobs:
             artifacts/BLAKE3SUMS.txt
             artifacts/SHA256SUMS.txt
             artifacts/runtime-compatibility.toml
+            artifacts/runtime-musl-compatibility.toml
             artifacts/unicity-aos-*-release.toml
             artifacts/*.sigstore.json
           body_path: release-notes.md

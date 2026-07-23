@@ -38,6 +38,11 @@ be true before a tag can publish. The latter is approved only after the exact
 candidate preserves a frozen standalone-home clone and boots with freshly
 generated runtime coordination state.
 
+Linux releases cover both GNU and fully static musl archives on native x86_64
+and ARM64 builders. Musl publication has its own exact Astrid compatibility
+pin, and remains fail-closed until that pin names authenticated legacy and musl
+runtime metadata from one immutable Astrid release.
+
 ## Command boundary
 
 AOS owns its product roots, including `init`, `status`, `migrate`, `update`,

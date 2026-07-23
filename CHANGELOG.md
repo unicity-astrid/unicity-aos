@@ -55,6 +55,12 @@
   authenticated legacy release, and pins the exact Astrid musl metadata.
   Installers detect libc without requiring `ldd` and fail closed when the Linux
   libc cannot be identified. Closes #62.
+- Native x86_64 and ARM64 Linux musl build and release lanes that verify the
+  AOS binary and all bundled Astrid binaries are static, architecture-correct,
+  free of interpreters, dynamic dependencies, and every `GLIBC_*` requirement,
+  then exercise the composed distro in clean Alpine. The checked false musl
+  compatibility pin continues to block publication until separate release
+  work names a published Astrid musl release. Closes #63.
 
 ### Changed
 

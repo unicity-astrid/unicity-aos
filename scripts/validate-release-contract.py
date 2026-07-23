@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     musl_release_metadata.validate_runtime_pin(
         readiness_metadata("release/runtime-musl-compatibility.toml"),
-        require_ready=False,
+        require_ready=args.require_release_ready,
     )
 
     product_version = product[("package", "version")]

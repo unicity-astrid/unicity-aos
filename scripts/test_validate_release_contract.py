@@ -144,10 +144,19 @@ class ReleaseReadinessTests(unittest.TestCase):
         runtime = VALIDATOR.readiness_metadata(
             ROOT / "release/runtime-compatibility.toml"
         )["runtime"]
-        if runtime["release-ready"] and runtime["upgrade-self-heal-ready"]:
+        musl_runtime = VALIDATOR.readiness_metadata(
+            ROOT / "release/runtime-musl-compatibility.toml"
+        )["runtime"]
+        if (
+            runtime["release-ready"]
+            and runtime["upgrade-self-heal-ready"]
+            and musl_runtime["release-ready"]
+        ):
             self.assertEqual(VALIDATOR.main(["--require-release-ready"]), 0)
         else:
-            with self.assertRaisesRegex(ValueError, "refusing to publish"):
+            with self.assertRaisesRegex(
+                ValueError, "refusing to publish|release-ready gate is false"
+            ):
                 VALIDATOR.main(["--require-release-ready"])
 
     def test_cli_matches_the_current_publication_gate(self) -> None:
@@ -163,6 +172,9 @@ class ReleaseReadinessTests(unittest.TestCase):
         runtime = VALIDATOR.readiness_metadata(
             ROOT / "release/runtime-compatibility.toml"
         )["runtime"]
+        musl_runtime = VALIDATOR.readiness_metadata(
+            ROOT / "release/runtime-musl-compatibility.toml"
+        )["runtime"]
         strict = subprocess.run(
             [sys.executable, str(SCRIPT), "--require-release-ready"],
             cwd=ROOT,
@@ -170,11 +182,17 @@ class ReleaseReadinessTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        if runtime["release-ready"] and runtime["upgrade-self-heal-ready"]:
+        if (
+            runtime["release-ready"]
+            and runtime["upgrade-self-heal-ready"]
+            and musl_runtime["release-ready"]
+        ):
             self.assertEqual(strict.returncode, 0, strict.stderr)
         else:
             self.assertEqual(strict.returncode, 1)
-            self.assertIn("refusing to publish", strict.stderr)
+            self.assertRegex(
+                strict.stderr, "refusing to publish|release-ready gate is false"
+            )
 
 
 if __name__ == "__main__":
