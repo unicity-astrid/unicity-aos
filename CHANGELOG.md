@@ -101,6 +101,12 @@
   lock is available; all other inherited runtime failures retain their output
   and exit status.
 
+### Fixed
+
+- Build Linux product binaries on a pinned glibc 2.31 baseline and reject AOS
+  or bundled Astrid executables that require glibc newer than 2.34, restoring
+  support for RHEL, Oracle Linux, Rocky Linux, and AlmaLinux 9. Closes #58.
+
 ### Removed
 
 - The vendored `capsules/capsule-telegram` copy. The capsule is maintained in

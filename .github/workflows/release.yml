@@ -134,6 +134,7 @@ jobs:
       - run: python3 scripts/test_capsule_release.py
       - run: python3 scripts/test_validate_runtime_archive.py
       - run: bash scripts/test-extract-runtime-tool.sh
+      - run: python3 scripts/test_check_glibc.py
       - run: sh -n install.sh
 
   build:
@@ -167,12 +168,8 @@ jobs:
         with:
           toolchain: '1.95.0'
           targets: ${{ matrix.target }}
-      - name: Install Linux ARM linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: ${{ !endsWith(matrix.target, 'linux-gnu') }}
         with:
           key: aos-release-${{ matrix.target }}
       - name: Install pinned BLAKE3 checksum tool
@@ -189,9 +186,36 @@ jobs:
           print(f"RUNTIME_IDENTITY={metadata['release-workflow-identity']}")
           PY
       - name: Build product binary
+        if: ${{ !endsWith(matrix.target, 'linux-gnu') }}
+        run: |
+          cargo build --locked --release --target "${{ matrix.target }}" -p unicity-aos-bootstrap
+          echo "AOS_BINARY=target/${{ matrix.target }}/release/aos" >> "$GITHUB_ENV"
+      - name: Build Linux product binary against glibc 2.31
+        if: ${{ endsWith(matrix.target, 'linux-gnu') }}
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --locked --release --target "${{ matrix.target }}" -p unicity-aos-bootstrap
+          LINUX_BUILD_IMAGE: docker.io/library/rust:1.95.0-bullseye@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
+          TARGET: ${{ matrix.target }}
+        run: |
+          docker run --rm \
+            -e TARGET \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            "$LINUX_BUILD_IMAGE" \
+            bash -euxo pipefail -c '
+              if [[ "$TARGET" == aarch64-unknown-linux-gnu ]]; then
+                rustup target add aarch64-unknown-linux-gnu
+                apt-get update
+                apt-get install -y --no-install-recommends \
+                  gcc-aarch64-linux-gnu \
+                  libc6-dev-arm64-cross
+                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+              fi
+              export CARGO_TARGET_DIR=/workspace/target/glibc-2.31
+              cargo build --locked --release --target "$TARGET" -p unicity-aos-bootstrap
+            '
+          AOS_BINARY="target/glibc-2.31/${{ matrix.target }}/release/aos"
+          python3 scripts/check_glibc.py --max-version 2.34 "$AOS_BINARY"
+          echo "AOS_BINARY=$AOS_BINARY" >> "$GITHUB_ENV"
       - name: Download pinned runtime release
         run: |
           ASSET="astrid-${RUNTIME_VERSION}-${{ matrix.target }}.tar.gz"
@@ -212,6 +236,22 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "$RUNTIME_IDENTITY" \
             "$RUNTIME_ASSET"
+      - name: Verify Linux runtime glibc compatibility
+        if: ${{ endsWith(matrix.target, 'linux-gnu') }}
+        run: |
+          RUNTIME_ROOT="astrid-${RUNTIME_VERSION}-${{ matrix.target }}"
+          CHECK_ROOT="$RUNNER_TEMP/runtime-glibc-check"
+          python3 scripts/validate-runtime-archive.py \
+            "$RUNTIME_ASSET" \
+            "$RUNTIME_ROOT" \
+            astrid astrid-daemon astrid-build astrid-emit
+          mkdir "$CHECK_ROOT"
+          tar -xzf "$RUNTIME_ASSET" -C "$CHECK_ROOT"
+          python3 scripts/check_glibc.py --max-version 2.34 \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-daemon" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-build" \
+            "$CHECK_ROOT/$RUNTIME_ROOT/astrid-emit"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: capsule-artifacts
@@ -221,7 +261,7 @@ jobs:
           python3 scripts/capsule_release.py --artifacts capsule-artifacts
           scripts/package-release.sh \
             "${{ matrix.target }}" \
-            "target/${{ matrix.target }}/release/aos" \
+            "$AOS_BINARY" \
             "$RUNTIME_ASSET" \
             "$RUNTIME_BLAKE3" \
             capsule-artifacts \
