@@ -1,0 +1,17 @@
+schema-version = 1
+
+# Linux musl runtime provenance is intentionally separate from the legacy
+# four-target runtime compatibility contract. A release-only pin update flips
+# this gate after Astrid publishes and authenticates the matching immutable
+# two-target musl extension.
+[runtime]
+repository = "astrid-runtime/astrid"
+release-ready = false
+version = "0.10.4"
+tag = "v0.10.4"
+release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.10.4"
+source-commit = "b6bf5d1d579915eb5d3c944857d84e62a4fcc878"
+legacy-release-metadata-asset = "astrid-0.10.4-release.toml"
+legacy-release-metadata-blake3 = "25f4de92aa2db9db81e84902db479adf8bae68256fe3656db2c1673dfb302c0b"
+musl-release-metadata-asset = ""
+musl-release-metadata-blake3 = ""

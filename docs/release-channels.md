@@ -39,6 +39,28 @@ two release-readiness gates. The exact accepted identity is:
 https://github.com/unicity-aos/aos-ce/.github/workflows/release.yml@refs/tags/<version>
 ```
 
+Linux musl support does not widen either strict document. A release that ships
+musl archives also publishes
+`unicity-aos-<version>-musl-release.toml` and its Sigstore bundle from the same
+immutable tag workflow. That extension contains exactly the x86-64 and ARM64
+musl targets, the exact Astrid musl metadata pin, and a SHA-256 binding to the
+legacy four-target AOS release metadata. There is no second mutable channel
+pointer.
+
+On Linux, the installer identifies libc in order from
+`getconf GNU_LIBC_VERSION`, `ldd --version` when `ldd` exists, and canonical
+musl loader paths. It refuses an unknown libc rather than selecting a GNU
+archive by default. For a musl install it authenticates the normal channel and
+legacy release first, then downloads and authenticates the exact-tag musl
+extension before selecting an archive. Direct `--version` installs follow the
+same immutable release-then-extension chain without consulting a channel.
+
+`release/runtime-musl-compatibility.toml` is a separate publication gate and
+must name the exact signed Astrid legacy and musl metadata assets and BLAKE3
+digests. Its false gate on `main` is intentional until the corresponding Astrid
+release exists; changing the runtime pin and product version remains separate
+release work.
+
 The channel pointer is a strict TOML document with a channel name, monotonically
 increasing generation, publication and expiry times, the immutable release
 metadata digest, and the same four target records. Its exact accepted identity

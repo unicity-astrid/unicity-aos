@@ -95,6 +95,7 @@ jobs:
       - run: python3 scripts/validate-release-contract.py
       - run: python3 scripts/test_validate_release_contract.py
       - run: python3 scripts/test_release_metadata.py
+      - run: python3 scripts/test_musl_release_metadata.py
       - run: python3 scripts/test_nightly_version.py
       - run: python3 scripts/test_channel_transaction.py
       - run: python3 scripts/test_channel_publication.py
@@ -105,6 +106,8 @@ jobs:
       - run: python3 scripts/test_create_astrid_094_fixture.py
       - run: bash scripts/test-package-release.sh
       - run: bash scripts/test-install.sh
+      - run: bash scripts/test-libc-detection.sh
+      - run: bash scripts/test-install-musl.sh
       - run: python3 scripts/capsule_release.py
       - run: python3 scripts/test_capsule_release.py
       - run: python3 scripts/test_validate_runtime_archive.py

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 6 ]]; then
-  echo "usage: $0 <target> <aos-binary> <runtime-archive> <runtime-blake3> <capsule-artifacts> <output-dir>" >&2
+if [[ $# -ne 6 && $# -ne 8 ]]; then
+  echo "usage: $0 <target> <aos-binary> <runtime-archive> <runtime-blake3> <capsule-artifacts> <output-dir> [--musl-runtime-compatibility <path>]" >&2
   exit 2
 fi
 
@@ -12,6 +12,14 @@ runtime_archive=$3
 runtime_blake3=$4
 capsule_artifacts=$5
 output_dir=$6
+musl_runtime_compatibility=
+if [[ $# -eq 8 ]]; then
+  [[ "$7" == --musl-runtime-compatibility ]] || {
+    echo "unknown package-release option: $7" >&2
+    exit 2
+  }
+  musl_runtime_compatibility=$8
+fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 toml_value() {
@@ -32,10 +40,33 @@ PY
 }
 
 product_version=$(toml_value "$repo_root/crates/unicity-aos-bootstrap/Cargo.toml" package version)
-runtime_version=$(toml_value "$repo_root/release/runtime-compatibility.toml" runtime version)
-runtime_tag=$(toml_value "$repo_root/release/runtime-compatibility.toml" runtime tag)
-runtime_repository=$(toml_value "$repo_root/release/runtime-compatibility.toml" runtime repository)
-runtime_identity=$(toml_value "$repo_root/release/runtime-compatibility.toml" runtime release-workflow-identity)
+runtime_compatibility="$repo_root/release/runtime-compatibility.toml"
+if [[ "$target" == *-unknown-linux-musl ]]; then
+  runtime_compatibility="${musl_runtime_compatibility:-$repo_root/release/runtime-musl-compatibility.toml}"
+  PYTHONPATH="$repo_root/scripts" python3 - "$runtime_compatibility" <<'PY'
+import pathlib
+import sys
+
+import musl_release_metadata
+import release_metadata
+
+path = pathlib.Path(sys.argv[1])
+try:
+    musl_release_metadata.validate_runtime_pin(
+        release_metadata.load(path),
+        require_ready=True,
+    )
+except (KeyError, OSError, ValueError) as error:
+    raise SystemExit(f"musl runtime compatibility: {error}") from error
+PY
+elif [[ -n "$musl_runtime_compatibility" ]]; then
+  echo "--musl-runtime-compatibility is valid only for a Linux musl target" >&2
+  exit 2
+fi
+runtime_version=$(toml_value "$runtime_compatibility" runtime version)
+runtime_tag=$(toml_value "$runtime_compatibility" runtime tag)
+runtime_repository=$(toml_value "$runtime_compatibility" runtime repository)
+runtime_identity=$(toml_value "$runtime_compatibility" runtime release-workflow-identity)
 wit_repository=$(toml_value "$repo_root/release/runtime-compatibility.toml" contracts repository)
 wit_commit=$(toml_value "$repo_root/release/runtime-compatibility.toml" contracts commit)
 sdk_rust_version=$(toml_value "$repo_root/release/runtime-compatibility.toml" contracts sdk-rust-version)
@@ -101,6 +132,9 @@ done < "$work/$root/capsule-assets.txt"
 python3 "$repo_root/scripts/capsule_release.py" --artifacts "$work/$root/capsules"
 
 install -m 0644 "$repo_root/release/runtime-compatibility.toml" "$work/$root/runtime-compatibility.toml"
+if [[ "$target" == *-unknown-linux-musl ]]; then
+  install -m 0644 "$runtime_compatibility" "$work/$root/runtime-musl-compatibility.toml"
+fi
 install -m 0644 "$repo_root/distros/community/unicity-ce/Distro.toml" "$work/$root/Distro.toml"
 install -m 0644 "$repo_root/README.md" "$work/$root/README.md"
 

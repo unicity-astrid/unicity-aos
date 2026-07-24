@@ -50,6 +50,11 @@
   Astrid compatibility pins, protected publication and promotion, and
   idempotent recovery after interrupted release or pointer updates. It is
   disabled by default; merging `main` never publishes a release.
+- A separately signed, immutable Linux musl metadata extension that preserves
+  the established four-target release and channel documents, binds back to the
+  authenticated legacy release, and pins the exact Astrid musl metadata.
+  Installers detect libc without requiring `ldd` and fail closed when the Linux
+  libc cannot be identified. Closes #62.
 
 ### Changed
 

@@ -292,6 +292,11 @@ case "${1:-}" in
   *) exit 2 ;;
 esac
 EOF
+cat > "$fake_bin/getconf" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = GNU_LIBC_VERSION ]
+printf '%s\n' 'glibc 2.34'
+EOF
 cat > "$fake_bin/curl" <<'EOF'
 #!/bin/sh
 set -eu
@@ -335,7 +340,7 @@ case "$1" in
   *) exec /usr/bin/shasum -a 256 "$1" ;;
 esac
 EOF
-chmod 755 "$fake_bin/uname" "$fake_bin/curl" "$fake_bin/sha256sum" \
+chmod 755 "$fake_bin/uname" "$fake_bin/getconf" "$fake_bin/curl" "$fake_bin/sha256sum" \
   "$fixture/cosign-linux-amd64"
 
 install_candidate() {

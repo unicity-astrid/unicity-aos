@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import capsule_release
+import musl_release_metadata
 import release_metadata
 
 
@@ -40,6 +41,7 @@ def validate_release_assets(
     version: str,
     source_commit: str,
     compatibility_path: Path | None = None,
+    musl_compatibility_path: Path | None = None,
 ) -> list[str]:
     require(directory.is_dir() and not directory.is_symlink(), "release assets must be a directory")
     entries = list(directory.iterdir())
@@ -65,8 +67,29 @@ def validate_release_assets(
     specs = capsule_release.source_contract()
     capsules = {spec.asset for spec in specs}
     targets = {item["asset"] for item in metadata["targets"].values()}
-    checksummed = targets | capsules
-    payloads = checksummed | set(FIXED_PAYLOADS) | {metadata_name}
+
+    musl_compatibility_path = (
+        musl_compatibility_path
+        or ROOT / "release" / "runtime-musl-compatibility.toml"
+    )
+    musl_pin = musl_release_metadata.validate_runtime_pin(
+        release_metadata.load(musl_compatibility_path), require_ready=False
+    )
+    musl_ready = musl_pin["release-ready"]
+    musl_metadata_name = musl_release_metadata.metadata_name(version)
+    musl_targets: set[str] = set()
+    extra_payloads: set[str] = set()
+    musl_metadata: dict[str, object] | None = None
+    if musl_ready:
+        musl_compatibility_name = "runtime-musl-compatibility.toml"
+        musl_targets = {
+            f"unicity-aos-{version}-{target}.tar.gz"
+            for target in musl_release_metadata.MUSL_TARGETS
+        }
+        extra_payloads = {musl_compatibility_name, musl_metadata_name}
+
+    checksummed = targets | musl_targets | capsules
+    payloads = checksummed | set(FIXED_PAYLOADS) | {metadata_name} | extra_payloads
     expected = payloads | {f"{name}.sigstore.json" for name in payloads}
     actual = {path.name for path in entries}
     require(
@@ -74,6 +97,25 @@ def validate_release_assets(
         f"release asset set differs; missing={sorted(expected - actual)}, "
         f"unexpected={sorted(actual - expected)}",
     )
+    if musl_ready:
+        require(
+            (directory / musl_compatibility_name).read_bytes()
+            == musl_compatibility_path.read_bytes(),
+            "published musl runtime compatibility does not match the tagged source",
+        )
+        musl_metadata_path = directory / musl_metadata_name
+        musl_metadata = musl_release_metadata.validate_extension(
+            release_metadata.load(musl_metadata_path),
+            legacy=metadata,
+            legacy_bytes=metadata_path.read_bytes(),
+        )
+        expected_runtime = {
+            key: musl_pin[key] for key in musl_release_metadata.RUNTIME_KEYS
+        }
+        require(
+            musl_metadata["runtime-musl"] == expected_runtime,
+            "musl release metadata runtime pin does not match the tagged source",
+        )
 
     sha256 = release_metadata.checksum_manifest(directory / "SHA256SUMS.txt")
     blake3 = release_metadata.checksum_manifest(directory / "BLAKE3SUMS.txt")
@@ -91,6 +133,21 @@ def validate_release_assets(
         require(item["sha256"] == sha256[name], f"release metadata SHA-256 mismatch for {name}")
         require(item["blake3"] == blake3[name], f"release metadata BLAKE3 mismatch for {name}")
         require(item["size"] == (directory / name).stat().st_size, f"release metadata size mismatch for {name}")
+    if musl_metadata is not None:
+        for item in musl_metadata["targets"].values():
+            name = item["asset"]
+            require(
+                item["sha256"] == sha256[name],
+                f"musl release metadata SHA-256 mismatch for {name}",
+            )
+            require(
+                item["blake3"] == blake3[name],
+                f"musl release metadata BLAKE3 mismatch for {name}",
+            )
+            require(
+                item["size"] == (directory / name).stat().st_size,
+                f"musl release metadata size mismatch for {name}",
+            )
 
     compatibility_path = compatibility_path or ROOT / "release" / "runtime-compatibility.toml"
     require(

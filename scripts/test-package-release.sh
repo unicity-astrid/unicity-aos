@@ -104,6 +104,24 @@ assert len(manifest["capsules"]["assets"]) == 21
 assert len(set(manifest["capsules"]["assets"])) == 21
 PY
 
+darwin_target=aarch64-apple-darwin
+darwin_runtime_root="$work/astrid-$runtime_version-$darwin_target"
+mkdir -p "$darwin_runtime_root"
+for binary in astrid astrid-daemon astrid-build astrid-emit; do
+  printf '#!/bin/sh\nexit 0\n' > "$darwin_runtime_root/$binary"
+  chmod 755 "$darwin_runtime_root/$binary"
+done
+COPYFILE_DISABLE=1 tar -czf "$work/runtime-darwin.tar.gz" \
+  -C "$work" "$(basename "$darwin_runtime_root")"
+bash "$repo_root/scripts/package-release.sh" \
+  "$darwin_target" \
+  "$work/aos" \
+  "$work/runtime-darwin.tar.gz" \
+  0000000000000000000000000000000000000000000000000000000000000000 \
+  "$work/capsules" \
+  "$work/output" >/dev/null
+test -f "$work/output/unicity-aos-$product_version-$darwin_target.tar.gz"
+
 unsafe_root="$work/unsafe-runtime"
 mkdir -p "$unsafe_root/astrid-$runtime_version-$target"
 ln -s /tmp "$unsafe_root/astrid-$runtime_version-$target/astrid"

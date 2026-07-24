@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import musl_release_metadata
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -142,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     validate_release_readiness(
         readiness_metadata("release/runtime-compatibility.toml"),
         require_release_ready=args.require_release_ready,
+    )
+    musl_release_metadata.validate_runtime_pin(
+        readiness_metadata("release/runtime-musl-compatibility.toml"),
+        require_ready=False,
     )
 
     product_version = product[("package", "version")]
