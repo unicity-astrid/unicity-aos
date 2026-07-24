@@ -1625,9 +1625,11 @@ The implementation cut is:
    coordinator-only operations and an exact `run-hart-slice(hart, budget)`
    operation. Do not add or merge public WIT for this.
 2. [ ] Move registers, CSRs, TLB, LR/SC reservation, timers, software interrupts,
-   and counters into independently owned hart cells. Keep UART, monotonic time,
-   finisher, 9P effects, scheduler epochs, and checkpoint control behind one
-   machine coordinator.
+   and counters into independently owned hart cells. The production Wasm RAM
+   backend is now demand-zero, word-atomic, and carries overlap-local write
+   generations; hart cells and LR/SC token consumption remain. Keep UART,
+   monotonic time, finisher, 9P effects, scheduler epochs, and checkpoint
+   control behind one machine coordinator.
 3. Give every admitted worker an exact hart affinity and a disjoint local-state
    region while sharing only the declared guest-RAM/device-control region.
    Disjoint Rust stacks and concurrent module entry are now proven; allocator
@@ -1728,8 +1730,20 @@ Astrid Compute remains the only creator and meter of native workers.
   while checkpointing rejects unacknowledged control. The monolithic state
   mutex still serializes instruction execution until the independent hart-cell
   and shared-RAM cuts above land.
-- The reproducible worker is 179,636 bytes with BLAKE3
-  `d7273c2193e90bae1db220a3b880367716fca7854472ded92df986794b23ee98`.
+- Threaded Wasm builds now replace mutable byte chunks with demand-zero 2 MiB
+  atomic chunks. Naturally aligned 1/2/4/8-byte stores take only the
+  overlapping 64-byte write-generation lock; aligned loads observe one atomic
+  word. Native tests prove that aligned 64-bit values never tear and that eight
+  disjoint granules make concurrent progress. This is live in the signed worker
+  but does not bypass the machine mutex yet.
+- A real generic-compute regression test admits the exact signed kernel,
+  distribution, one-hart checkpoint, and worker; restores the 1 GiB sparse
+  machine; then proves the resident call observes the pending principal-home
+  request with zero guest steps. It reports cold materialization and resident
+  call latency separately without turning one developer-machine sample into a
+  release threshold.
+- The reproducible worker is 186,525 bytes with BLAKE3
+  `601923e6397749715b4bc16c527035b1fceb6c7781ed7658c4acef06418320d9`.
   This proves the execution substrate needed by parallel harts. It does not yet
   claim that the current monolithic `Machine` mutex or deterministic
   round-robin hart scheduler runs Linux concurrently.

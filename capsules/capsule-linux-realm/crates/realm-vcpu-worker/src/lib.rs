@@ -771,11 +771,25 @@ mod tests {
     use super::*;
 
     const SIGNED_WORKER_HASH: &str =
-        "blake3:d7273c2193e90bae1db220a3b880367716fca7854472ded92df986794b23ee98";
+        "blake3:601923e6397749715b4bc16c527035b1fceb6c7781ed7658c4acef06418320d9";
     const SIGNED_KERNEL_HASH: &str =
         "blake3:60cc6c3c01222a3a33b108593974de5636747b32cacc10bf8c0f45c1cdd8b285";
     const SIGNED_TEST_SYSTEM_HASH: &str =
         "blake3:0ba0ad681b5d03178bfc8b3c308e67164c8daf3301386ca573a6838945078aad";
+    const SIGNED_SYSTEM_HASH: &str =
+        "blake3:c436bb2bfe0941f183f58f0e2e56df05a4bc03f01147ad1d095f48df0004afaa";
+    const SIGNED_CHECKPOINT_HASH: &str =
+        "blake3:59c7a2cb08f4fec01d6bd0ba1351a9c7d4b3fa3eecff7578ed9bbfc6229835fd";
+
+    fn digest(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("digest pair"), 16)
+                    .expect("lowercase digest")
+            })
+            .collect()
+    }
 
     fn request(operation: u32, input: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0_u8; protocol::HEADER_BYTES + input.len()];
@@ -903,15 +917,6 @@ mod tests {
         assert_eq!(dispatch_worker(1, &mut bytes, Operation::Reset as i64), 0);
         assert_bounded_response(&bytes, Status::Invalid);
 
-        let digest = |hex: &str| {
-            hex.as_bytes()
-                .chunks_exact(2)
-                .map(|pair| {
-                    u8::from_str_radix(std::str::from_utf8(pair).expect("digest pair"), 16)
-                        .expect("lowercase digest")
-                })
-                .collect::<Vec<_>>()
-        };
         let mut binding =
             digest("60cc6c3c01222a3a33b108593974de5636747b32cacc10bf8c0f45c1cdd8b285");
         binding.extend(digest(
@@ -1111,6 +1116,127 @@ mod tests {
                 .expect_err("offset must be sector aligned")
                 .0,
             Status::Invalid
+        );
+    }
+
+    #[test]
+    fn signed_worker_restores_one_gib_prewarm_inside_the_real_compute_runtime() {
+        use astrid_compute::{
+            ComputeLedger, ComputeLimits, ComputeRuntime, ExecutionMode, GroupRequest, Parallelism,
+            WorkDescriptor, WorkerArtifact, WorkerAssetSpec,
+        };
+        use astrid_core::principal::PrincipalId;
+        use std::path::{Path, PathBuf};
+        use std::time::Instant;
+
+        let capsule_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("capsule root");
+        let artifact = WorkerArtifact::from_capsule_path_with_assets(
+            protocol::WORKER_ID,
+            capsule_root,
+            Path::new("assets/linux-vcpu.wasm"),
+            SIGNED_WORKER_HASH,
+            &[
+                WorkerAssetSpec {
+                    id: "linux-kernel".to_owned(),
+                    relative_path: PathBuf::from("assets/linux-kernel.img"),
+                    expected_hash: SIGNED_KERNEL_HASH.to_owned(),
+                },
+                WorkerAssetSpec {
+                    id: "linux-system".to_owned(),
+                    relative_path: PathBuf::from("assets/linux-system.squashfs"),
+                    expected_hash: SIGNED_SYSTEM_HASH.to_owned(),
+                },
+                WorkerAssetSpec {
+                    id: "linux-prewarm".to_owned(),
+                    relative_path: PathBuf::from("assets/linux-prewarm-1g-1h.aos-machine"),
+                    expected_hash: SIGNED_CHECKPOINT_HASH.to_owned(),
+                },
+            ],
+        )
+        .expect("signed worker and prewarm assets");
+        let runtime = ComputeRuntime::new(ComputeLedger::default(), ComputeLimits::default())
+            .expect("compute runtime");
+        let started = Instant::now();
+        let group = runtime
+            .open_group(
+                &PrincipalId::new("linux-prewarm-worker-conformance").expect("principal"),
+                &artifact,
+                GroupRequest {
+                    mode: ExecutionMode::Deterministic,
+                    parallelism: Parallelism::Exact(1),
+                    initial_memory_pages: 1024,
+                    maximum_memory_pages: 57_344,
+                },
+            )
+            .expect("prewarm worker admission");
+        let control_offset = protocol::control_offset(0).expect("worker zero descriptor");
+        let descriptor = WorkDescriptor {
+            offset: control_offset,
+            length: protocol::CONTROL_BYTES as u64,
+            tag: Operation::InitCheckpoint as u64,
+            worker_index: None,
+            fuel: None,
+        };
+        let mut binding =
+            digest("60cc6c3c01222a3a33b108593974de5636747b32cacc10bf8c0f45c1cdd8b285");
+        binding.extend(digest(
+            "c436bb2bfe0941f183f58f0e2e56df05a4bc03f01147ad1d095f48df0004afaa",
+        ));
+        let mut request = request(Operation::InitCheckpoint as u32, &binding);
+        protocol::write_u64(&mut request, field::RAM_BYTES, 1024 * 1024 * 1024);
+        protocol::write_u64(&mut request, field::MAX_CONSOLE_BYTES, 64 * 1024);
+        protocol::write_u32(&mut request, field::HART_COUNT, 1);
+        group
+            .write(control_offset, &request)
+            .expect("write checkpoint init");
+        group
+            .submit(descriptor)
+            .expect("submit checkpoint init")
+            .join()
+            .expect("restore signed prewarm");
+        let header = group
+            .read(control_offset, protocol::HEADER_BYTES as u32)
+            .expect("read checkpoint response");
+        assert_eq!(
+            protocol::read_u32(&header, field::STATUS),
+            Some(Status::Ok as u32)
+        );
+        let restore_elapsed = started.elapsed();
+
+        let warm_started = Instant::now();
+        protocol::write_u32(&mut request, field::OPERATION, Operation::RunSlice as u32);
+        protocol::write_u32(&mut request, field::INPUT_LEN, 0);
+        protocol::write_u64(&mut request, field::SLICE_BUDGET, 1);
+        group.write(control_offset, &request).expect("write slice");
+        group
+            .submit(WorkDescriptor {
+                tag: Operation::RunSlice as u64,
+                ..descriptor
+            })
+            .expect("submit slice")
+            .join()
+            .expect("observe restored suspension");
+        let header = group
+            .read(control_offset, protocol::HEADER_BYTES as u32)
+            .expect("read slice response");
+        assert_eq!(
+            protocol::read_u32(&header, field::STATUS),
+            Some(Status::Ok as u32)
+        );
+        assert_eq!(
+            protocol::read_u32(&header, field::OUTCOME),
+            Some(Outcome::HostRequest as u32)
+        );
+        assert_eq!(protocol::read_u32(&header, field::REQUEST_CHANNEL), Some(1));
+        assert_eq!(protocol::read_u64(&header, field::STEPS_EXECUTED), Some(0));
+        let warm_elapsed = warm_started.elapsed();
+        eprintln!(
+            "signed 1 GiB prewarm restored in {:.3} ms; resident zero-step call in {:.3} ms",
+            restore_elapsed.as_secs_f64() * 1_000.0,
+            warm_elapsed.as_secs_f64() * 1_000.0
         );
     }
 

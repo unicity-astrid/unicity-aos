@@ -8,10 +8,14 @@
 //! guest CPU state, admitted RAM, and virtual hardware. The outer Realm owns
 //! scheduling, authority, image admission, persistence, and all host effects.
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod atomic_ram;
 mod checkpoint;
 mod fdt;
 mod floating;
 
+#[cfg(target_arch = "wasm32")]
+use atomic_ram::AtomicGuestRam;
 pub use checkpoint::{CheckpointBinding, CheckpointDecodeError, CheckpointDigest};
 use fdt::{LinuxFdtConfig, build_linux_fdt};
 use rustc_apfloat::{
@@ -1189,19 +1193,21 @@ struct SbiFirmware {
 
 #[derive(Clone, Debug)]
 struct GuestRam {
-    #[cfg(not(any(target_arch = "wasm32", test)))]
+    #[cfg(all(not(target_arch = "wasm32"), not(test)))]
     bytes: Vec<u8>,
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(test)]
     chunks: Vec<Option<Box<[u8]>>>,
+    #[cfg(target_arch = "wasm32")]
+    atomic: AtomicGuestRam,
     len: usize,
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(test)]
 const RAM_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
 impl GuestRam {
     fn zeroed(len: usize) -> Result<Self, MachineError> {
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         {
             let mut bytes = Vec::new();
             bytes
@@ -1210,7 +1216,7 @@ impl GuestRam {
             bytes.resize(len, 0);
             Ok(Self { bytes, len })
         }
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         {
             let chunk_count = len.div_ceil(RAM_CHUNK_BYTES);
             let mut chunks = Vec::new();
@@ -1220,6 +1226,13 @@ impl GuestRam {
             chunks.resize_with(chunk_count, || None);
             Ok(Self { chunks, len })
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(Self {
+                atomic: AtomicGuestRam::zeroed(len)?,
+                len,
+            })
+        }
     }
 
     const fn len(&self) -> usize {
@@ -1227,29 +1240,79 @@ impl GuestRam {
     }
 
     fn fill_zero(&mut self) {
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         self.bytes.fill(0);
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         for chunk in &mut self.chunks {
             *chunk = None;
         }
+        #[cfg(target_arch = "wasm32")]
+        self.atomic.fill_zero();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn byte(&self, index: usize) -> Option<u8> {
         if index >= self.len {
             return None;
         }
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         return self.bytes.get(index).copied();
-        #[cfg(any(target_arch = "wasm32", test))]
-        self.chunks.get(index / RAM_CHUNK_BYTES).map(|chunk| {
-            chunk
-                .as_deref()
-                .map_or(0, |bytes| bytes[index % RAM_CHUNK_BYTES])
-        })
+        #[cfg(test)]
+        {
+            self.chunks.get(index / RAM_CHUNK_BYTES).map(|chunk| {
+                chunk
+                    .as_deref()
+                    .map_or(0, |bytes| bytes[index % RAM_CHUNK_BYTES])
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.atomic.byte(index)
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    fn read_value(&self, index: usize, bytes: u8) -> Option<u64> {
+        let byte_count = usize::from(bytes);
+        let end = index.checked_add(byte_count)?;
+        if byte_count == 0 || byte_count > size_of::<u64>() || end > self.len {
+            return None;
+        }
+        #[cfg(target_arch = "wasm32")]
+        return self.atomic.read_value(index, bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut value = 0_u64;
+            for shift in 0..byte_count {
+                value |= u64::from(self.byte(index + shift)?) << (shift * 8);
+            }
+            Some(value)
+        }
+    }
+
+    fn write_value(&mut self, index: usize, value: u64, bytes: u8) -> bool {
+        let byte_count = usize::from(bytes);
+        let Some(end) = index.checked_add(byte_count) else {
+            return false;
+        };
+        if byte_count == 0
+            || byte_count > size_of::<u64>()
+            || end > self.len
+            || !index.is_multiple_of(byte_count)
+        {
+            return false;
+        }
+        #[cfg(target_arch = "wasm32")]
+        return self.atomic.write_value(index, value, bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for shift in 0..byte_count {
+                if !self.set_byte(index + shift, (value >> (shift * 8)) as u8) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    #[cfg(test)]
     fn ensure_chunk(&mut self, index: usize) -> bool {
         let Some(slot) = self.chunks.get_mut(index) else {
             return false;
@@ -1272,42 +1335,53 @@ impl GuestRam {
         if index >= self.len {
             return false;
         }
-        #[cfg(not(any(target_arch = "wasm32", test)))]
-        let slot = self.bytes.get_mut(index);
-        #[cfg(any(target_arch = "wasm32", test))]
-        if value != 0 && !self.ensure_chunk(index / RAM_CHUNK_BYTES) {
-            return false;
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
+        {
+            self.bytes.get_mut(index).is_some_and(|slot| {
+                *slot = value;
+                true
+            })
         }
-        #[cfg(any(target_arch = "wasm32", test))]
-        if value == 0 && self.chunks[index / RAM_CHUNK_BYTES].is_none() {
-            return true;
+        #[cfg(test)]
+        {
+            if value != 0 && !self.ensure_chunk(index / RAM_CHUNK_BYTES) {
+                return false;
+            }
+            if value == 0 && self.chunks[index / RAM_CHUNK_BYTES].is_none() {
+                return true;
+            }
+            self.chunks
+                .get_mut(index / RAM_CHUNK_BYTES)
+                .and_then(Option::as_deref_mut)
+                .and_then(|chunk| chunk.get_mut(index % RAM_CHUNK_BYTES))
+                .is_some_and(|slot| {
+                    *slot = value;
+                    true
+                })
         }
-        #[cfg(any(target_arch = "wasm32", test))]
-        let slot = self
-            .chunks
-            .get_mut(index / RAM_CHUNK_BYTES)
-            .and_then(Option::as_deref_mut)
-            .and_then(|chunk| chunk.get_mut(index % RAM_CHUNK_BYTES));
-        if let Some(slot) = slot {
-            *slot = value;
-            true
-        } else {
-            false
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.atomic.set_byte(index, value)
         }
     }
 
     fn copy_from_slice(&mut self, start: usize, source: &[u8]) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return self.atomic.copy_from_slice(start, source);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let Some(end) = start
             .checked_add(source.len())
             .filter(|end| *end <= self.len)
         else {
             return false;
         };
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         {
             self.bytes[start..end].copy_from_slice(source);
         }
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         {
             let mut destination = start;
             let mut source_offset = 0;
@@ -1331,6 +1405,7 @@ impl GuestRam {
                 source_offset += copy_len;
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
         true
     }
 
@@ -1338,9 +1413,9 @@ impl GuestRam {
         if range.start > range.end || range.end > self.len {
             return None;
         }
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         return Some(self.bytes[range].to_vec());
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         {
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(range.len()).ok()?;
@@ -1360,6 +1435,10 @@ impl GuestRam {
             }
             Some(bytes)
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.atomic.copy_to_vec(range)
+        }
     }
 
     fn slice(&self, range: std::ops::Range<usize>) -> Option<&[u8]> {
@@ -1369,9 +1448,9 @@ impl GuestRam {
         if range.is_empty() {
             return Some(&[]);
         }
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         return self.bytes.get(range);
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         {
             let chunk_index = range.start / RAM_CHUNK_BYTES;
             let chunk_offset = range.start % RAM_CHUNK_BYTES;
@@ -1380,6 +1459,10 @@ impl GuestRam {
                 .get(chunk_index)
                 .and_then(Option::as_deref)
                 .and_then(|chunk| chunk.get(chunk_offset..chunk_offset.checked_add(length)?))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
         }
     }
 
@@ -1395,7 +1478,7 @@ impl GuestRam {
     fn nonzero_pages(&self, page_bytes: usize) -> Vec<(usize, Vec<u8>)> {
         debug_assert!(page_bytes > 0);
         debug_assert_eq!(self.len % page_bytes, 0);
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         return self
             .bytes
             .chunks_exact(page_bytes)
@@ -1403,7 +1486,7 @@ impl GuestRam {
             .filter(|(_, page)| page.iter().any(|byte| *byte != 0))
             .map(|(index, page)| (index, page.to_vec()))
             .collect();
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(test)]
         {
             let mut pages = Vec::new();
             for (chunk_index, chunk) in self.chunks.iter().enumerate() {
@@ -1420,6 +1503,10 @@ impl GuestRam {
                 );
             }
             pages
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.atomic.nonzero_pages(page_bytes)
         }
     }
 }
@@ -1596,11 +1683,9 @@ impl Devices {
         let range = self
             .ram_range(address, bytes)
             .ok_or(MachineTrap::LoadAccessFault { address, bytes })?;
-        let mut value = 0_u64;
-        for (shift, index) in range.enumerate() {
-            value |= u64::from(self.ram.byte(index).expect("range validated")) << (shift * 8);
-        }
-        Ok(value)
+        self.ram
+            .read_value(range.start, bytes)
+            .ok_or(MachineTrap::LoadAccessFault { address, bytes })
     }
 
     fn write(
@@ -1643,10 +1728,8 @@ impl Devices {
         let range = self
             .ram_range(address, bytes)
             .ok_or(MachineTrap::StoreAccessFault { address, bytes })?;
-        for (shift, index) in range.enumerate() {
-            if !self.ram.set_byte(index, (value >> (shift * 8)) as u8) {
-                return Err(MachineTrap::StoreAccessFault { address, bytes });
-            }
+        if !self.ram.write_value(range.start, value, bytes) {
+            return Err(MachineTrap::StoreAccessFault { address, bytes });
         }
         Ok(None)
     }
@@ -1659,23 +1742,15 @@ impl Devices {
     }
 
     fn read_ram(&self, address: u64, bytes: u8) -> Option<u64> {
-        let mut value = 0_u64;
-        for (shift, index) in self.ram_range(address, bytes)?.enumerate() {
-            value |= u64::from(self.ram.byte(index).expect("range validated")) << (shift * 8);
-        }
-        Some(value)
+        let range = self.ram_range(address, bytes)?;
+        self.ram.read_value(range.start, bytes)
     }
 
     fn write_ram(&mut self, address: u64, value: u64, bytes: u8) -> bool {
         let Some(range) = self.ram_range(address, bytes) else {
             return false;
         };
-        for (shift, index) in range.enumerate() {
-            if !self.ram.set_byte(index, (value >> (shift * 8)) as u8) {
-                return false;
-            }
-        }
-        true
+        self.ram.write_value(range.start, value, bytes)
     }
 
     fn ram_range_len(&self, address: u64, bytes: usize) -> Option<std::ops::Range<usize>> {

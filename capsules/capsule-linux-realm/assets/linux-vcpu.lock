@@ -23,5 +23,5 @@ worker_control_reserve_bytes=8388608
 static_data_base=65536
 initial_memory_bytes=67108864
 maximum_memory_bytes=3758096384
-worker_bytes=179636
-worker_blake3=d7273c2193e90bae1db220a3b880367716fca7854472ded92df986794b23ee98
+worker_bytes=186525
+worker_blake3=601923e6397749715b4bc16c527035b1fceb6c7781ed7658c4acef06418320d9
