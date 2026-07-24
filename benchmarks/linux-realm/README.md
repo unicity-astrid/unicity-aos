@@ -71,3 +71,31 @@ The two-hart checkpoint reaches the principal-bind boundary in a median
 21.319 ms (p95 21.838 ms), 51.0 times faster than two-hart cold bind. The run
 explicitly skipped QEMU and had no Docker image configured. Signed outer-Wasm,
 governed MCP, warm shell, and parallel-worker latency remain separate lanes.
+
+## Automatic one-hart prewarm baseline
+
+`2026-07-24-m2-ultra-8867a26-one-hart-prewarm.jsonl` contains 30 samples after
+three discarded warmups on the same Apple M2 Ultra. It measures implementation
+commit `8867a26`, Linux Image SHA-256
+`1a010ecb701ff5397ebb92a12ac739993a05ef12ec76283392df2531e727a981`,
+system SHA-256
+`4460e0cdc883922a4ab68180f4ed8f0752cf34fe4659d14e3260826d20d1063a`,
+and the 22,505,847-byte one-hart checkpoint with SHA-256
+`46ad8542d79da363342b00eb061ca7d59bc9f796472c5fc8d7ec54a999e840be`.
+The JSONL file has BLAKE3
+`3c2a7023fadcebe875a80c9660e9ec6b9db3c18f9f4e5c055c0da2023127b7b8`.
+
+| AOS native one-hart boundary | Median | p95 |
+| --- | ---: | ---: |
+| Cold to PID 1 marker | 767.291 ms | 776.952 ms |
+| Cold to principal bind | 813.607 ms | 823.724 ms |
+| Checkpoint validation/materialization to principal bind | 20.904 ms | 21.367 ms |
+
+Checkpoint admission is 38.9 times faster than the corresponding one-hart cold
+bind and executes zero guest steps before the fresh principal provider is
+attached. The cold lane still charges 35,932,587 guest steps. This is the
+production serialized-topology baseline: automatic mode now selects one hart
+and this matching checkpoint, while explicit 2–64-hart configurations continue
+to cold boot. The run explicitly skipped QEMU and had no Docker image
+configured. Signed outer-Wasm, governed MCP, provider completion, first useful
+shell latency, and real parallel-vCPU execution remain separate lanes.

@@ -3063,6 +3063,40 @@ execution, broker transport, and first useful shell completion remain outside
 that measurement. The worker-affine parallel implementation must compare
 against these exact raw samples at one, two, and four workers.
 
+### 18.4 Automatic one-hart prewarm baseline, 2026-07-24
+
+The serialized matrix makes the current automatic policy mechanical rather than
+heuristic: select one logical hart until the worker can execute harts in real
+parallel. Commit `8867a26` changes automatic topology to one hart and replaces
+the signed prewarm with a matching 1 GiB/64 KiB artifact. Explicit 1–64-hart
+topologies remain admitted; every nonmatching envelope cold boots.
+
+The 22,505,847-byte checkpoint binds the same kernel and immutable system,
+contains no principal authority, and stops at the first pending home request.
+It has SHA-256
+`46ad8542d79da363342b00eb061ca7d59bc9f796472c5fc8d7ec54a999e840be`
+and BLAKE3
+`59c7a2cb08f4fec01d6bd0ba1351a9c7d4b3fa3eecff7578ed9bbfc6229835fd`.
+The reproducible builder records 35,932,587 charged guest steps before
+suspension.
+
+The raw 30-sample run after three discarded warmups is
+`benchmarks/linux-realm/2026-07-24-m2-ultra-8867a26-one-hart-prewarm.jsonl`.
+Its BLAKE3 is
+`3c2a7023fadcebe875a80c9660e9ec6b9db3c18f9f4e5c055c0da2023127b7b8`.
+
+| One-hart boundary | Median | p95 |
+| --- | ---: | ---: |
+| Cold to PID 1 | 767.291 ms | 776.952 ms |
+| Cold to principal bind | 813.607 ms | 823.724 ms |
+| Checkpoint to pending principal bind | 20.904 ms | 21.367 ms |
+
+Checkpoint admission is 38.9 times faster than the corresponding cold bind and
+runs no guest instructions before fresh authority attachment. This remains a
+native machine/checkpoint measurement, not an MCP-visible shell latency claim.
+Provider completion, signed outer-Wasm execution, broker/client transport, and
+the first useful shell command are outside the boundary.
+
 ## 19. AOS Realm distribution and image policy
 
 The project should own the image recipe, package selection, signatures, and update

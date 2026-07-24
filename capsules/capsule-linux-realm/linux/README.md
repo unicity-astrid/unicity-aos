@@ -144,7 +144,9 @@ and system digests. The current 1 GiB/one-hart artifact is 22,505,847 bytes and
 removes all 35,932,587 pre-principal guest steps. It replaces the measured
 two-hart artifact because the serialized topology matrix found that a second
 logical hart added 33.3% to cold principal-bind latency without adding host
-execution parallelism. The outer signed-component and CLI path remains a
+execution parallelism. On the recorded M2 Ultra it restores to the pending
+principal bind in a 20.904 ms median (p95 21.367 ms), 38.9 times faster than the
+matching one-hart cold bind. The outer signed-component and CLI path remains a
 separately measured boundary.
 
 The active Buildroot output directory must be on a Linux filesystem. GNU
