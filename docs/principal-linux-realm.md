@@ -1621,10 +1621,10 @@ interrupt, device, allocation, and checkpoint state.
 
 The implementation cut is:
 
-1. Evolve the still-private, unshipped vCPU protocol in place with
+1. [x] Evolve the still-private, unshipped vCPU protocol in place with
    coordinator-only operations and an exact `run-hart-slice(hart, budget)`
    operation. Do not add or merge public WIT for this.
-2. Move registers, CSRs, TLB, LR/SC reservation, timers, software interrupts,
+2. [ ] Move registers, CSRs, TLB, LR/SC reservation, timers, software interrupts,
    and counters into independently owned hart cells. Keep UART, monotonic time,
    finisher, 9P effects, scheduler epochs, and checkpoint control behind one
    machine coordinator.
@@ -1662,8 +1662,14 @@ The implementation cut is:
   first run against the old runtime reproduced the defect: Astrid stamped
   worker 1 while the worker returned worker 0. The pinned runtime fix makes both
   identities and descriptors exact and the barrier passes.
-- The reproducible worker is 175,938 bytes with BLAKE3
-  `952cfe0b220f9243bd4f392cb20f616d2a775ff2fdf116be1fc44fd9e7e87d59`.
+- The machine now owns an explicit state record for every admitted hart rather
+  than swapping active and parked CPU records. Exact-hart slices cannot rotate
+  into another hart, stopped harts consume no work, and private protocol
+  operation 9 requires the requested hart to equal Astrid's runtime-stamped
+  worker index. The monolithic state mutex still serializes those operations
+  until the independent hart-cell cut above lands.
+- The reproducible worker is 176,854 bytes with BLAKE3
+  `8e3051a4c45fa920857aa9ab6001a4bf4c218e2e2fa46a85b0489ec712d7a8ce`.
   This proves the execution substrate needed by parallel harts. It does not yet
   claim that the current monolithic `Machine` mutex or deterministic
   round-robin hart scheduler runs Linux concurrently.

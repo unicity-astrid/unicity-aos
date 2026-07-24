@@ -102,6 +102,9 @@ pub mod field {
     pub const ERROR_LEN: usize = 120;
     /// Admitted logical Linux hart count, `u32`.
     pub const HART_COUNT: usize = 124;
+    /// Exact logical hart targeted by [`crate::Operation::RunHartSlice`],
+    /// sharing the operation-specific slot used by [`HART_COUNT`].
+    pub const HART_ID: usize = HART_COUNT;
 }
 
 /// Stateful operation requested by the Realm controller.
@@ -129,6 +132,11 @@ pub enum Operation {
     /// device. `hart-count` carries the expected worker count and is replaced
     /// by the executing worker index in the response.
     ParallelProbe = 8,
+    /// Execute one bounded slice for the exact hart assigned to this worker.
+    ///
+    /// `hart-id` must equal the runtime-stamped worker index. This operation
+    /// never invokes the deterministic round-robin scheduler.
+    RunHartSlice = 9,
 }
 
 impl TryFrom<u32> for Operation {
@@ -144,6 +152,7 @@ impl TryFrom<u32> for Operation {
             6 => Ok(Self::Reset),
             7 => Ok(Self::InitCheckpoint),
             8 => Ok(Self::ParallelProbe),
+            9 => Ok(Self::RunHartSlice),
             _ => Err(()),
         }
     }
@@ -320,11 +329,12 @@ mod tests {
         assert_eq!(Operation::Reset as u32, 6);
         assert_eq!(Operation::InitCheckpoint as u32, 7);
         assert_eq!(Operation::ParallelProbe as u32, 8);
-        for value in 1..=8 {
+        assert_eq!(Operation::RunHartSlice as u32, 9);
+        for value in 1..=9 {
             assert!(Operation::try_from(value).is_ok());
         }
         assert!(Operation::try_from(0).is_err());
-        assert!(Operation::try_from(9).is_err());
+        assert!(Operation::try_from(10).is_err());
     }
 
     #[test]

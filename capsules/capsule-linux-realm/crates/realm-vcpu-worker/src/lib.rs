@@ -144,12 +144,13 @@ fn dispatch_worker(worker_index: u32, bytes: &mut [u8], descriptor_tag: i64) -> 
     }
     let result = match operation {
         Some(Operation::ParallelProbe) => parallel_probe(worker_index, bytes),
+        Some(Operation::RunHartSlice) => run_slice(Some(worker_index), bytes),
         Some(_) if worker_index != 0 => {
             Err(invalid("machine control operations require worker zero"))
         }
         Some(Operation::InitCold) => initialize(bytes),
         Some(Operation::InitCheckpoint) => initialize_checkpoint(bytes),
-        Some(Operation::RunSlice) => run_slice(bytes),
+        Some(Operation::RunSlice) => run_slice(None, bytes),
         Some(Operation::PushConsole) => push_console(bytes),
         Some(Operation::Complete9p) => complete_9p(bytes),
         Some(Operation::Fail9p) => fail_9p(bytes),
@@ -450,9 +451,17 @@ fn load_checkpoint() -> Result<Vec<u8>, (Status, String)> {
     Ok(include_bytes!("../../../assets/linux-prewarm-1g-2h.aos-machine").to_vec())
 }
 
-fn run_slice(bytes: &mut [u8]) -> WorkerResult {
+fn run_slice(worker_index: Option<u32>, bytes: &mut [u8]) -> WorkerResult {
     if !input(bytes)?.is_empty() {
         return Err(invalid("run slice does not accept an input payload"));
+    }
+    if let Some(worker_index) = worker_index {
+        let hart_id = protocol::read_u32(bytes, field::HART_ID).unwrap_or(u32::MAX);
+        if hart_id != worker_index {
+            return Err(invalid(
+                "exact hart identity does not match the runtime worker",
+            ));
+        }
     }
     let budget = protocol::read_u64(bytes, field::SLICE_BUDGET).unwrap_or_default();
     if !(1..=protocol::MAX_SLICE_STEPS).contains(&budget) {
@@ -469,7 +478,14 @@ fn run_slice(bytes: &mut [u8]) -> WorkerResult {
     let mut instructions_retired = 0_u64;
     let mut console = Vec::new();
     loop {
-        let report = state.machine.run_slice(budget - steps_executed);
+        let report = if let Some(worker_index) = worker_index {
+            state
+                .machine
+                .run_hart_slice(worker_index as usize, budget - steps_executed)
+                .map_err(|error| machine_error(error.to_string()))?
+        } else {
+            state.machine.run_slice(budget - steps_executed)
+        };
         steps_executed = steps_executed.saturating_add(report.steps_executed);
         instructions_retired = instructions_retired.saturating_add(report.instructions_retired);
         console.extend_from_slice(&report.console);
@@ -750,7 +766,7 @@ mod tests {
     use super::*;
 
     const SIGNED_WORKER_HASH: &str =
-        "blake3:952cfe0b220f9243bd4f392cb20f616d2a775ff2fdf116be1fc44fd9e7e87d59";
+        "blake3:8e3051a4c45fa920857aa9ab6001a4bf4c218e2e2fa46a85b0489ec712d7a8ce";
     const SIGNED_KERNEL_HASH: &str =
         "blake3:60cc6c3c01222a3a33b108593974de5636747b32cacc10bf8c0f45c1cdd8b285";
     const SIGNED_TEST_SYSTEM_HASH: &str =
@@ -830,6 +846,24 @@ mod tests {
             assert_eq!(dispatch(&mut bytes, Operation::RunSlice as i64), 0);
             assert_bounded_response(&bytes, Status::Invalid);
         }
+
+        let mut bytes = request(Operation::RunHartSlice as u32, &[]);
+        protocol::write_u64(&mut bytes, field::SLICE_BUDGET, 1);
+        protocol::write_u32(&mut bytes, field::HART_ID, 0);
+        assert_eq!(
+            dispatch_worker(1, &mut bytes, Operation::RunHartSlice as i64),
+            0
+        );
+        assert_bounded_response(&bytes, Status::Invalid);
+
+        let mut bytes = request(Operation::RunHartSlice as u32, &[]);
+        protocol::write_u64(&mut bytes, field::SLICE_BUDGET, 1);
+        protocol::write_u32(&mut bytes, field::HART_ID, 1);
+        assert_eq!(
+            dispatch_worker(1, &mut bytes, Operation::RunHartSlice as i64),
+            0
+        );
+        assert_bounded_response(&bytes, Status::NotInitialized);
 
         let mut bytes = request(
             Operation::PushConsole as u32,

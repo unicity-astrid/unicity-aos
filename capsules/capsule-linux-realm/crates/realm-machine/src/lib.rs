@@ -297,6 +297,39 @@ impl fmt::Display for MachineError {
 
 impl std::error::Error for MachineError {}
 
+/// Rejected exact-hart scheduling request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidHartId {
+    hart_id: usize,
+    hart_count: usize,
+}
+
+impl InvalidHartId {
+    /// Rejected zero-based hart identity.
+    #[must_use]
+    pub const fn hart_id(self) -> usize {
+        self.hart_id
+    }
+
+    /// Admitted number of harts in the machine.
+    #[must_use]
+    pub const fn hart_count(self) -> usize {
+        self.hart_count
+    }
+}
+
+impl fmt::Display for InvalidHartId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "guest hart {} is outside the admitted topology of {} harts",
+            self.hart_id, self.hart_count
+        )
+    }
+}
+
+impl std::error::Error for InvalidHartId {}
+
 /// Reason a machine cannot become a principal-independent prewarm checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CheckpointError {
@@ -2033,13 +2066,41 @@ impl Machine {
 
     /// Run at most `instruction_budget` instructions and return control to the Realm.
     pub fn run_slice(&mut self, instruction_budget: u64) -> SliceReport {
+        self.run_slice_inner(instruction_budget, true)
+    }
+
+    /// Run only one exact admitted hart without invoking the deterministic
+    /// round-robin scheduler.
+    ///
+    /// This is the worker-affine primitive used by a parallel epoch. A stopped
+    /// hart yields without consuming a step. Device effects and aggregate
+    /// accounting remain machine-wide.
+    pub fn run_hart_slice(
+        &mut self,
+        hart_id: usize,
+        instruction_budget: u64,
+    ) -> Result<SliceReport, InvalidHartId> {
+        if hart_id >= self.hart_count {
+            return Err(InvalidHartId {
+                hart_id,
+                hart_count: self.hart_count,
+            });
+        }
+        self.active_hart_id = hart_id;
+        Ok(self.run_slice_inner(instruction_budget, false))
+    }
+
+    fn run_slice_inner(&mut self, instruction_budget: u64, scheduled: bool) -> SliceReport {
         let mut steps = 0_u64;
         let mut retired = 0_u64;
         while steps < instruction_budget
             && matches!(self.state, RunState::Runnable)
             && self.pending_9p_request.is_none()
         {
-            if !self.select_runnable_hart() {
+            if scheduled && !self.select_runnable_hart() {
+                break;
+            }
+            if !scheduled && self.lifecycle != HartLifecycle::Started {
                 break;
             }
             match self.step() {
@@ -2048,8 +2109,10 @@ impl Machine {
                     self.steps_executed = self.steps_executed.saturating_add(1);
                     self.cycle = self.cycle.wrapping_add(1);
                     self.devices.tick();
-                    self.scheduler_quantum_remaining =
-                        self.scheduler_quantum_remaining.saturating_sub(1);
+                    if scheduled {
+                        self.scheduler_quantum_remaining =
+                            self.scheduler_quantum_remaining.saturating_sub(1);
+                    }
                     if effect.retired {
                         retired = retired.saturating_add(1);
                         self.instructions_retired = self.instructions_retired.saturating_add(1);
@@ -2065,8 +2128,10 @@ impl Machine {
                         self.steps_executed = self.steps_executed.saturating_add(1);
                         self.cycle = self.cycle.wrapping_add(1);
                         self.devices.tick();
-                        self.scheduler_quantum_remaining =
-                            self.scheduler_quantum_remaining.saturating_sub(1);
+                        if scheduled {
+                            self.scheduler_quantum_remaining =
+                                self.scheduler_quantum_remaining.saturating_sub(1);
+                        }
                         self.take_exception(cause, value, self.cpu.pc);
                         self.cpu.registers[0] = 0;
                     } else {
@@ -4458,6 +4523,48 @@ mod tests {
         assert!(hart_one.msip);
         assert_eq!(hart_one.csrs.sscratch, 0x1111);
         assert_eq!(machine.instructions_retired, 4);
+    }
+
+    #[test]
+    fn exact_hart_slice_never_runs_or_rotates_to_another_hart() {
+        let mut machine = Machine::new_with_harts(
+            MachineConfig {
+                ram_bytes: 4096,
+                max_console_bytes: 8,
+            },
+            2,
+        )
+        .expect("admit two harts");
+        machine
+            .load_program(&words(&[
+                encode_csrr(5, Csr::Mhartid),
+                encode_addi(6, 5, 10),
+            ]))
+            .expect("load shared hart probe");
+
+        let stopped = machine.run_hart_slice(1, 2).expect("admitted hart");
+        assert_eq!(stopped.steps_executed, 0);
+        assert_eq!(stopped.instructions_retired, 0);
+        assert_eq!(machine.active_hart_id(), 1);
+        assert_eq!(machine.register(5), Some(0));
+
+        machine.harts[1].lifecycle = HartLifecycle::Started;
+        let secondary = machine.run_hart_slice(1, 2).expect("started hart");
+        assert_eq!(secondary.steps_executed, 2);
+        assert_eq!(secondary.instructions_retired, 2);
+        assert_eq!(machine.active_hart_id(), 1);
+        assert_eq!(machine.register(5), Some(1));
+        assert_eq!(machine.register(6), Some(11));
+        assert_eq!(machine.harts[0].cpu.pc, DRAM_BASE);
+        assert_eq!(machine.harts[0].instret, 0);
+
+        assert_eq!(
+            machine.run_hart_slice(2, 1),
+            Err(InvalidHartId {
+                hart_id: 2,
+                hart_count: 2,
+            })
+        );
     }
 
     #[test]
