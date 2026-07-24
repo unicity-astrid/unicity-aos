@@ -1781,6 +1781,33 @@ Astrid Compute remains the only creator and meter of native workers.
   Explicit multi-hart Linux now executes concurrently. Early effect-driven
   epoch cancellation, parallel checkpoint export, full differential schedules,
   and the timing matrix remain open.
+- Current `astrid-build` packages the controller component and WIT but omits
+  the private compute worker and `[[component.asset]]` files. The Linux Realm
+  packaging script therefore adds only the five manifest-bound assets and
+  fails its `--check` mode when any archive member is absent or stale. A thin
+  archive was rejected live with `invalid worker: inspect worker path
+  component: No such file or directory`; this must move into the upstream
+  builder before the capsule can rely on the ordinary one-command build path.
+- The corrected full archive is 338,290,766 bytes with BLAKE3
+  `0b0c02aa16c33e19a20cae43c51a188421a4b2b0014ea0247d3c18e7055225f5`.
+  The isolated development daemon live-loaded it without a restart and the
+  installed manifest pinned worker
+  `894aa90f028e7f90ddfc4085420838476f60a3a1bb447c9cde2f5e0fac7576f6`.
+  A governed two-vCPU Linux command returned `riscv64`, `nproc = 2`, UID 1000,
+  and round-tripped `/home/agent/live-proof.txt`; cold wall time was 77.52
+  seconds for 1,336,152,093 guest steps. The immediately following resident
+  command reread the file and completed in 3.68 seconds for 36,026,706 guest
+  steps. These front-door numbers come from an older unoptimized 0.10.4
+  development daemon and are diagnostic, not release thresholds; they expose
+  substantially more controller/guest work than the direct signed-worker mount
+  matrix and make warm-turn optimization a measured follow-up.
+- That development daemon can dynamically load a principal-affine capsule view
+  but does not register its CLI verb for the new view and has no responder for
+  `astrid.v1.request.mcp.tools.list`. The boot-registry `default` principal was
+  therefore used for the live command proof. The current AOS MCP front door
+  must be retested on a responsive latest daemon; dynamic-view CLI registration
+  and MCP broker availability are runtime integration requirements, not
+  permissions to add a second command path inside Linux Realm.
 
 Normative references for this increment are the
 [Linux RISC-V boot requirements](https://docs.kernel.org/next/arch/riscv/boot.html),

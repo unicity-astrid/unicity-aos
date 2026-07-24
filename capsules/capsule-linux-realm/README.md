@@ -453,10 +453,23 @@ cargo clippy -p aos-realm-abi -p aos-realm-core -p aos-realm-machine -p aos-real
   -p aos-realm-vfs -p aos-linux-realm \
   --target "$(rustc -vV | sed -n 's/^host: //p')" -- -D warnings
 cargo check -p aos-linux-realm --target wasm32-unknown-unknown
-aos capsule build capsules/capsule-linux-realm
+(
+  cd capsules/capsule-linux-realm
+  aos capsule build
+  ./scripts/package-capsule-assets.sh
+  ./scripts/package-capsule-assets.sh --check
+)
 astrid --principal default capsule install \
-  dist/aos-linux-realm.capsule
+  capsules/capsule-linux-realm/dist/aos-linux-realm.capsule
 ```
+
+The asset-packaging step is currently mandatory. The released `astrid-build`
+path packages the executable component and WIT but does not yet copy private
+`compute-worker` assets declared by `[[component.asset]]`. Installing that thin
+archive fails closed because `assets/linux-vcpu.wasm` is absent. The script
+copies only the five manifest-bound assets and verifies their exact bytes in
+the final archive; remove it only after the upstream builder covers and tests
+this manifest surface.
 
 The installed realm appears as two MCP tools when an Astrid MCP broker such as
 `sage-mcp` is present and `astrid --principal default mcp serve` is connected to
