@@ -130,7 +130,7 @@ struct TraceSummary<'a> {
     outcome: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<f64>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
     tags: &'a [String],
 }
 
