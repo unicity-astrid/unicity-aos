@@ -24,6 +24,12 @@ BASELINE = (
     / "linux-realm"
     / "2026-07-21-m2-ultra-9aa1885.jsonl"
 )
+VCPU_MATRIX = (
+    SCRIPT.parent.parent
+    / "benchmarks"
+    / "linux-realm"
+    / "2026-07-24-m2-ultra-02e7e9f-vcpu-matrix.jsonl"
+)
 
 
 class BenchmarkTests(unittest.TestCase):
@@ -81,6 +87,30 @@ class BenchmarkTests(unittest.TestCase):
         }
         recomputed = {
             (record["engine"], record["scenario"]): record
+            for record in BENCHMARK.summarize(records)
+        }
+        self.assertEqual(recorded, recomputed)
+
+    def test_committed_vcpu_matrix_is_complete_and_recomputes(self) -> None:
+        records = [json.loads(line) for line in VCPU_MATRIX.read_text().splitlines()]
+        self.assertEqual(records[0]["git_commit"][:7], "02e7e9f")
+        samples = [record for record in records if record["kind"] == "sample"]
+        self.assertEqual(len(samples), 210)
+        self.assertEqual(
+            {
+                record["hart_count"]
+                for record in samples
+                if record["engine"] == "aos-rv64-reference-native"
+            },
+            {1, 2, 4},
+        )
+        recorded = {
+            (record["engine"], record["scenario"], record.get("hart_count")): record
+            for record in records
+            if record["kind"] == "summary"
+        }
+        recomputed = {
+            (record["engine"], record["scenario"], record.get("hart_count")): record
             for record in BENCHMARK.summarize(records)
         }
         self.assertEqual(recorded, recomputed)

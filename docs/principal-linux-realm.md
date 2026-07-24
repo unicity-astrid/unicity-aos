@@ -3033,6 +3033,36 @@ Docker 29.1.2 was installed but its server was unavailable, so the raw result
 contains an explicit skip. No container, CRIU, QEMU snapshot, end-to-end AOS,
 RSS, or concurrent-principal comparison is inferred from that absence.
 
+### 18.3 Serialized vCPU topology baseline, 2026-07-24
+
+The raw 30-sample-per-topology matrix after three discarded warmups is
+`benchmarks/linux-realm/2026-07-24-m2-ultra-02e7e9f-vcpu-matrix.jsonl`.
+It ran commit `02e7e9f` on the Apple M2 Ultra with the current 1 GiB workbench
+image and immutable system. QEMU was explicitly skipped and no Docker image was
+configured.
+
+| Logical harts | Cold to PID 1 median / p95 | Cold to principal bind median / p95 | Charged steps to bind |
+| ---: | ---: | ---: | ---: |
+| 1 | 769.402 / 786.431 ms | 815.945 / 834.265 ms | 35,932,587 |
+| 2 | 985.840 / 1,004.464 ms | 1,087.564 / 1,105.364 ms | 46,431,093 |
+| 4 | 1,591.060 / 1,621.234 ms | 1,813.724 / 1,847.017 ms | 76,245,925 |
+
+This is a serialized reference baseline, not a parallel-vCPU result. Aggregate
+throughput remains approximately 44.0, 42.7, and 42.0 million steps/s at the
+principal-bind boundary for one, two, and four harts respectively. Linux's
+additional SMP work therefore appears almost directly as latency: relative to
+one hart, two are 33.3% slower to bind and four are 122.3% slower. The result
+confirms the architecture diagnosis: increasing logical topology before
+splitting the worker's machine mutex spends more guest work without admitting
+more host compute.
+
+The current two-hart checkpoint validates and materializes to the pending
+principal bind in a median 21.319 ms (p95 21.838 ms), 51.0 times faster than the
+two-hart cold-bind median. Fresh provider completion, signed outer-Wasm
+execution, broker transport, and first useful shell completion remain outside
+that measurement. The worker-affine parallel implementation must compare
+against these exact raw samples at one, two, and four workers.
+
 ## 19. AOS Realm distribution and image policy
 
 The project should own the image recipe, package selection, signatures, and update
