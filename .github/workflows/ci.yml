@@ -39,7 +39,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           # Keep this digest synchronized with release.yml.
-          LINUX_BUILD_IMAGE: docker.io/library/rust@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
+          LINUX_BUILD_IMAGE: docker.io/library/rust:1.95.0-bullseye@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
         run: |
           docker run --rm \
             --env TARGET \

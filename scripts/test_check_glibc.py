@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
+import pathlib
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 import check_glibc
 
@@ -26,6 +30,46 @@ class GlibcCompatibilityTests(unittest.TestCase):
         for value in ("2", "2.x", "v2.34"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 check_glibc.parse_version(value)
+
+    def test_check_binary_enforces_ceiling_and_reports_readelf_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "aos"
+            binary.write_bytes(b"ELF fixture")
+            with mock.patch.object(
+                check_glibc.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="Name: GLIBC_2.30",
+                    stderr="",
+                ),
+            ):
+                check_glibc.check_binary(binary, (2, 34))
+
+            with mock.patch.object(
+                check_glibc.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="Name: GLIBC_2.39",
+                    stderr="",
+                ),
+            ), self.assertRaisesRegex(ValueError, "newer than GLIBC_2.34"):
+                check_glibc.check_binary(binary, (2, 34))
+
+            failure = subprocess.CalledProcessError(
+                1,
+                ["readelf"],
+                stderr="invalid ELF",
+            )
+            with mock.patch.object(
+                check_glibc.subprocess,
+                "run",
+                side_effect=failure,
+            ), self.assertRaisesRegex(ValueError, "invalid ELF"):
+                check_glibc.check_binary(binary, (2, 34))
 
 
 if __name__ == "__main__":

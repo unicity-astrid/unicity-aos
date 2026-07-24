@@ -193,7 +193,7 @@ jobs:
       - name: Build Linux product binary against glibc 2.31
         if: ${{ endsWith(matrix.target, 'linux-gnu') }}
         env:
-          LINUX_BUILD_IMAGE: docker.io/library/rust@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
+          LINUX_BUILD_IMAGE: docker.io/library/rust:1.95.0-bullseye@sha256:646e8ceea789b00c5cfa339816a3ed44940dbf1651dc167b78f3c0aefcae0025
           TARGET: ${{ matrix.target }}
         run: |
           docker run --rm \
