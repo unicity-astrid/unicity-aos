@@ -284,6 +284,8 @@ impl MachineCheckpoint {
                 cycle: hart.cycle,
                 instret: hart.instret,
                 reservation: hart.reservation,
+                #[cfg(target_arch = "wasm32")]
+                reservation_token: None,
                 mtimecmp: hart.mtimecmp,
                 msip: hart.msip,
                 translation_cache: TranslationCache::default(),
@@ -297,6 +299,8 @@ impl MachineCheckpoint {
             cycle: active.cycle,
             instret: active.instret,
             reservation: active.reservation,
+            #[cfg(target_arch = "wasm32")]
+            reservation_token: None,
             mtimecmp: active.mtimecmp,
             msip: active.msip,
             translation_cache: TranslationCache::default(),
@@ -304,6 +308,7 @@ impl MachineCheckpoint {
         machine.active_hart_id = active_hart_id;
         machine.harts = harts;
         machine.rebuild_hart_controls();
+        machine.rebuild_reservation_tokens();
         machine.scheduler_quantum_remaining = scheduler_quantum_remaining;
 
         machine.devices.mtime = decoder.u64()?;

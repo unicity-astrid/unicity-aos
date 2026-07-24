@@ -15,7 +15,7 @@ mod fdt;
 mod floating;
 
 #[cfg(target_arch = "wasm32")]
-use atomic_ram::AtomicGuestRam;
+use atomic_ram::{AtomicGuestRam, AtomicReservation};
 pub use checkpoint::{CheckpointBinding, CheckpointDecodeError, CheckpointDigest};
 use fdt::{LinuxFdtConfig, build_linux_fdt};
 use rustc_apfloat::{
@@ -1157,6 +1157,8 @@ pub struct HartState {
     cycle: u64,
     instret: u64,
     reservation: Option<(u64, u8)>,
+    #[cfg(target_arch = "wasm32")]
+    reservation_token: Option<AtomicReservation>,
     mtimecmp: u64,
     msip: bool,
     translation_cache: TranslationCache,
@@ -1172,6 +1174,8 @@ impl HartState {
             cycle: 0,
             instret: 0,
             reservation: None,
+            #[cfg(target_arch = "wasm32")]
+            reservation_token: None,
             mtimecmp: u64::MAX,
             msip: false,
             translation_cache: TranslationCache::default(),
@@ -1310,6 +1314,28 @@ impl GuestRam {
             }
             true
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn load_reserved(&self, index: usize, bytes: u8) -> Option<(u64, AtomicReservation)> {
+        self.atomic.load_reserved(index, bytes)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn store_conditional(
+        &self,
+        reservation: AtomicReservation,
+        index: usize,
+        value: u64,
+        bytes: u8,
+    ) -> bool {
+        self.atomic
+            .store_conditional(reservation, index, value, bytes)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn update_value(&self, index: usize, bytes: u8, value: impl FnOnce(u64) -> u64) -> Option<u64> {
+        self.atomic.update_value(index, bytes, value)
     }
 
     #[cfg(test)]
@@ -1746,11 +1772,39 @@ impl Devices {
         self.ram.read_value(range.start, bytes)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn write_ram(&mut self, address: u64, value: u64, bytes: u8) -> bool {
         let Some(range) = self.ram_range(address, bytes) else {
             return false;
         };
         self.ram.write_value(range.start, value, bytes)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn load_reserved_ram(&self, address: u64, bytes: u8) -> Option<(u64, AtomicReservation)> {
+        let range = self.ram_range(address, bytes)?;
+        self.ram.load_reserved(range.start, bytes)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn store_conditional_ram(
+        &self,
+        reservation: AtomicReservation,
+        address: u64,
+        value: u64,
+        bytes: u8,
+    ) -> bool {
+        let Some(range) = self.ram_range(address, bytes) else {
+            return false;
+        };
+        self.ram
+            .store_conditional(reservation, range.start, value, bytes)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn update_ram(&self, address: u64, bytes: u8, value: impl FnOnce(u64) -> u64) -> Option<u64> {
+        let range = self.ram_range(address, bytes)?;
+        self.ram.update_value(range.start, bytes, value)
     }
 
     fn ram_range_len(&self, address: u64, bytes: usize) -> Option<std::ops::Range<usize>> {
@@ -1962,6 +2016,20 @@ impl Machine {
             .iter()
             .map(|hart| HartControl::new(hart.lifecycle))
             .collect();
+    }
+
+    fn rebuild_reservation_tokens(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let devices = &self.devices;
+            for hart in &mut self.harts {
+                hart.reservation_token = hart.reservation.and_then(|(address, bytes)| {
+                    devices
+                        .load_reserved_ram(address, bytes)
+                        .map(|(_, reservation)| reservation)
+                });
+            }
+        }
     }
 
     fn hart_lifecycle(&self, hart_id: usize) -> Option<HartLifecycle> {
@@ -2948,7 +3016,7 @@ impl Machine {
                 .ok_or_else(|| access.access_fault(address, 8))?;
             self.metrics.page_table_entries_read =
                 self.metrics.page_table_entries_read.saturating_add(1);
-            let mut pte = self
+            let pte = self
                 .devices
                 .read_ram(pte_address, 8)
                 .ok_or_else(|| access.access_fault(address, 8))?;
@@ -2983,11 +3051,21 @@ impl Machine {
                     0
                 };
             if pte & required_ad != required_ad {
-                pte |= required_ad;
                 self.metrics.page_table_entries_written =
                     self.metrics.page_table_entries_written.saturating_add(1);
-                if !self.devices.write_ram(pte_address, pte, 8) {
+                #[cfg(target_arch = "wasm32")]
+                if self
+                    .devices
+                    .update_ram(pte_address, 8, |value| value | required_ad)
+                    .is_none()
+                {
                     return Err(access.access_fault(address, 8));
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if !self.devices.write_ram(pte_address, pte | required_ad, 8) {
+                        return Err(access.access_fault(address, 8));
+                    }
                 }
             }
 
@@ -3048,6 +3126,15 @@ impl Machine {
             }
             ensure_aligned(virtual_address, bytes, false)?;
             let physical = self.translate(virtual_address, AccessType::Load)?;
+            #[cfg(target_arch = "wasm32")]
+            let (value, reservation_token) = self
+                .devices
+                .load_reserved_ram(physical, bytes)
+                .ok_or(MachineTrap::LoadAccessFault {
+                    address: virtual_address,
+                    bytes,
+                })?;
+            #[cfg(not(target_arch = "wasm32"))]
             let value =
                 self.read_device(physical, bytes)
                     .map_err(|_| MachineTrap::LoadAccessFault {
@@ -3055,6 +3142,10 @@ impl Machine {
                         bytes,
                     })?;
             self.reservation = Some((physical, bytes));
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.reservation_token = Some(reservation_token);
+            }
             self.cpu.write(
                 rd,
                 if bytes == 4 {
@@ -3069,30 +3160,56 @@ impl Machine {
         ensure_aligned(virtual_address, bytes, true)?;
         let physical = self.translate(virtual_address, AccessType::Store)?;
         if operation == 0x03 {
-            let succeeds = self.reservation == Some((physical, bytes));
+            let address_matches = self.reservation == Some((physical, bytes));
             self.reservation = None;
+            let value = self.cpu.read(rs2);
+            #[cfg(target_arch = "wasm32")]
+            let succeeds = self.reservation_token.take().is_some_and(|reservation| {
+                address_matches
+                    && self
+                        .devices
+                        .store_conditional_ram(reservation, physical, value, bytes)
+            });
+            #[cfg(not(target_arch = "wasm32"))]
+            let succeeds = address_matches;
             if !succeeds {
                 self.cpu.write(rd, 1);
                 return Ok(None);
             }
-            let value = self.cpu.read(rs2);
+            #[cfg(not(target_arch = "wasm32"))]
             let halt = self
                 .write_device(physical, value, bytes)
                 .map_err(|trap| map_store_fault(trap, virtual_address, bytes))?;
             self.cpu.write(rd, 0);
+            #[cfg(target_arch = "wasm32")]
+            return Ok(None);
+            #[cfg(not(target_arch = "wasm32"))]
             return Ok(halt);
         }
 
+        let rhs = self.cpu.read(rs2);
+        atomic_result(operation, 0, rhs, bytes).ok_or_else(|| illegal(pc, instruction))?;
+        self.invalidate_reservation(physical, bytes);
+        #[cfg(target_arch = "wasm32")]
+        let old = self
+            .devices
+            .update_ram(physical, bytes, |old| {
+                atomic_result(operation, old, rhs, bytes).expect("atomic operation validated")
+            })
+            .ok_or(MachineTrap::StoreAccessFault {
+                address: virtual_address,
+                bytes,
+            })?;
+        #[cfg(not(target_arch = "wasm32"))]
         let old = self
             .read_device(physical, bytes)
             .map_err(|_| MachineTrap::StoreAccessFault {
                 address: virtual_address,
                 bytes,
             })?;
-        let rhs = self.cpu.read(rs2);
-        let value =
-            atomic_result(operation, old, rhs, bytes).ok_or_else(|| illegal(pc, instruction))?;
-        self.invalidate_reservation(physical, bytes);
+        #[cfg(not(target_arch = "wasm32"))]
+        let value = atomic_result(operation, old, rhs, bytes).expect("atomic operation validated");
+        #[cfg(not(target_arch = "wasm32"))]
         let halt = self
             .write_device(physical, value, bytes)
             .map_err(|trap| map_store_fault(trap, virtual_address, bytes))?;
@@ -3104,6 +3221,9 @@ impl Machine {
                 old
             },
         );
+        #[cfg(target_arch = "wasm32")]
+        return Ok(None);
+        #[cfg(not(target_arch = "wasm32"))]
         Ok(halt)
     }
 
@@ -3118,6 +3238,10 @@ impl Machine {
         for hart in &mut self.harts {
             if overlaps(hart.reservation) {
                 hart.reservation = None;
+                #[cfg(target_arch = "wasm32")]
+                {
+                    hart.reservation_token = None;
+                }
             }
         }
     }
@@ -3236,6 +3360,10 @@ impl Machine {
             hart.cycle = 0;
             hart.instret = 0;
             hart.reservation = None;
+            #[cfg(target_arch = "wasm32")]
+            {
+                hart.reservation_token = None;
+            }
             hart.mtimecmp = u64::MAX;
             hart.msip = false;
             hart.translation_cache.clear();
@@ -3554,6 +3682,10 @@ impl Machine {
         let origin = self.cpu.privilege;
         let pc = self.cpu.pc;
         self.reservation = None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.reservation_token = None;
+        }
         if delegated {
             self.csrs.sepc = pc & !0b1;
             self.csrs.scause = INTERRUPT_CAUSE_BIT | cause;
@@ -3591,6 +3723,10 @@ impl Machine {
     fn take_exception(&mut self, cause: u64, value: u64, pc: u64) {
         let origin = self.cpu.privilege;
         self.reservation = None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.reservation_token = None;
+        }
         if origin != Privilege::Machine && self.csrs.medeleg & (1 << cause) != 0 {
             self.csrs.sepc = pc & !0b1;
             self.csrs.scause = cause;

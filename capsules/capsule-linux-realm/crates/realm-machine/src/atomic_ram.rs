@@ -8,6 +8,13 @@ pub(super) const ATOMIC_RAM_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 const WORD_BYTES: usize = size_of::<u64>();
 const RESERVATION_GRANULE_BYTES: usize = 64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AtomicReservation {
+    index: usize,
+    bytes: u8,
+    generation: u64,
+}
+
 #[derive(Debug)]
 struct AtomicRamChunk {
     words: Box<[AtomicU64]>,
@@ -105,6 +112,118 @@ impl AtomicRamChunk {
         word.store((old & !mask) | ((value << shift) & mask), Ordering::Release);
         generation.store(observed.wrapping_add(2), Ordering::Release);
         true
+    }
+
+    fn load_reserved(&self, offset: usize, bytes: u8) -> Option<(u64, u64)> {
+        let bytes = usize::from(bytes);
+        let word_index = offset / WORD_BYTES;
+        let word_offset = offset % WORD_BYTES;
+        if bytes == 0
+            || bytes > WORD_BYTES
+            || word_offset.checked_add(bytes)? > WORD_BYTES
+            || !offset.is_multiple_of(bytes)
+        {
+            return None;
+        }
+        let word = self.words.get(word_index)?;
+        let generation = self
+            .write_generations
+            .get(offset / RESERVATION_GRANULE_BYTES)?;
+        loop {
+            let before = generation.load(Ordering::Acquire);
+            if before & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let value = word.load(Ordering::Acquire);
+            let after = generation.load(Ordering::Acquire);
+            if before == after {
+                let shift = word_offset * 8;
+                return Some(((value >> shift) & byte_mask(bytes), before));
+            }
+        }
+    }
+
+    fn store_conditional(
+        &self,
+        offset: usize,
+        value: u64,
+        bytes: u8,
+        expected_generation: u64,
+    ) -> bool {
+        let bytes = usize::from(bytes);
+        let word_index = offset / WORD_BYTES;
+        let word_offset = offset % WORD_BYTES;
+        if expected_generation & 1 != 0
+            || bytes == 0
+            || bytes > WORD_BYTES
+            || word_offset
+                .checked_add(bytes)
+                .is_none_or(|end| end > WORD_BYTES)
+            || !offset.is_multiple_of(bytes)
+        {
+            return false;
+        }
+        let Some(word) = self.words.get(word_index) else {
+            return false;
+        };
+        let Some(generation) = self
+            .write_generations
+            .get(offset / RESERVATION_GRANULE_BYTES)
+        else {
+            return false;
+        };
+        if generation
+            .compare_exchange(
+                expected_generation,
+                expected_generation.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let shift = word_offset * 8;
+        let mask = byte_mask(bytes) << shift;
+        let old = word.load(Ordering::Relaxed);
+        word.store((old & !mask) | ((value << shift) & mask), Ordering::Release);
+        generation.store(expected_generation.wrapping_add(2), Ordering::Release);
+        true
+    }
+
+    fn update_value(
+        &self,
+        offset: usize,
+        value: impl FnOnce(u64) -> u64,
+        bytes: u8,
+    ) -> Option<u64> {
+        let bytes = usize::from(bytes);
+        let word_index = offset / WORD_BYTES;
+        let word_offset = offset % WORD_BYTES;
+        if bytes == 0
+            || bytes > WORD_BYTES
+            || word_offset.checked_add(bytes)? > WORD_BYTES
+            || !offset.is_multiple_of(bytes)
+        {
+            return None;
+        }
+        let word = self.words.get(word_index)?;
+        let generation = self
+            .write_generations
+            .get(offset / RESERVATION_GRANULE_BYTES)?;
+        let observed = lock_generation(generation);
+        let shift = word_offset * 8;
+        let mask = byte_mask(bytes) << shift;
+        let stored = word.load(Ordering::Relaxed);
+        let old = (stored >> shift) & byte_mask(bytes);
+        let new = value(old);
+        word.store(
+            (stored & !mask) | ((new << shift) & mask),
+            Ordering::Release,
+        );
+        generation.store(observed.wrapping_add(2), Ordering::Release);
+        Some(old)
     }
 
     fn read_byte(&self, offset: usize) -> Option<u8> {
@@ -295,6 +414,86 @@ impl AtomicGuestRam {
         }
     }
 
+    pub(super) fn load_reserved(
+        &self,
+        index: usize,
+        bytes: u8,
+    ) -> Option<(u64, AtomicReservation)> {
+        let byte_count = usize::from(bytes);
+        let end = index.checked_add(byte_count)?;
+        if byte_count == 0
+            || byte_count > WORD_BYTES
+            || end > self.len
+            || !index.is_multiple_of(byte_count)
+        {
+            return None;
+        }
+        let chunk_index = index / ATOMIC_RAM_CHUNK_BYTES;
+        let chunk_offset = index % ATOMIC_RAM_CHUNK_BYTES;
+        let (value, generation) = match self.chunks[chunk_index].get() {
+            None => (0, 0),
+            Some(Ok(chunk)) => chunk.load_reserved(chunk_offset, bytes)?,
+            Some(Err(_)) => return None,
+        };
+        Some((
+            value,
+            AtomicReservation {
+                index,
+                bytes,
+                generation,
+            },
+        ))
+    }
+
+    pub(super) fn store_conditional(
+        &self,
+        reservation: AtomicReservation,
+        index: usize,
+        value: u64,
+        bytes: u8,
+    ) -> bool {
+        if reservation.index != index || reservation.bytes != bytes {
+            return false;
+        }
+        let byte_count = usize::from(bytes);
+        let Some(end) = index.checked_add(byte_count) else {
+            return false;
+        };
+        if byte_count == 0
+            || byte_count > WORD_BYTES
+            || end > self.len
+            || !index.is_multiple_of(byte_count)
+        {
+            return false;
+        }
+        let chunk_index = index / ATOMIC_RAM_CHUNK_BYTES;
+        let chunk_offset = index % ATOMIC_RAM_CHUNK_BYTES;
+        self.chunk(chunk_index).is_some_and(|chunk| {
+            chunk.store_conditional(chunk_offset, value, bytes, reservation.generation)
+        })
+    }
+
+    pub(super) fn update_value(
+        &self,
+        index: usize,
+        bytes: u8,
+        value: impl FnOnce(u64) -> u64,
+    ) -> Option<u64> {
+        let byte_count = usize::from(bytes);
+        let end = index.checked_add(byte_count)?;
+        if byte_count == 0
+            || byte_count > WORD_BYTES
+            || end > self.len
+            || !index.is_multiple_of(byte_count)
+        {
+            return None;
+        }
+        let chunk_index = index / ATOMIC_RAM_CHUNK_BYTES;
+        let chunk_offset = index % ATOMIC_RAM_CHUNK_BYTES;
+        self.chunk(chunk_index)?
+            .update_value(chunk_offset, value, bytes)
+    }
+
     pub(super) fn copy_from_slice(&mut self, start: usize, source: &[u8]) -> bool {
         let Some(end) = start
             .checked_add(source.len())
@@ -474,5 +673,72 @@ mod tests {
                 Some(10_000)
             );
         }
+    }
+
+    #[test]
+    fn reservations_ignore_disjoint_stores_and_reject_overlapping_stores() {
+        let ram = AtomicGuestRam::zeroed(4096).expect("atomic RAM");
+        assert!(ram.write_value(0, 10, 8));
+        let (value, reservation) = ram.load_reserved(0, 8).expect("reservation");
+        assert_eq!(value, 10);
+        assert!(ram.write_value(RESERVATION_GRANULE_BYTES, 99, 8));
+        assert!(ram.store_conditional(reservation, 0, 11, 8));
+        assert_eq!(ram.read_value(0, 8), Some(11));
+
+        let (_, reservation) = ram.load_reserved(0, 8).expect("second reservation");
+        assert!(ram.write_value(8, 12, 8));
+        assert!(!ram.store_conditional(reservation, 0, 13, 8));
+        assert_eq!(ram.read_value(0, 8), Some(11));
+    }
+
+    #[test]
+    fn contended_lr_sc_loops_eventually_commit_every_increment() {
+        let ram = Arc::new(AtomicGuestRam::zeroed(4096).expect("atomic RAM"));
+        let handles = (0..8)
+            .map(|_| {
+                let ram = Arc::clone(&ram);
+                std::thread::spawn(move || {
+                    for _ in 0..2_000 {
+                        loop {
+                            let (value, reservation) =
+                                ram.load_reserved(0, 8).expect("load reservation");
+                            if ram.store_conditional(reservation, 0, value.wrapping_add(1), 8) {
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("contended LR/SC worker");
+        }
+        assert_eq!(ram.read_value(0, 8), Some(16_000));
+    }
+
+    #[test]
+    fn atomic_updates_return_one_total_order() {
+        let ram = Arc::new(AtomicGuestRam::zeroed(4096).expect("atomic RAM"));
+        let handles = (0..8)
+            .map(|_| {
+                let ram = Arc::clone(&ram);
+                std::thread::spawn(move || {
+                    (0..2_000)
+                        .map(|_| {
+                            ram.update_value(0, 8, |value| value.wrapping_add(1))
+                                .expect("atomic update")
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut old_values = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("atomic update worker"))
+            .collect::<Vec<_>>();
+        old_values.sort_unstable();
+        assert_eq!(old_values, (0..16_000).collect::<Vec<_>>());
+        assert_eq!(ram.read_value(0, 8), Some(16_000));
     }
 }
