@@ -766,15 +766,14 @@ fn shared_memory_layout(ram_bytes: usize) -> Result<(u32, u32, u64), String> {
         return Err("Linux vCPU shared memory exceeds the worker's signed maximum".to_string());
     }
     let initial_pages = protocol::WORKER_MIN_MEMORY_BYTES / protocol::WASM_PAGE_BYTES;
-    let control_offset = protocol::WORKER_MIN_MEMORY_BYTES
-        .checked_sub(protocol::CONTROL_BYTES)
-        .ok_or_else(|| "Linux vCPU has no room for its control descriptor".to_string())?;
+    let control_offset = protocol::control_offset(0)
+        .ok_or_else(|| "Linux vCPU has no worker-zero control descriptor".to_string())?;
     Ok((
         u32::try_from(initial_pages)
             .map_err(|_| "Linux vCPU initial page count is too large".to_string())?,
         u32::try_from(maximum_pages)
             .map_err(|_| "Linux vCPU maximum page count is too large".to_string())?,
-        control_offset as u64,
+        control_offset,
     ))
 }
 
@@ -850,13 +849,13 @@ mod tests {
             shared_memory_layout(512 * 1024 * 1024).expect("default layout");
         assert_eq!(initial_pages, 1024);
         assert_eq!(maximum_pages, 10_240);
-        assert_eq!(control_offset, (63 * 1024 * 1024) as u64);
+        assert_eq!(control_offset, (56 * 1024 * 1024) as u64);
 
         let (initial_pages, maximum_pages, control_offset) =
             shared_memory_layout(3 * 1024 * 1024 * 1024).expect("largest Realm layout");
         assert_eq!(initial_pages, 1024);
         assert_eq!(maximum_pages, 51_200);
-        assert_eq!(control_offset, (63 * 1024 * 1024) as u64);
+        assert_eq!(control_offset, (56 * 1024 * 1024) as u64);
     }
 
     #[test]

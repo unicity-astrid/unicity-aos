@@ -1645,6 +1645,60 @@ The implementation cut is:
    allocate fewer workers than harts and must report the real mapping. Only
    measured concurrent progress permits the `parallel SMP` label.
 
+The concrete ownership split is:
+
+| State | Owner during an epoch | Cross-hart mechanism | Quiescent operation |
+| --- | --- | --- | --- |
+| integer/floating registers, CSRs, privilege, PC, cycle/instret, TLB | exact hart worker | none; no other worker receives a Rust reference | checkpoint copies after the barrier |
+| lifecycle/start address/opaque value | target hart worker | atomic HSM mailbox with monotonic generation | coordinator validates every transition |
+| software interrupt and remote-fence request | target hart worker | atomic pending bits/fence generation | coordinator verifies all acknowledgements |
+| LR/SC reservation | exact hart worker | RAM write-version invalidation | checkpoint records only settled reservations |
+| guest RAM | machine-wide | naturally aligned 1/2/4/8-byte atomics; bounded ordered fallback for misaligned access | coordinator snapshots after every worker leaves the epoch |
+| UART input/output, finisher, guest time | machine coordinator | bounded device arbiter | drained or rejected before checkpoint |
+| 9P/immutable-block request | machine coordinator plus requesting-hart id | first request closes the epoch; later contenders observe suspension | fresh authority attaches only after the barrier |
+| halt/trap/cancellation, aggregate steps and retired instructions | machine coordinator | atomic terminal state and additive counters | whole group retires on disagreement or incomplete arrival |
+
+This table rules out three tempting but invalid shortcuts. Worker-local `Machine`
+clones cannot carry independent RAM because Linux synchronization would be
+fictional. A shared `Vec<u8>` cannot be touched from multiple Wasm Stores because
+that is a host-language data race even when the guest considers the accesses
+benign. A mutex taken for the whole `run-hart-slice` call is safe but remains the
+serialized engine and cannot be labelled parallel.
+
+Epoch admission has five mechanical invariants:
+
+1. the controller writes one request into the runtime-stamped worker's disjoint
+   descriptor and targets that exact worker index;
+2. every worker claims only its corresponding hart cell, then publishes arrival
+   before executing guest instructions;
+3. a host effect, HSM/RFENCE rendezvous, terminal state, cancellation, or fuel
+   boundary closes the epoch and prevents new guest instructions;
+4. every admitted worker publishes its exact steps, retired instructions,
+   console contribution, control acknowledgements, and outcome before the
+   coordinator commits the epoch; and
+5. missing, duplicate, stale-generation, or mismatched-hart results retire the
+   compute group. They are never merged into reusable Linux state.
+
+Allocator activity is forbidden inside the concurrent instruction loop.
+Descriptor buffers, hart cells, mailbox slots, console fragments, and RAM chunk
+metadata are admitted before the arrival barrier. Demand-zero RAM may install a
+chunk through a single atomic once-cell; losing workers reuse the installed
+chunk rather than retaining duplicate allocations. Checkpoint, reset, console
+injection, 9P completion, and topology changes are worker-zero operations and
+are accepted only when no epoch is open.
+
+The shared-memory substrate follows the
+[ratified RISC-V A-extension](https://docs.riscv.org/reference/isa/unpriv/a-st-ext.html)
+rather than inventing lock semantics. Naturally aligned AMOs are indivisible.
+LR/SC failure may be conservative, but a constrained loop must still make
+eventual progress; a machine-wide “fail every SC whenever any hart stored
+anywhere” generation is therefore insufficient. Reservation invalidation must
+overlap the reservation set, and the differential suite must include two
+independent constrained loops as well as direct contention. The
+[WebAssembly Threads specification](https://webassembly.github.io/threads/core/bikeshed/)
+provides atomic 8/16/32/64-bit memory operations but no guest thread creation;
+Astrid Compute remains the only creator and meter of native workers.
+
 ### Parallel Rust-worker substrate evidence recorded on 2026-07-24
 
 - Astrid core commit
@@ -1658,18 +1712,20 @@ The implementation cut is:
   before it becomes runnable, so sharing the worker's linear memory no longer
   aliases LLVM call frames across native worker threads.
 - Private protocol operation `parallel-probe` targets exact worker indices over
-  two disjoint one-MiB descriptors and uses an atomic shared-memory barrier. The
-  first run against the old runtime reproduced the defect: Astrid stamped
-  worker 1 while the worker returned worker 0. The pinned runtime fix makes both
-  identities and descriptors exact and the barrier passes.
+  disjoint 128 KiB descriptors and uses an atomic shared-memory barrier. The
+  fixed 8 MiB descriptor arena has one slot for every possible worker, and the
+  signed worker rejects an offset that does not match its runtime-stamped
+  identity. The first run against the old runtime reproduced the prior defect:
+  Astrid stamped worker 1 while the worker returned worker 0. The pinned runtime
+  fix makes both identities and descriptors exact and the barrier passes.
 - The machine now owns an explicit state record for every admitted hart rather
   than swapping active and parked CPU records. Exact-hart slices cannot rotate
   into another hart, stopped harts consume no work, and private protocol
   operation 9 requires the requested hart to equal Astrid's runtime-stamped
   worker index. The monolithic state mutex still serializes those operations
   until the independent hart-cell cut above lands.
-- The reproducible worker is 176,854 bytes with BLAKE3
-  `8e3051a4c45fa920857aa9ab6001a4bf4c218e2e2fa46a85b0489ec712d7a8ce`.
+- The reproducible worker is 176,870 bytes with BLAKE3
+  `1502265de0687bff43962ea7528ea3ff2153c7422b913ea996553a5844c98378`.
   This proves the execution substrate needed by parallel harts. It does not yet
   claim that the current monolithic `Machine` mutex or deterministic
   round-robin hart scheduler runs Linux concurrently.

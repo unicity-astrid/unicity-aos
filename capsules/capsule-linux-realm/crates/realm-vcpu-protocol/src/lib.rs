@@ -20,8 +20,12 @@ pub const MAGIC: u32 = 0x4c56_4331;
 pub const VERSION: u32 = 1;
 /// Fixed header before any input or response payload.
 pub const HEADER_BYTES: usize = 128;
-/// Maximum descriptor admitted by the Astrid compute copy boundary.
-pub const CONTROL_BYTES: usize = 1024 * 1024;
+/// Bytes reserved for one exact worker's request/response descriptor.
+///
+/// The largest current request or response is one 64 KiB console/9P frame plus
+/// the fixed header. A power-of-two 128 KiB stride leaves explicit framing
+/// headroom without reserving one MiB for every possible hart.
+pub const CONTROL_BYTES: usize = 128 * 1024;
 /// Dynamic heap headroom beyond the admitted guest RAM.
 pub const WORKER_HEAP_OVERHEAD_BYTES: usize = 64 * 1024 * 1024;
 /// Smallest shared memory accepted by the worker import.
@@ -35,6 +39,10 @@ pub const WORKER_STACK_STRIDE_BYTES: usize = 512 * 1024;
 /// Total LLVM stack arena split by Astrid into one disjoint slot per worker.
 pub const WORKER_STACK_RESERVE_BYTES: usize = MAX_WORKER_STACKS * WORKER_STACK_STRIDE_BYTES;
 const _: () = assert!(WORKER_STACK_RESERVE_BYTES < WORKER_MIN_MEMORY_BYTES);
+/// Complete fixed descriptor arena, with one disjoint slot per possible worker.
+pub const CONTROL_ARENA_BYTES: usize = MAX_WORKER_STACKS * CONTROL_BYTES;
+const _: () = assert!(HEADER_BYTES + MAX_CONSOLE_INPUT_BYTES <= CONTROL_BYTES);
+const _: () = assert!(CONTROL_ARENA_BYTES < WORKER_MIN_MEMORY_BYTES);
 /// WebAssembly linear-memory page size.
 pub const WASM_PAGE_BYTES: usize = 65_536;
 /// Exact `InitCold` payload: admitted wall-clock seconds since Unix epoch.
@@ -51,6 +59,21 @@ pub const CHECKPOINT_BINDING_BYTES: usize = 64;
 pub const MAX_SLICE_STEPS: u64 = 10_000_000;
 /// Largest serial input accepted by one descriptor.
 pub const MAX_CONSOLE_INPUT_BYTES: usize = 64 * 1024;
+
+/// Fixed descriptor offset for one runtime-stamped worker.
+///
+/// The arena occupies the top of the worker's 64 MiB initial shared-memory
+/// region. Worker-local stacks live in the separately linker-owned arena, and
+/// dynamic guest RAM is acquired only through later `memory.grow` operations.
+#[must_use]
+pub const fn control_offset(worker_index: usize) -> Option<u64> {
+    if worker_index >= MAX_WORKER_STACKS {
+        return None;
+    }
+    let arena_start = WORKER_MIN_MEMORY_BYTES - CONTROL_ARENA_BYTES;
+    let offset = arena_start + worker_index * CONTROL_BYTES;
+    Some(offset as u64)
+}
 
 /// Byte offsets for the fixed descriptor header.
 pub mod field {
@@ -342,5 +365,21 @@ mod tests {
         assert_eq!(MAX_WORKER_STACKS, 64);
         assert_eq!(WORKER_STACK_STRIDE_BYTES, 512 * 1024);
         assert_eq!(WORKER_STACK_RESERVE_BYTES, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn every_worker_has_one_disjoint_bounded_control_slot() {
+        assert_eq!(CONTROL_BYTES, 128 * 1024);
+        assert_eq!(CONTROL_ARENA_BYTES, 8 * 1024 * 1024);
+        let first = control_offset(0).expect("worker zero descriptor");
+        let last = control_offset(MAX_WORKER_STACKS - 1).expect("last worker descriptor");
+        assert_eq!(first, (56 * 1024 * 1024) as u64);
+        assert_eq!(last + CONTROL_BYTES as u64, WORKER_MIN_MEMORY_BYTES as u64);
+        for worker_index in 0..MAX_WORKER_STACKS - 1 {
+            let current = control_offset(worker_index).expect("current descriptor");
+            let next = control_offset(worker_index + 1).expect("next descriptor");
+            assert_eq!(current + CONTROL_BYTES as u64, next);
+        }
+        assert_eq!(control_offset(MAX_WORKER_STACKS), None);
     }
 }

@@ -3272,5 +3272,17 @@ AOS END 0123456789abcdef0123456789abcdef 0\r\n";
         assert_eq!(field("protocol"), "aos-linux-vcpu-1");
         assert_eq!(field("worker_bytes"), bytes.len().to_string());
         assert_eq!(format!("blake3:{}", field("worker_blake3")), actual_hash);
+        assert_eq!(
+            field("worker_control_slots"),
+            aos_realm_vcpu_protocol::MAX_WORKER_STACKS.to_string()
+        );
+        assert_eq!(
+            field("worker_control_stride_bytes"),
+            aos_realm_vcpu_protocol::CONTROL_BYTES.to_string()
+        );
+        assert_eq!(
+            field("worker_control_reserve_bytes"),
+            aos_realm_vcpu_protocol::CONTROL_ARENA_BYTES.to_string()
+        );
     }
 }

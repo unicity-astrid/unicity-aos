@@ -95,16 +95,21 @@ pub extern "C" fn astrid_compute_run(
     descriptor_length: i64,
     descriptor_tag: i64,
 ) -> i32 {
-    if worker_index < 0 {
+    let Ok(worker_index) = usize::try_from(worker_index) else {
         return -1;
-    }
+    };
     let Ok(offset) = usize::try_from(descriptor_offset) else {
         return -1;
     };
     let Ok(length) = usize::try_from(descriptor_length) else {
         return -1;
     };
-    if offset < 64 || !(protocol::HEADER_BYTES..=protocol::CONTROL_BYTES).contains(&length) {
+    let Some(expected_offset) = protocol::control_offset(worker_index) else {
+        return -1;
+    };
+    if u64::try_from(offset).ok() != Some(expected_offset)
+        || !(protocol::HEADER_BYTES..=protocol::CONTROL_BYTES).contains(&length)
+    {
         return -1;
     }
 
@@ -766,7 +771,7 @@ mod tests {
     use super::*;
 
     const SIGNED_WORKER_HASH: &str =
-        "blake3:8e3051a4c45fa920857aa9ab6001a4bf4c218e2e2fa46a85b0489ec712d7a8ce";
+        "blake3:1502265de0687bff43962ea7528ea3ff2153c7422b913ea996553a5844c98378";
     const SIGNED_KERNEL_HASH: &str =
         "blake3:60cc6c3c01222a3a33b108593974de5636747b32cacc10bf8c0f45c1cdd8b285";
     const SIGNED_TEST_SYSTEM_HASH: &str =
@@ -1002,7 +1007,10 @@ mod tests {
             )
             .expect("two-worker admission");
 
-        let offsets = [(62 * 1024 * 1024) as u64, (63 * 1024 * 1024) as u64];
+        let offsets = [
+            protocol::control_offset(0).expect("worker zero descriptor"),
+            protocol::control_offset(1).expect("worker one descriptor"),
+        ];
         let mut jobs = Vec::new();
         for (worker_index, offset) in offsets.into_iter().enumerate() {
             let mut request = vec![0_u8; protocol::HEADER_BYTES];
@@ -1164,7 +1172,7 @@ mod tests {
                 },
             )
             .expect("worker admission");
-        let control_offset = (63 * 1024 * 1024) as u64;
+        let control_offset = protocol::control_offset(0).expect("worker zero descriptor");
         let descriptor = WorkDescriptor {
             offset: control_offset,
             length: protocol::CONTROL_BYTES as u64,
