@@ -39,6 +39,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--skip-qemu", action="store_true")
     parser.add_argument(
+        "--hart-counts",
+        type=positive_int,
+        nargs="+",
+        default=[2],
+        help="logical Linux hart counts for the serialized reference matrix",
+    )
+    parser.add_argument(
         "--docker-image",
         help="existing local image used for Docker run and unpause measurements",
     )
@@ -154,13 +161,14 @@ def metadata() -> dict[str, Any]:
         "boundaries": {
             "cold-to-init": (
                 "preloaded image and immutable system; includes 1 GiB sparse machine "
-                "allocation, two-hart image admission, "
+                "allocation, the sample's recorded logical hart topology, "
                 "and RV64 execution through PID 1's AOS LINUX /init marker; observation "
                 "is captured at the first slice containing that marker"
             ),
             "cold-to-principal-bind": (
                 "preloaded image and immutable system; includes 1 GiB sparse machine "
-                "allocation, two-hart image admission, SquashFS mount, and RV64 execution "
+                "allocation, the sample's recorded logical hart topology, SquashFS mount, "
+                "and RV64 execution "
                 "through PID 1's first principal-home request"
             ),
             "checkpoint-to-bindable": (
@@ -199,34 +207,46 @@ def build_reference() -> None:
     )
 
 
-def run_reference(samples: int, warmups: int) -> list[dict[str, Any]]:
-    reference_binary = (
-        ROOT / "target" / host_target() / "release" / "examples" / "benchmark_linux"
-    )
-    completed = subprocess.run(
-        [
-            str(reference_binary),
-            str(IMAGE),
-            str(SYSTEM),
-            str(CHECKPOINT),
-            str(samples),
-            str(warmups),
-        ],
-        cwd=ROOT,
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+def reference_binary() -> Path:
+    return ROOT / "target" / host_target() / "release" / "examples" / "benchmark_linux"
+
+
+def run_reference(
+    samples: int, warmups: int, hart_counts: Sequence[int]
+) -> list[dict[str, Any]]:
     records = []
-    for line in completed.stdout.splitlines():
-        record = json.loads(line)
-        if record.get("schema") != SCHEMA or record.get("kind") != "sample":
-            raise RuntimeError("reference benchmark emitted an unknown record")
-        records.append(record)
-    if len(records) != samples * 3:
-        raise RuntimeError(
-            f"reference benchmark emitted {len(records)} samples, expected {samples * 3}"
+    for hart_count in hart_counts:
+        completed = subprocess.run(
+            [
+                str(reference_binary()),
+                str(IMAGE),
+                str(SYSTEM),
+                str(CHECKPOINT),
+                str(samples),
+                str(warmups),
+                str(hart_count),
+            ],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
         )
+        lane = []
+        for line in completed.stdout.splitlines():
+            record = json.loads(line)
+            if (
+                record.get("schema") != SCHEMA
+                or record.get("kind") != "sample"
+                or record.get("hart_count") != hart_count
+            ):
+                raise RuntimeError("reference benchmark emitted an unknown record")
+            lane.append(record)
+        expected = samples * (3 if hart_count == 2 else 2)
+        if len(lane) != expected:
+            raise RuntimeError(
+                f"{hart_count}-hart reference emitted {len(lane)} samples, expected {expected}"
+            )
+        records.extend(lane)
     return records
 
 
@@ -439,33 +459,40 @@ def percentile(values: Sequence[int], fraction: float) -> int:
 
 
 def summarize(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_scenario: dict[tuple[str, str], list[int]] = {}
+    by_scenario: dict[tuple[str, str, int | None], list[int]] = {}
     for record in records:
         if record.get("kind") != "sample":
             continue
-        key = (str(record["engine"]), str(record["scenario"]))
+        key = (
+            str(record["engine"]),
+            str(record["scenario"]),
+            record.get("hart_count"),
+        )
         by_scenario.setdefault(key, []).append(int(record["duration_ns"]))
     summaries = []
-    for (engine, scenario), durations in sorted(by_scenario.items()):
-        summaries.append(
-            {
-                "schema": SCHEMA,
-                "kind": "summary",
-                "engine": engine,
-                "scenario": scenario,
-                "samples": len(durations),
-                "duration_ns": {
-                    "min": min(durations),
-                    "median": round(statistics.median(durations)),
-                    "mean": round(statistics.fmean(durations)),
-                    "p95": percentile(durations, 0.95),
-                    "max": max(durations),
-                    "stdev": round(statistics.stdev(durations))
-                    if len(durations) > 1
-                    else 0,
-                },
-            }
-        )
+    for (engine, scenario, hart_count), durations in sorted(
+        by_scenario.items(), key=lambda item: tuple(str(part) for part in item[0])
+    ):
+        summary = {
+            "schema": SCHEMA,
+            "kind": "summary",
+            "engine": engine,
+            "scenario": scenario,
+            "samples": len(durations),
+            "duration_ns": {
+                "min": min(durations),
+                "median": round(statistics.median(durations)),
+                "mean": round(statistics.fmean(durations)),
+                "p95": percentile(durations, 0.95),
+                "max": max(durations),
+                "stdev": round(statistics.stdev(durations))
+                if len(durations) > 1
+                else 0,
+            },
+        }
+        if hart_count is not None:
+            summary["hart_count"] = hart_count
+        summaries.append(summary)
     return summaries
 
 
@@ -481,16 +508,18 @@ def write_records(records: Sequence[dict[str, Any]], output: Path | None) -> Non
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    for artifact in (IMAGE, SOURCES, CHECKPOINT):
+    for artifact in (IMAGE, SYSTEM, CHECKPOINT):
         if not artifact.is_file():
             raise RuntimeError(f"required benchmark artifact is missing: {artifact}")
     if not args.no_build:
         build_reference()
-    elif not REFERENCE_BINARY.is_file():
-        raise RuntimeError(f"--no-build requested but {REFERENCE_BINARY} does not exist")
+    elif not reference_binary().is_file():
+        raise RuntimeError(
+            f"--no-build requested but {reference_binary()} does not exist"
+        )
 
     records = [metadata()]
-    records.extend(run_reference(args.samples, args.warmups))
+    records.extend(run_reference(args.samples, args.warmups, args.hart_counts))
     if args.skip_qemu:
         records.append(skip("qemu-tcg-cold-to-init", "disabled by --skip-qemu"))
     else:

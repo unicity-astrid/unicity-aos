@@ -6,8 +6,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("benchmark-linux-realm.py")
@@ -25,6 +27,46 @@ BASELINE = (
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_main_admits_current_artifacts_and_resolves_the_reference_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = [root / name for name in ("Image", "system", "checkpoint")]
+            reference = root / "benchmark_linux"
+            for artifact in [*artifacts, reference]:
+                artifact.touch()
+
+            with (
+                mock.patch.object(BENCHMARK, "IMAGE", artifacts[0]),
+                mock.patch.object(BENCHMARK, "SYSTEM", artifacts[1]),
+                mock.patch.object(BENCHMARK, "CHECKPOINT", artifacts[2]),
+                mock.patch.object(BENCHMARK, "reference_binary", return_value=reference),
+                mock.patch.object(BENCHMARK, "metadata", return_value={"kind": "metadata"}),
+                mock.patch.object(BENCHMARK, "run_reference", return_value=[]),
+                mock.patch.object(BENCHMARK, "run_docker", return_value=[]),
+                mock.patch.object(BENCHMARK, "write_records") as write_records,
+            ):
+                self.assertEqual(
+                    BENCHMARK.main(
+                        [
+                            "--samples",
+                            "1",
+                            "--warmups",
+                            "1",
+                            "--skip-qemu",
+                            "--no-build",
+                        ]
+                    ),
+                    0,
+                )
+                write_records.assert_called_once()
+
+    def test_hart_matrix_is_explicit_and_defaults_to_checkpoint_topology(self) -> None:
+        self.assertEqual(BENCHMARK.parse_args([]).hart_counts, [2])
+        self.assertEqual(
+            BENCHMARK.parse_args(["--hart-counts", "1", "2", "4"]).hart_counts,
+            [1, 2, 4],
+        )
+
     def test_committed_baseline_is_complete_and_recomputes(self) -> None:
         records = [json.loads(line) for line in BASELINE.read_text().splitlines()]
         self.assertEqual(records[0]["git_commit"][:7], "9aa1885")

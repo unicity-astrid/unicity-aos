@@ -1,12 +1,12 @@
 use aos_realm_machine::{
-    CheckpointBinding, CheckpointDigest, Machine, MachineCheckpoint, MachineConfig, MachineMetrics,
-    SliceOutcome,
+    CheckpointBinding, CheckpointDigest, MAX_HARTS, Machine, MachineCheckpoint, MachineConfig,
+    MachineMetrics, SliceOutcome,
 };
 use serde::Serialize;
 use std::{env, fs, process::ExitCode, time::Instant};
 
 const RAM_BYTES: usize = 1024 * 1024 * 1024;
-const HART_COUNT: usize = 2;
+const CHECKPOINT_HART_COUNT: usize = 2;
 const CONSOLE_BYTES: usize = 64 * 1024;
 const SLICE_STEPS: u64 = 10_000_000;
 const MAX_STEPS: u64 = 2_000_000_000;
@@ -28,6 +28,7 @@ struct Sample {
     guest_steps: u64,
     guest_instructions_retired: u64,
     ram_bytes: usize,
+    hart_count: usize,
     checkpoint_bytes: usize,
     instruction_fetches: u64,
     translations: u64,
@@ -63,6 +64,12 @@ fn run() -> Result<(), String> {
     let checkpoint_path = args.next().ok_or_else(usage)?;
     let samples = parse_count(args.next(), DEFAULT_SAMPLES, "SAMPLES")?;
     let warmups = parse_count(args.next(), DEFAULT_WARMUPS, "WARMUPS")?;
+    let hart_count = parse_count(args.next(), CHECKPOINT_HART_COUNT as u32, "HART_COUNT")? as usize;
+    if hart_count > MAX_HARTS {
+        return Err(format!(
+            "HART_COUNT must not exceed the machine maximum of {MAX_HARTS}"
+        ));
+    }
     if args.next().is_some() {
         return Err(usage());
     }
@@ -80,51 +87,60 @@ fn run() -> Result<(), String> {
 
     // Validate every immutable input before warmup. Timed checkpoint samples
     // still repeat the complete integrity and binding checks used in production.
-    let admitted = MachineCheckpoint::decode(&checkpoint, binding)
-        .map_err(|error| format!("checkpoint failed admission: {error}"))?;
-    validate_checkpoint(&admitted)?;
+    if hart_count == CHECKPOINT_HART_COUNT {
+        let admitted = MachineCheckpoint::decode(&checkpoint, binding)
+            .map_err(|error| format!("checkpoint failed admission: {error}"))?;
+        validate_checkpoint(&admitted)?;
+    }
 
     for _ in 0..warmups {
-        let _ = cold_to_principal_bind(&image, &system)?;
-        let _ = checkpoint_to_bindable(&checkpoint, binding)?;
+        let _ = cold_to_principal_bind(&image, &system, hart_count)?;
+        if hart_count == CHECKPOINT_HART_COUNT {
+            let _ = checkpoint_to_bindable(&checkpoint, binding)?;
+        }
     }
 
     for iteration in 0..samples {
-        let (init, principal_bind) = cold_to_principal_bind(&image, &system)?;
+        let (init, principal_bind) = cold_to_principal_bind(&image, &system, hart_count)?;
         emit(measured_sample(
             "cold-to-init",
             iteration,
+            hart_count,
             checkpoint.len(),
             init,
         ))?;
         emit(measured_sample(
             "cold-to-principal-bind",
             iteration,
+            hart_count,
             checkpoint.len(),
             principal_bind,
         ))?;
 
-        let duration_ns = checkpoint_to_bindable(&checkpoint, binding)?;
-        emit(Sample {
-            schema: "aos-linux-realm-benchmark/v1",
-            kind: "sample",
-            engine: "aos-rv64-reference-native",
-            scenario: "checkpoint-to-bindable",
-            iteration,
-            duration_ns,
-            guest_steps: 0,
-            guest_instructions_retired: 0,
-            ram_bytes: RAM_BYTES,
-            checkpoint_bytes: checkpoint.len(),
-            instruction_fetches: 0,
-            translations: 0,
-            translation_cache_hits: 0,
-            translation_cache_misses: 0,
-            translation_cache_flushes: 0,
-            sv39_walks: 0,
-            page_table_entries_read: 0,
-            page_table_entries_written: 0,
-        })?;
+        if hart_count == CHECKPOINT_HART_COUNT {
+            let duration_ns = checkpoint_to_bindable(&checkpoint, binding)?;
+            emit(Sample {
+                schema: "aos-linux-realm-benchmark/v1",
+                kind: "sample",
+                engine: "aos-rv64-reference-native",
+                scenario: "checkpoint-to-bindable",
+                iteration,
+                duration_ns,
+                guest_steps: 0,
+                guest_instructions_retired: 0,
+                ram_bytes: RAM_BYTES,
+                hart_count,
+                checkpoint_bytes: checkpoint.len(),
+                instruction_fetches: 0,
+                translations: 0,
+                translation_cache_hits: 0,
+                translation_cache_misses: 0,
+                translation_cache_flushes: 0,
+                sv39_walks: 0,
+                page_table_entries_read: 0,
+                page_table_entries_written: 0,
+            })?;
+        }
     }
     Ok(())
 }
@@ -132,6 +148,7 @@ fn run() -> Result<(), String> {
 fn measured_sample(
     scenario: &'static str,
     iteration: u32,
+    hart_count: usize,
     checkpoint_bytes: usize,
     measurement: Measurement,
 ) -> Sample {
@@ -145,6 +162,7 @@ fn measured_sample(
         guest_steps: measurement.guest_steps,
         guest_instructions_retired: measurement.guest_instructions_retired,
         ram_bytes: RAM_BYTES,
+        hart_count,
         checkpoint_bytes,
         instruction_fetches: measurement.metrics.instruction_fetches,
         translations: measurement.metrics.translations(),
@@ -158,7 +176,8 @@ fn measured_sample(
 }
 
 fn usage() -> String {
-    "usage: benchmark_linux IMAGE SYSTEM_SQUASHFS CHECKPOINT [SAMPLES] [WARMUPS]".to_string()
+    "usage: benchmark_linux IMAGE SYSTEM_SQUASHFS CHECKPOINT [SAMPLES] [WARMUPS] [HART_COUNT]"
+        .to_string()
 }
 
 fn parse_count(value: Option<std::ffi::OsString>, default: u32, name: &str) -> Result<u32, String> {
@@ -179,6 +198,7 @@ fn parse_count(value: Option<std::ffi::OsString>, default: u32, name: &str) -> R
 fn cold_to_principal_bind(
     image: &[u8],
     system: &[u8],
+    hart_count: usize,
 ) -> Result<(Measurement, Measurement), String> {
     let started = Instant::now();
     let mut machine = Machine::new_with_harts(
@@ -186,7 +206,7 @@ fn cold_to_principal_bind(
             ram_bytes: RAM_BYTES,
             max_console_bytes: CONSOLE_BYTES,
         },
-        HART_COUNT,
+        hart_count,
     )
     .map_err(|error| format!("could not admit Linux machine: {error}"))?;
     let bootargs = format!(
@@ -280,9 +300,9 @@ fn validate_checkpoint(checkpoint: &MachineCheckpoint) -> Result<(), String> {
             checkpoint.ram_bytes()
         ));
     }
-    if checkpoint.hart_count() != HART_COUNT {
+    if checkpoint.hart_count() != CHECKPOINT_HART_COUNT {
         return Err(format!(
-            "checkpoint has {} harts, expected {HART_COUNT}",
+            "checkpoint has {} harts, expected {CHECKPOINT_HART_COUNT}",
             checkpoint.hart_count()
         ));
     }
